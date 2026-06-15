@@ -142,10 +142,11 @@ def fault_types():
 
 @router.post("/inject-fault")
 def inject_fault(inj: InjectRequest):
-    fault = inject(inj.fault_type, inj.target_id)
-    if not fault:
-        raise HTTPException(400, f"Unknown fault type: {inj.fault_type}")
-    return {"status": "ok", "injection_id": fault.injection_id, "stages": fault.total_stages}
+    fault, error = inject(inj.fault_type, inj.target_id)
+    if error:
+        raise HTTPException(400, error)
+    return {"status": "ok", "injection_id": fault.injection_id, "stages": fault.total_stages,
+            "target_type": FAULT_DEFS.get(inj.fault_type, {}).get("target_type", "")}
 
 
 @router.post("/step")

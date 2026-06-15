@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Select, Button, Card, Space, Tag, Typography, Divider, Slider, message, Descriptions, Badge } from 'antd';
 import { ThunderboltOutlined, ForwardOutlined, ReloadOutlined, ArrowLeftOutlined } from '@ant-design/icons';
@@ -52,6 +52,13 @@ export default function SimulationView() {
   const { data: types } = useQuery({ queryKey: ['sim-types'], queryFn: fetchTypes });
   const { data: simStatus, refetch: refetchStatus } = useQuery({ queryKey: ['sim-status'], queryFn: fetchStatus, refetchInterval: 5000 });
   const { data: topoData } = useQuery({ queryKey: ['topology', 'order', 5], queryFn: () => fetchTopology('order', 5) });
+  const [stepSec, setStepSec] = useState(300);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [isEdge, setIsEdge] = useState(false);
+
+  const { data: types } = useQuery({ queryKey: ['sim-types'], queryFn: fetchTypes });
+  const { data: simStatus, refetch: refetchStatus } = useQuery({ queryKey: ['sim-status'], queryFn: fetchStatus, refetchInterval: 5000 });
+  const { data: topoData } = useQuery({ queryKey: ['topology', 'order', 5], queryFn: () => fetchTopology('order', 5) });
 
   const injectMut = useMutation({ mutationFn: () => injectFault(faultType, targetId), onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success('故障已注入'); } });
   const stepMut = useMutation({ mutationFn: () => stepSim(stepSec), onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success(`推进 ${stepSec}s`); } });
@@ -60,11 +67,25 @@ export default function SimulationView() {
   const selectedNode = !isEdge ? topoData?.nodes.find(n => n.id === selectedId) : undefined;
   const selectedEdge = isEdge ? topoData?.edges.find(e => e.id === selectedId) : undefined;
 
-  // Target options: list unhealthy or all nodes
-  const targetOptions = (topoData?.nodes || []).map(n => ({
-    value: n.id,
-    label: `${n.properties.health_status || '?'} | ${n.type} | ${n.properties.name || n.id}`,
-  }));
+  // Target options: filter by fault type's target_type
+  const targetType = types?.[faultType]?.target_type || '';
+  const targetOptions = (topoData?.nodes || [])
+    .filter(n => !targetType || n.type === targetType)
+    .map(n => ({
+      value: n.id,
+      label: `${n.type} | ${n.properties.name || n.id}`,
+    }));
+
+  // Auto-select first compatible target when fault type changes
+  const validTargets = targetOptions.map(o => o.value);
+  const isTargetValid = validTargets.includes(targetId);
+
+  // Auto-select first compatible target when fault type changes
+  useEffect(() => {
+    if (validTargets.length > 0 && !isTargetValid) {
+      setTargetId(validTargets[0]);
+    }
+  }, [faultType, validTargets.length]);
 
   const typeInfo = types?.[faultType];
 
@@ -90,9 +111,14 @@ export default function SimulationView() {
 
         {/* Inject */}
         <Button type="primary" icon={<ThunderboltOutlined />} loading={injectMut.isPending} onClick={() => injectMut.mutate()}
-          disabled={!faultType || !targetId}>
+          disabled={!faultType || !targetId || !isTargetValid}>
           注入故障
         </Button>
+        {!isTargetValid && targetType && (
+          <Typography.Text type="danger">
+            目标类型不匹配：故障需要 <Tag>{targetType}</Tag>，当前选中不是{targetType}
+          </Typography.Text>
+        )}
 
         <Divider type="vertical" />
 
