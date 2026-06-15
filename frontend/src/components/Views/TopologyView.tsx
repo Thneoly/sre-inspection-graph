@@ -23,6 +23,7 @@ export default function TopologyView() {
     queryKey: ['topology', appCode, depth],
     queryFn: () => fetchTopology(appCode, depth).then(r => r.data),
     enabled: !!appCode,
+    refetchInterval: 3000,
   });
 
   const filteredData = useMemo(() => filterGraphData(data, layers), [data, layers]);

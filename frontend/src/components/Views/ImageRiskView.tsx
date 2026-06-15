@@ -18,6 +18,7 @@ export default function ImageRiskView() {
   const { data, isLoading } = useQuery({
     queryKey: ['image-risk', imageId],
     queryFn: () => fetchImageRisk(imageId).then(r => r.data),
+    refetchInterval: 3000,
   });
 
   const filteredData = useMemo(() => filterGraphData(data, layers), [data, layers]);

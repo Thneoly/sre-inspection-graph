@@ -22,6 +22,7 @@ export default function NodeImpactView() {
     queryKey: ['node-impact', nodeId, depth],
     queryFn: () => fetchNodeImpact(nodeId, depth).then(r => r.data),
     enabled: !!nodeId,
+    refetchInterval: 3000,
   });
 
   const filteredData = useMemo(() => filterGraphData(data, layers), [data, layers]);

@@ -19,6 +19,7 @@ export default function ConfigImpactView() {
     queryKey: ['config-impact', resourceId],
     queryFn: () => fetchConfigImpact(resourceId).then(r => r.data),
     enabled: !!resourceId,
+    refetchInterval: 3000,
   });
 
   const filteredData = useMemo(() => filterGraphData(data, layers), [data, layers]);

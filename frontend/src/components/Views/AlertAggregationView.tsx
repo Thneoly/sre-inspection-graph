@@ -20,6 +20,7 @@ export default function AlertAggregationView() {
   const { data, isLoading } = useQuery({
     queryKey: ['alert-aggregation', severity],
     queryFn: () => fetchAlertAggregation(severity).then(r => r.data),
+    refetchInterval: 3000,
   });
 
   const filteredData = useMemo(() => filterGraphData(data, layers), [data, layers]);

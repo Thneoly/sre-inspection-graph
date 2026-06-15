@@ -24,6 +24,7 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
   onNodeSelectRef.current = onNodeSelect;
   const onEdgeSelectRef = useRef(onEdgeSelect);
   onEdgeSelectRef.current = onEdgeSelect;
+  const firstLoad = useRef(true);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -42,6 +43,10 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy || !data) return;
+
+    // Save viewport state before updating (for hot-refresh, not first load)
+    const zoom = cy.zoom();
+    const pan = { ...cy.pan() };
 
     const elements: cytoscape.ElementDefinition[] = [];
     for (const node of data.nodes) {
@@ -75,44 +80,50 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
     cy.elements().remove();
     cy.add(elements);
 
-    cy.style()
-      .selector('node')
-      .style({
-        'label': 'data(label)',
-        'background-color': 'data(fillColor)',
-        'shape': 'data(shape)',
-        'width': 'data(size)',
-        'height': 'data(size)',
-        'font-size': '12px',
-        'color': 'data(textColor)',
-        'text-valign': 'bottom',
-        'text-halign': 'center',
-        'text-margin-y': 4,
-        'border-width': (ele: cytoscape.NodeSingular) =>
-          (String(ele.data('risk_level')) === 'high' || String(ele.data('risk_level')) === 'critical') ? 3 : 1.5,
-        'border-color': (ele: cytoscape.NodeSingular) => getRiskBorder(String(ele.data('risk_level'))),
-        'text-wrap': 'wrap',
-        'text-max-width': '140px',
-      })
-      .selector('node:selected')
-      .style({ 'border-width': 3, 'border-color': '#1976D2' })
-      .selector('edge')
-      .style({
-        'width': 'data(edgeWidth)',
-        'line-color': 'data(edgeColor)',
-        'line-style': 'data(edgeLine)',
-        'target-arrow-color': 'data(edgeColor)',
-        'target-arrow-shape': 'triangle',
-        'curve-style': 'bezier',
-        'label': 'data(label)',
-        'font-size': '11px',
-        'color': '#546E7A',
-        'font-weight': '500',
-        'text-rotation': 'autorotate',
-      });
-
-    cy.layout({ name: 'dagre', rankDir: 'TB', spacingFactor: 1.2, rankSep: 40, nodeSep: 30 }).run();
-    cy.fit(undefined, 50);
+    // Only re-layout and fit on first load — preserve zoom on poll refresh
+    if (firstLoad.current) {
+      firstLoad.current = false;
+      cy.style()
+        .selector('node')
+        .style({
+          'label': 'data(label)',
+          'background-color': 'data(fillColor)',
+          'shape': 'data(shape)',
+          'width': 'data(size)',
+          'height': 'data(size)',
+          'font-size': '12px',
+          'color': 'data(textColor)',
+          'text-valign': 'bottom',
+          'text-halign': 'center',
+          'text-margin-y': 4,
+          'border-width': (ele: cytoscape.NodeSingular) =>
+            (String(ele.data('risk_level')) === 'high' || String(ele.data('risk_level')) === 'critical') ? 3 : 1.5,
+          'border-color': (ele: cytoscape.NodeSingular) => getRiskBorder(String(ele.data('risk_level'))),
+          'text-wrap': 'wrap',
+          'text-max-width': '140px',
+        })
+        .selector('node:selected')
+        .style({ 'border-width': 3, 'border-color': '#1976D2' })
+        .selector('edge')
+        .style({
+          'width': 'data(edgeWidth)',
+          'line-color': 'data(edgeColor)',
+          'line-style': 'data(edgeLine)',
+          'target-arrow-color': 'data(edgeColor)',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'label': 'data(label)',
+          'font-size': '11px',
+          'color': '#546E7A',
+          'font-weight': '500',
+          'text-rotation': 'autorotate',
+        });
+      cy.layout({ name: 'dagre', rankDir: 'TB', spacingFactor: 1.2, rankSep: 40, nodeSep: 30 }).run();
+      cy.fit(undefined, 50);
+    } else {
+      // Hot-refresh: restore viewport without re-layout
+      cy.viewport({ zoom, pan });
+    }
   }, [data]);
 
   // Only re-fit when detail panel toggles (null ↔ id), not on every node click

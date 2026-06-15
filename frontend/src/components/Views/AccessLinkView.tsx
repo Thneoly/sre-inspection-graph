@@ -19,6 +19,7 @@ export default function AccessLinkView() {
     queryKey: ['access-link', appCode],
     queryFn: () => fetchAccessLink(appCode).then(r => r.data),
     enabled: !!appCode,
+    refetchInterval: 3000,
   });
 
   const filteredData = useMemo(() => filterGraphData(data, layers), [data, layers]);
