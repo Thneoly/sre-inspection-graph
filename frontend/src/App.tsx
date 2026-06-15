@@ -6,6 +6,7 @@ import NodeImpactView from './components/Views/NodeImpactView';
 import ConfigImpactView from './components/Views/ConfigImpactView';
 import ImageRiskView from './components/Views/ImageRiskView';
 import AlertAggregationView from './components/Views/AlertAggregationView';
+import SimulationView from './components/Views/SimulationView';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/image-risk" element={<ImageRiskView />} />
         <Route path="/alert-aggregation" element={<AlertAggregationView />} />
       </Route>
+      <Route path="/simulation" element={<SimulationView />} />
     </Routes>
   );
 }

@@ -10,6 +10,7 @@ from app.routers import (
     image_risk,
     alert_aggregation,
     health,
+    simulation,
 )
 
 app = FastAPI(
@@ -35,6 +36,7 @@ app.include_router(config_impact.router, prefix="/api/v1")
 app.include_router(image_risk.router, prefix="/api/v1")
 app.include_router(alert_aggregation.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
+app.include_router(simulation.router)
 
 
 @app.get("/")

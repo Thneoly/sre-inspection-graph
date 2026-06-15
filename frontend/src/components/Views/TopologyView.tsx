@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Select, Slider, Space, Typography } from 'antd';
+import { Select, Slider, Space, Typography, Button } from 'antd';
+import { ThunderboltOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { fetchTopology } from '../../api/client';
 import GraphCanvas from '../Graph/GraphCanvas';
 import GraphStatsBar from '../Graph/GraphStatsBar';
@@ -10,6 +12,7 @@ import LayerToggle from '../Graph/LayerToggle';
 import { filterGraphData, defaultLayers, type LayerName } from '../../utils/layers';
 
 export default function TopologyView() {
+  const navigate = useNavigate();
   const [appCode, setAppCode] = useState('order');
   const [depth, setDepth] = useState(5);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -39,6 +42,7 @@ export default function TopologyView() {
           <Slider min={1} max={10} value={depth} onChange={setDepth} style={{ width: 120 }} />
         </Space>
         <LayerToggle activeLayers={layers} onChange={setLayers} />
+        <Button size="small" icon={<ThunderboltOutlined />} onClick={() => navigate('/simulation')}>故障模拟</Button>
       </GraphToolbar>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
