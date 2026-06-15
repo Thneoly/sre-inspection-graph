@@ -55,9 +55,6 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
     prevNodeIds.current = newNodeIds;
     prevEdgeIds.current = newEdgeIds;
 
-    const zoom = cy.zoom();
-    const pan = { ...cy.pan() };
-
     const elements: cytoscape.ElementDefinition[] = [];
     for (const node of data.nodes) {
       const style = getNodeStyle(node.type);
@@ -87,51 +84,22 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
       });
     }
 
-    cy.elements().remove();
-    cy.add(elements);
-
-    // Only re-layout when graph structure changes — just update colors on poll refresh
     if (structureChanged) {
-      cy.style()
-        .selector('node')
-        .style({
-          'label': 'data(label)',
-          'background-color': 'data(fillColor)',
-          'shape': 'data(shape)',
-          'width': 'data(size)',
-          'height': 'data(size)',
-          'font-size': '12px',
-          'color': 'data(textColor)',
-          'text-valign': 'bottom',
-          'text-halign': 'center',
-          'text-margin-y': 4,
-          'border-width': (ele: cytoscape.NodeSingular) =>
-            (String(ele.data('risk_level')) === 'high' || String(ele.data('risk_level')) === 'critical') ? 3 : 1.5,
-          'border-color': (ele: cytoscape.NodeSingular) => getRiskBorder(String(ele.data('risk_level'))),
-          'text-wrap': 'wrap',
-          'text-max-width': '140px',
-        })
-        .selector('node:selected')
-        .style({ 'border-width': 3, 'border-color': '#1976D2' })
-        .selector('edge')
-        .style({
-          'width': 'data(edgeWidth)',
-          'line-color': 'data(edgeColor)',
-          'line-style': 'data(edgeLine)',
-          'target-arrow-color': 'data(edgeColor)',
-          'target-arrow-shape': 'triangle',
-          'curve-style': 'bezier',
-          'label': 'data(label)',
-          'font-size': '11px',
-          'color': '#546E7A',
-          'font-weight': '500',
-          'text-rotation': 'autorotate',
-        });
+      // Full rebuild: new nodes/edges → remove, add, layout, fit
+      cy.elements().remove();
+      cy.add(elements);
+      applyStyles(cy);
       cy.layout({ name: 'dagre', rankDir: 'TB', spacingFactor: 1.2, rankSep: 40, nodeSep: 30 }).run();
       cy.fit(undefined, 50);
     } else {
-      // Hot-refresh: restore viewport without re-layout
-      cy.viewport({ zoom, pan });
+      // In-place update: just update data (fillColor/textColor/health_status)
+      // without touching positions
+      for (const el of elements) {
+        const existing = cy.getElementById(el.data.id as string);
+        if (existing.length > 0) {
+          existing.data(el.data);
+        }
+      }
     }
   }, [data]);
 
@@ -159,4 +127,33 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
   if (a.size !== b.size) return false;
   for (const v of a) if (!b.has(v)) return false;
   return true;
+}
+
+function applyStyles(cy: Core) {
+  cy.style()
+    .selector('node')
+    .style({
+      'label': 'data(label)',
+      'background-color': 'data(fillColor)',
+      'shape': 'data(shape)',
+      'width': 'data(size)',
+      'height': 'data(size)',
+      'font-size': '12px',
+      'color': 'data(textColor)',
+      'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 4,
+      'border-width': (ele: cytoscape.NodeSingular) =>
+        (String(ele.data('risk_level')) === 'high' || String(ele.data('risk_level')) === 'critical') ? 3 : 1.5,
+      'border-color': (ele: cytoscape.NodeSingular) => getRiskBorder(String(ele.data('risk_level'))),
+      'text-wrap': 'wrap', 'text-max-width': '140px',
+    })
+    .selector('node:selected')
+    .style({ 'border-width': 3, 'border-color': '#1976D2' })
+    .selector('edge')
+    .style({
+      'width': 'data(edgeWidth)', 'line-color': 'data(edgeColor)',
+      'line-style': 'data(edgeLine)', 'target-arrow-color': 'data(edgeColor)',
+      'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+      'label': 'data(label)', 'font-size': '11px',
+      'color': '#546E7A', 'font-weight': '500', 'text-rotation': 'autorotate',
+    });
 }
