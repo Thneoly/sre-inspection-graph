@@ -24,7 +24,8 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
   onNodeSelectRef.current = onNodeSelect;
   const onEdgeSelectRef = useRef(onEdgeSelect);
   onEdgeSelectRef.current = onEdgeSelect;
-  const firstLoad = useRef(true);
+  const prevNodeIds = useRef<Set<string>>(new Set());
+  const prevEdgeIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -44,7 +45,16 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
     const cy = cyRef.current;
     if (!cy || !data) return;
 
-    // Save viewport state before updating (for hot-refresh, not first load)
+    // Check if graph structure changed (new/removed nodes or edges)
+    const newNodeIds = new Set(data.nodes.map(n => n.id));
+    const newEdgeIds = new Set(data.edges.map(e => e.id));
+    const structureChanged =
+      prevNodeIds.current.size === 0 ||
+      !setsEqual(prevNodeIds.current, newNodeIds) ||
+      !setsEqual(prevEdgeIds.current, newEdgeIds);
+    prevNodeIds.current = newNodeIds;
+    prevEdgeIds.current = newEdgeIds;
+
     const zoom = cy.zoom();
     const pan = { ...cy.pan() };
 
@@ -80,9 +90,8 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
     cy.elements().remove();
     cy.add(elements);
 
-    // Only re-layout and fit on first load — preserve zoom on poll refresh
-    if (firstLoad.current) {
-      firstLoad.current = false;
+    // Only re-layout when graph structure changes — just update colors on poll refresh
+    if (structureChanged) {
       cy.style()
         .selector('node')
         .style({
@@ -144,4 +153,10 @@ export default function GraphCanvas({ data, isLoading, onNodeSelect, onEdgeSelec
       {isLoading && <div className="graph-loading">加载中...</div>}
     </div>
   );
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
 }
