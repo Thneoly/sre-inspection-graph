@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from app.datasource.models import FaultInjection, FaultStage, MetricSnapshot
 from app.datasource.store import store
+from app.datasource.thresholds import compute_health
 from app.db.neo4j_client import get_driver
 
 FAULT_DEFS = {
@@ -132,6 +133,8 @@ def inject(fault_type: str, target_id: str) -> tuple[FaultInjection | None, str 
     # Apply stage 0 to target and blast radius
     _apply_stage(fault, 0)
     _apply_blast_radius(fault, 0)
+    _propagate(fault.target_id, fault.stages[0].health, fault.stages[0].risk,
+               ft, fault.fault_type, 0)
 
     # Persist to Neo4j for recovery on restart
     _persist_fault(fault)
@@ -148,7 +151,7 @@ def step(step_seconds: int = 60) -> int:
             fault.status = "resolved"
             _set_node_props(fault.target_id, health="normal", risk="low")
             _reset_blast_radius(fault)
-            _propagate(fault.target_id, "normal", "low", ft)
+            _propagate(fault.target_id, "normal", "low", ft, fault.fault_type, 0)
             _update_fault_in_neo4j(fault)
         else:
             fault.status = "escalating" if fault.stages[ns].triggers_alert else "propagating"
@@ -156,7 +159,7 @@ def step(step_seconds: int = 60) -> int:
             _apply_stage(fault, ns)
             _apply_blast_radius(fault, ns)
             stg = fault.stages[ns]
-            _propagate(fault.target_id, stg.health, stg.risk, ft)
+            _propagate(fault.target_id, stg.health, stg.risk, ft, fault.fault_type, stg.offset_seconds)
             _update_fault_in_neo4j(fault)
         updated += 1
     return updated
@@ -202,14 +205,16 @@ def _apply_blast_radius(fault: FaultInjection, stage_idx: int):
     if not br:
         return
     stg = fault.stages[stage_idx]
+    elapsed = stg.offset_seconds if stage_idx > 0 else 0
     affected = _find_blast_targets(fault.target_id, br)
     for nid in affected:
         _set_node_props(nid, health=stg.health, risk=stg.risk)
         node = store.get_node(nid)
         if node:
             node.properties[stg.metric_name] = stg.metric_value
-        # Cascade from each blast node to ITS upstream
-        _cascade_upstream(nid, stg.health, stg.risk, ft.get("blast_propagate_to", []))
+        # Cascade with thresholds — each upstream type degrades at its own pace
+        _cascade_upstream(nid, stg.health, stg.risk, ft.get("blast_propagate_to", []),
+                          fault.fault_type, elapsed)
 
 
 def _reset_blast_radius(fault: FaultInjection):
@@ -221,22 +226,24 @@ def _reset_blast_radius(fault: FaultInjection):
     affected = _find_blast_targets(fault.target_id, br)
     for nid in affected:
         _set_node_props(nid, health="normal", risk="low")
-        _cascade_upstream(nid, "normal", "low", ft.get("blast_propagate_to", []))
+        _cascade_upstream(nid, "normal", "low", ft.get("blast_propagate_to", []),
+                          fault.fault_type, 0)
 
 
-def _cascade_upstream(node_id: str, health: str, risk: str, chain: list[str]):
-    """Propagate health/risk up the dependency chain from a node."""
+def _cascade_upstream(node_id: str, source_health: str, source_risk: str, chain: list[str],
+                      fault_type: str = "", elapsed_s: int = 0):
+    """Propagate health/risk up the dependency chain, with per-type thresholds."""
     current = node_id
     for ptype in chain:
         found = False
         for edge in store.get_all_edges():
-            # Look for edges where current is the target → walk upstream to source
             if edge.target_id == current and edge.relationship_type in (
                     "CONTAINS", "DEPLOYED_AS", "USES", "DEPENDS_ON", "SCHEDULED_ON", "BELONGS_TO", "ROUTES_TO", "EXPOSES"):
                 src = store.get_node(edge.source_id)
                 if src and src.type == ptype:
-                    src.properties["health_status"] = health
-                    src.properties["risk_level"] = risk
+                    h, r = compute_health(ptype, fault_type, source_health, source_risk, elapsed_s)
+                    src.properties["health_status"] = h
+                    src.properties["risk_level"] = r
                     current = edge.source_id
                     found = True
                     break
@@ -308,11 +315,12 @@ def _set_node_props(node_id: str, **kwargs):
         node.properties.update(mapped)
 
 
-def _propagate(target_id: str, health: str, risk: str, ft: dict):
+def _propagate(target_id: str, health: str, risk: str, ft: dict, fault_type: str = "", elapsed_s: int = 0):
     for ptype in ft.get("propagate_to", []):
         for edge in store.get_all_edges():
             if edge.target_id == target_id and edge.relationship_type in ("CONTAINS", "DEPLOYED_AS", "USES", "DEPENDS_ON"):
                 src = store.get_node(edge.source_id)
                 if src and src.type == ptype:
-                    src.properties["health_status"] = health
-                    src.properties["risk_level"] = risk
+                    h, r = compute_health(ptype, fault_type, health, risk, elapsed_s)
+                    src.properties["health_status"] = h
+                    src.properties["risk_level"] = r
