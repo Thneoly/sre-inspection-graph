@@ -1,19 +1,36 @@
 """Metrics Service — 指标值处理和阈值检查"""
+from datetime import datetime, date
 
 
-def format_metrics_from_snapshots(snapshots: list[dict]) -> list[dict]:
+def _serialize(val):
+    """Convert Neo4j types to JSON-safe Python types"""
+    if val is None:
+        return ""
+    if isinstance(val, (datetime, date)):
+        return val.isoformat()
+    if hasattr(val, 'iso_format'):
+        return val.iso_format()
+    if hasattr(val, 'to_native'):
+        n = val.to_native()
+        if isinstance(n, (datetime, date)):
+            return n.isoformat()
+        return str(n)
+    return val
+
+
+def format_metrics_from_snapshots(snapshots: list) -> list[dict]:
     """将 MetricSnapshot 查询结果格式化为 API 响应"""
     metrics = []
     for snap in snapshots:
         metrics.append({
-            "id": snap.get("snapshot_id", ""),
-            "metric_name": snap.get("metric_name", ""),
+            "id": str(snap.get("snapshot_id", "")),
+            "metric_name": str(snap.get("metric_name", "")),
             "current_value": float(snap.get("current_value", 0)),
-            "unit": snap.get("unit", ""),
-            "fetched_at": snap.get("fetched_at", ""),
-            "is_stale": snap.get("is_stale", "false") == "true",
-            "warning_breached": snap.get("warning_breached", "false") == "true",
-            "critical_breached": snap.get("critical_breached", "false") == "true",
+            "unit": str(snap.get("unit", "")),
+            "fetched_at": _serialize(snap.get("fetched_at")),
+            "is_stale": str(snap.get("is_stale", "false")) == "true",
+            "warning_breached": str(snap.get("warning_breached", "false")) == "true",
+            "critical_breached": str(snap.get("critical_breached", "false")) == "true",
             "warning_threshold": _safe_float(snap.get("warning_threshold")),
             "critical_threshold": _safe_float(snap.get("critical_threshold")),
         })
