@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from app.datasource.models import FaultInjection, FaultStage, MetricSnapshot
 from app.datasource.store import store
+from app.db.neo4j_client import get_driver
 
 FAULT_DEFS = {
     "cpu_spike": {
@@ -132,6 +133,9 @@ def inject(fault_type: str, target_id: str) -> tuple[FaultInjection | None, str 
     _apply_stage(fault, 0)
     _apply_blast_radius(fault, 0)
 
+    # Persist to Neo4j for recovery on restart
+    _persist_fault(fault)
+
     return fault, None
 
 
@@ -145,6 +149,7 @@ def step(step_seconds: int = 60) -> int:
             _set_node_props(fault.target_id, health="normal", risk="low")
             _reset_blast_radius(fault)
             _propagate(fault.target_id, "normal", "low", ft)
+            _update_fault_in_neo4j(fault)
         else:
             fault.status = "escalating" if fault.stages[ns].triggers_alert else "propagating"
             fault.current_stage = ns
@@ -152,6 +157,7 @@ def step(step_seconds: int = 60) -> int:
             _apply_blast_radius(fault, ns)
             stg = fault.stages[ns]
             _propagate(fault.target_id, stg.health, stg.risk, ft)
+            _update_fault_in_neo4j(fault)
         updated += 1
     return updated
 
@@ -260,6 +266,31 @@ def _find_blast_targets(target_id: str, br: dict) -> set[str]:
                     if len(result) >= br.get("max", 10):
                         break
     return result
+
+
+def _persist_fault(fault: FaultInjection):
+    """Write fault to Neo4j for recovery on restart."""
+    driver = get_driver()
+    with driver.session() as s:
+        s.run("""
+            MERGE (fs:FaultScenario {scenario_id: $sid})
+            SET fs.name=$n, fs.fault_type=$ft, fs.target_resource_id=$tid,
+                fs.status=$st, fs.current_stage=$cs, fs.total_stages=$ts,
+                fs.injected_at=datetime(), fs.updated_at=datetime(),
+                fs.version='v1'
+        """, sid=fault.injection_id, n=FAULT_DEFS.get(fault.fault_type, {}).get("name", fault.fault_type),
+             ft=fault.fault_type, tid=fault.target_id,
+             st=fault.status, cs=fault.current_stage, ts=fault.total_stages)
+
+
+def _update_fault_in_neo4j(fault: FaultInjection):
+    """Update fault stage/status in Neo4j."""
+    driver = get_driver()
+    with driver.session() as s:
+        s.run("""
+            MATCH (fs:FaultScenario {scenario_id: $sid})
+            SET fs.status=$st, fs.current_stage=$cs, fs.updated_at=datetime()
+        """, sid=fault.injection_id, st=fault.status, cs=fault.current_stage)
 
 
 def _set_node_props(node_id: str, **props):

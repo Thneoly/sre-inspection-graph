@@ -5,11 +5,10 @@ from app.db.neo4j_client import run_query
 
 
 def load_baseline():
-    """从 Neo4j 加载所有节点和边到内存"""
+    """从 Neo4j 加载所有节点和边到内存，并恢复活跃故障状态"""
     if store._initialized:
         return
 
-    # Map: element_id → node_id (Neo4j internal ID → business ID)
     eid_to_nid: dict[str, str] = {}
 
     # Load nodes
@@ -71,6 +70,10 @@ def load_baseline():
         store.upsert_edge(edge)
 
     store._initialized = True
+
+    # Recover active faults from Neo4j
+    _recover_faults()
+
     print(f"DSS loaded: {len(store.nodes)} nodes, {len(store.edges)} edges")
 
 
@@ -97,3 +100,56 @@ def reset_dss():
     store._initialized = False
     load_baseline()
     print(f"DSS reset complete. {len(store.nodes)} nodes at baseline.")
+
+
+def _recover_faults():
+    """从 Neo4j 恢复活跃故障状态到 DSS"""
+    from app.datasource.fault_injector import FAULT_DEFS, FaultStage, FaultInjection
+    from datetime import datetime, timezone
+
+    rows = run_query("MATCH (fs:FaultScenario) WHERE fs.status IN ['injected','escalating','propagating'] RETURN fs")
+    if not rows:
+        return
+
+    for row in rows:
+        fs = row["fs"]
+        fid = fs.get("scenario_id", "")
+        ft_code = fs.get("fault_type", "")
+        tid = fs.get("target_resource_id", "")
+        stage = int(fs.get("current_stage", 0))
+        ft = FAULT_DEFS.get(ft_code)
+        if not ft:
+            continue
+
+        # Reconstruct fault with stages
+        stages = []
+        for i, s in enumerate(ft["stages"]):
+            stages.append(FaultStage(
+                sequence=i, offset_seconds=s["s"],
+                health=s["h"], risk=s["r"],
+                metric_name=s.get("m", ""), metric_value=s.get("v", 0.0),
+                unit=s.get("u", "percent"),
+                triggers_alert=s.get("alert", False),
+                triggers_finding=s.get("finding", False),
+            ))
+
+        fault = FaultInjection(
+            injection_id=fid, fault_type=ft_code, target_id=tid,
+            current_stage=stage, total_stages=len(stages),
+            status=fs.get("status", "injected"),
+            injected_at=str(fs.get("injected_at", "")),
+            stages=stages,
+        )
+        store.add_fault(fault)
+
+        # Re-apply current stage to target and blast radius
+        from app.datasource.fault_injector import _apply_stage, _apply_blast_radius
+        _apply_stage(fault, stage)
+        _apply_blast_radius(fault, stage)
+
+        # Re-propagate
+        stg = stages[stage]
+        from app.datasource.fault_injector import _propagate
+        _propagate(tid, stg.health, stg.risk, ft)
+
+    print(f"DSS recovered {len(rows)} active faults from Neo4j")
