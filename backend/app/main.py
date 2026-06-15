@@ -11,7 +11,11 @@ from app.routers import (
     alert_aggregation,
     health,
     simulation,
+    datasource,
 )
+
+# Auto-init DSS on startup
+from app.datasource.loader import load_baseline
 
 app = FastAPI(
     title="SRE Inspection Graph API",
@@ -37,6 +41,15 @@ app.include_router(image_risk.router, prefix="/api/v1")
 app.include_router(alert_aggregation.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(simulation.router)
+app.include_router(datasource.router)
+
+
+@app.on_event("startup")
+def startup():
+    try:
+        load_baseline()
+    except Exception as e:
+        print(f"DSS init warning: {e}")
 
 
 @app.get("/")
