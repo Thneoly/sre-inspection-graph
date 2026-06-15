@@ -10,27 +10,27 @@ import NodeDetailPanel from '../Graph/NodeDetailPanel';
 
 // ── API helpers ──
 async function fetchTypes() {
-  const { data } = await api.get('/simulation/types');
+  const { data } = await api.get('/datasource/fault-types');
   return data.types as Record<string, { name: string; category: string; target_type: string; stages: number; duration_s: number }>;
 }
 
 async function fetchStatus() {
-  const { data } = await api.get('/simulation/status');
+  const { data } = await api.get('/datasource/fault-status');
   return data as { active: Record<string, unknown>[]; active_count: number; unhealthy_nodes: Record<string, string>[] };
 }
 
 async function injectFault(ft: string, tid: string) {
-  const { data } = await api.post('/simulation/inject', { fault_type: ft, target_id: tid });
+  const { data } = await api.post('/datasource/inject-fault', { fault_type: ft, target_id: tid });
   return data;
 }
 
 async function stepSim(seconds: number) {
-  const { data } = await api.post(`/simulation/step?seconds=${seconds}`);
+  const { data } = await api.post(`/datasource/step?seconds=${seconds}`);
   return data;
 }
 
 async function resetSim() {
-  const { data } = await api.post('/simulation/reset');
+  const { data } = await api.post('/datasource/reset');
   return data;
 }
 

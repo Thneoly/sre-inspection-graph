@@ -137,7 +137,16 @@ def patch_edge(edge_id: str, update: EdgeUpdate):
 
 @router.get("/fault-types")
 def fault_types():
-    return {"types": {k: {"name": v["name"], "target_type": v["target_type"]} for k, v in FAULT_DEFS.items()}}
+    return {"types": {
+        k: {
+            "name": v["name"],
+            "target_type": v["target_type"],
+            "category": v.get("category", v["name"]),
+            "stages": len(v["stages"]),
+            "duration_s": v["stages"][-1]["s"],
+        }
+        for k, v in FAULT_DEFS.items()
+    }}
 
 
 @router.post("/inject-fault")
@@ -145,6 +154,7 @@ def inject_fault(inj: InjectRequest):
     fault, error = inject(inj.fault_type, inj.target_id)
     if error:
         raise HTTPException(400, error)
+    sync_to_neo4j()  # push DSS state to Neo4j immediately
     return {"status": "ok", "injection_id": fault.injection_id, "stages": fault.total_stages,
             "target_type": FAULT_DEFS.get(inj.fault_type, {}).get("target_type", "")}
 
@@ -152,6 +162,7 @@ def inject_fault(inj: InjectRequest):
 @router.post("/step")
 def step_time(seconds: int = Query(default=60, ge=10, le=3600)):
     n = step(seconds)
+    sync_to_neo4j()  # push updated health/risk to Neo4j
     return {"status": "ok", "seconds": seconds, "updated": n}
 
 
@@ -169,6 +180,7 @@ def fault_status():
 @router.post("/reset")
 def reset_all():
     reset()
+    sync_to_neo4j()
     return {"status": "ok"}
 
 
