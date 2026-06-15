@@ -7,8 +7,8 @@ FAULT_DEFS = {
     "cpu_spike": {
         "name": "Pod CPU 飙升", "target_type": "Pod",
         "propagate_to": ["Deployment", "ApplicationComponent"],
-        # blast_radius: also affect other Pods in the same Deployment
         "blast_radius": {"edge": "CONTAINS", "direction": "reverse", "target_type": "Pod", "max": 3},
+        "blast_propagate_to": ["Deployment", "ApplicationComponent", "Application"],
         "stages": [
             {"s": 0,   "h": "normal",   "r": "low",     "v": 45.2, "m": "cpu_usage", "u": "percent"},
             {"s": 180, "h": "warning",  "r": "medium",  "v": 86.5, "m": "cpu_usage", "u": "percent", "alert": True},
@@ -22,6 +22,7 @@ FAULT_DEFS = {
         "name": "内存泄漏", "target_type": "Pod",
         "propagate_to": ["Deployment"],
         "blast_radius": {"edge": "CONTAINS", "direction": "reverse", "target_type": "Pod", "max": 2},
+        "blast_propagate_to": ["Deployment"],
         "stages": [
             {"s": 0,   "h": "normal",   "r": "low",     "v": 55.0, "m": "memory_usage", "u": "percent"},
             {"s": 300, "h": "warning",  "r": "medium",  "v": 85.0, "m": "memory_usage", "u": "percent", "alert": True},
@@ -35,6 +36,7 @@ FAULT_DEFS = {
         "name": "Pod CrashLoop", "target_type": "Pod",
         "propagate_to": ["Deployment", "ApplicationComponent"],
         "blast_radius": {"edge": "CONTAINS", "direction": "reverse", "target_type": "Pod", "max": 3},
+        "blast_propagate_to": ["Deployment", "ApplicationComponent", "Application"],
         "stages": [
             {"s": 0,   "h": "normal",   "r": "low",     "v": 0,  "m": "restart_count", "u": "count"},
             {"s": 180, "h": "warning",  "r": "medium",  "v": 5,  "m": "restart_count", "u": "count"},
@@ -46,8 +48,9 @@ FAULT_DEFS = {
     "node_disk_pressure": {
         "name": "节点磁盘压力", "target_type": "KubernetesNode",
         "propagate_to": ["Pod"],
-        # ALL Pods on this node are affected
         "blast_radius": {"edge": "SCHEDULED_ON", "direction": "reverse", "target_type": "Pod", "max": 10},
+        # Multi-hop: blast nodes → their upstream (Pod→Deployment→Component→App)
+        "blast_propagate_to": ["Deployment", "ApplicationComponent", "Application"],
         "stages": [
             {"s": 0,    "h": "normal",   "r": "low",     "v": 55.0, "m": "disk_usage", "u": "percent"},
             {"s": 600,  "h": "warning",  "r": "medium",  "v": 88.0, "m": "disk_usage", "u": "percent", "alert": True},
@@ -60,8 +63,8 @@ FAULT_DEFS = {
     "redis_unavailable": {
         "name": "Redis 不可达", "target_type": "Redis",
         "propagate_to": ["Deployment", "ApplicationComponent"],
-        # All Deployments using this Redis are affected
         "blast_radius": {"edge": "USES", "direction": "reverse", "target_type": "Deployment", "max": 5},
+        "blast_propagate_to": ["ApplicationComponent", "Application"],
         "stages": [
             {"s": 0,   "h": "critical", "r": "high",    "v": 0.95, "m": "error_rate", "u": "fraction", "alert": True},
             {"s": 120, "h": "critical", "r": "critical", "v": 1.0,  "m": "error_rate", "u": "fraction", "alert": True, "finding": True},
@@ -73,6 +76,7 @@ FAULT_DEFS = {
         "name": "MySQL 慢查询", "target_type": "MySQL",
         "propagate_to": ["Deployment", "ApplicationComponent"],
         "blast_radius": {"edge": "USES", "direction": "reverse", "target_type": "Deployment", "max": 5},
+        "blast_propagate_to": ["ApplicationComponent", "Application"],
         "stages": [
             {"s": 0,   "h": "warning",  "r": "medium",  "v": 45.0, "m": "qps", "u": "requests/s"},
             {"s": 300, "h": "critical", "r": "high",    "v": 12.0, "m": "qps", "u": "requests/s", "alert": True},
@@ -186,7 +190,7 @@ def _apply_stage(fault: FaultInjection, stage_idx: int):
 
 
 def _apply_blast_radius(fault: FaultInjection, stage_idx: int):
-    """Apply stage to all nodes in the blast radius."""
+    """Apply stage to all blast radius nodes AND cascade their upstream."""
     ft = FAULT_DEFS.get(fault.fault_type, {})
     br = ft.get("blast_radius")
     if not br:
@@ -198,10 +202,12 @@ def _apply_blast_radius(fault: FaultInjection, stage_idx: int):
         node = store.get_node(nid)
         if node:
             node.properties[stg.metric_name] = stg.metric_value
+        # Cascade from each blast node to ITS upstream
+        _cascade_upstream(nid, stg.health, stg.risk, ft.get("blast_propagate_to", []))
 
 
 def _reset_blast_radius(fault: FaultInjection):
-    """Reset blast radius nodes to normal."""
+    """Reset blast radius nodes and their upstream."""
     ft = FAULT_DEFS.get(fault.fault_type, {})
     br = ft.get("blast_radius")
     if not br:
@@ -209,6 +215,27 @@ def _reset_blast_radius(fault: FaultInjection):
     affected = _find_blast_targets(fault.target_id, br)
     for nid in affected:
         _set_node_props(nid, health="normal", risk="low")
+        _cascade_upstream(nid, "normal", "low", ft.get("blast_propagate_to", []))
+
+
+def _cascade_upstream(node_id: str, health: str, risk: str, chain: list[str]):
+    """Propagate health/risk up the dependency chain from a node."""
+    current = node_id
+    for ptype in chain:
+        found = False
+        for edge in store.get_all_edges():
+            # Look for edges where current is the target → walk upstream to source
+            if edge.target_id == current and edge.relationship_type in (
+                    "CONTAINS", "DEPLOYED_AS", "USES", "DEPENDS_ON", "SCHEDULED_ON", "BELONGS_TO", "ROUTES_TO", "EXPOSES"):
+                src = store.get_node(edge.source_id)
+                if src and src.type == ptype:
+                    src.properties["health_status"] = health
+                    src.properties["risk_level"] = risk
+                    current = edge.source_id
+                    found = True
+                    break
+        if not found:
+            break
 
 
 def _find_blast_targets(target_id: str, br: dict) -> set[str]:
