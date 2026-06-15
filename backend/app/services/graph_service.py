@@ -137,12 +137,22 @@ def _add_graph_edge(rel, edges_map):
 
 
 def _serialize_value(value):
-    """处理 Neo4j 返回的特殊类型"""
+    """处理 Neo4j 返回的特殊类型 → JSON-serializable Python types"""
     from datetime import datetime, date
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
-    if hasattr(value, '__class__') and 'neo4j' in str(type(value)):
+    # Neo4j temporal types (DateTime, Date, Time, Duration)
+    if hasattr(value, 'iso_format'):
+        return value.iso_format()
+    if hasattr(value, 'to_native'):
+        native = value.to_native()
+        if isinstance(native, (datetime, date)):
+            return native.isoformat()
+        return str(native)
+    # Catch-all for other Neo4j types
+    cls_name = type(value).__name__
+    if 'neo4j' in str(type(value)).lower():
         return str(value)
     return value
