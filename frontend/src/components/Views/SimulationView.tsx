@@ -52,13 +52,6 @@ export default function SimulationView() {
   const { data: types } = useQuery({ queryKey: ['sim-types'], queryFn: fetchTypes });
   const { data: simStatus, refetch: refetchStatus } = useQuery({ queryKey: ['sim-status'], queryFn: fetchStatus, refetchInterval: 5000 });
   const { data: topoData } = useQuery({ queryKey: ['topology', 'order', 5], queryFn: () => fetchTopology('order', 5) });
-  const [stepSec, setStepSec] = useState(300);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isEdge, setIsEdge] = useState(false);
-
-  const { data: types } = useQuery({ queryKey: ['sim-types'], queryFn: fetchTypes });
-  const { data: simStatus, refetch: refetchStatus } = useQuery({ queryKey: ['sim-status'], queryFn: fetchStatus, refetchInterval: 5000 });
-  const { data: topoData } = useQuery({ queryKey: ['topology', 'order', 5], queryFn: () => fetchTopology('order', 5) });
 
   const injectMut = useMutation({ mutationFn: () => injectFault(faultType, targetId), onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success('故障已注入'); } });
   const stepMut = useMutation({ mutationFn: () => stepSim(stepSec), onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success(`推进 ${stepSec}s`); } });
