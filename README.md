@@ -71,9 +71,11 @@ make dev-frontend   # 终端3: 前端 (HMR)
 访问 `/simulation` 或从拓扑页右上角「⚡ 故障模拟」进入。
 
 - **7 种故障类型**: CPU 飙升 / 内存泄漏 / Pod CrashLoop / 节点磁盘压力 / Service 无后端 / MySQL 慢查询 / Redis 不可达
-- **数据维度注入**: 每次 step 写入 MetricSnapshot + AlertEvent + InspectionFinding
-- **自动传播**: 故障沿 DEPLOYED_AS / CONTAINS / USES / DEPENDS_ON 向上游传播
-- **时间线**: 注入 → 检测 → 告警 → 巡检发现 → 恢复
+- **目标校验**: 自动过滤兼容目标（如 CPU 飙升只能注入到 Pod，不能注入到 MySQL）
+- **爆炸半径 + 多级级联**: 注入节点故障后，blast radius 波及关联节点，cascade 沿依赖链向上传播
+- **每类型独立阈值**: 不同资源类型的容错率和告警延迟不同（如 Application 比 Pod 更"扛"）
+- **推进机制**: 每次点击「推进下一阶段」固定前进 1 个阶段，阶段进度可见（如 2/6）
+- **数据持久化**: 故障场景持久化到 Neo4j，uvicorn 重启后自动恢复活跃故障
 
 ## 图层面板
 

@@ -116,3 +116,10 @@ scripts/
 ## Fault Types (7)
 
 cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints, mysql_slow_query, redis_unavailable
+
+- Target validation: fault type must match target node type (e.g. cpu_spike → Pod only)
+- Blast radius: faults affect connected nodes (e.g. node_disk_pressure → all Pods on that Node)
+- Cascade: `blast_propagate_to` chain propagates upstream (Pod→Deployment→Component→Application)
+- Thresholds: each resource type has `degradation_delay`, `warning_at_pct`, `critical_at_pct`, `risk_multiplier`
+- Step always advances 1 stage per click (not time-based). Stage progress visible as "阶段 2/6".
+- Faults persist to Neo4j via `persist_fault()` / `update_fault_in_neo4j()`. `_recover_faults()` on startup.
