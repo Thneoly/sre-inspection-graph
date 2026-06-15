@@ -293,10 +293,19 @@ def _update_fault_in_neo4j(fault: FaultInjection):
         """, sid=fault.injection_id, st=fault.status, cs=fault.current_stage)
 
 
-def _set_node_props(node_id: str, **props):
+def _set_node_props(node_id: str, **kwargs):
     node = store.get_node(node_id)
     if node:
-        node.properties.update(props)
+        # Map shorthand keys to full property names
+        mapped = {}
+        for k, v in kwargs.items():
+            if k == "health":
+                mapped["health_status"] = v
+            elif k == "risk":
+                mapped["risk_level"] = v
+            else:
+                mapped[k] = v
+        node.properties.update(mapped)
 
 
 def _propagate(target_id: str, health: str, risk: str, ft: dict):
