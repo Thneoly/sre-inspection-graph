@@ -1,6 +1,6 @@
 ROOT_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: setup mock-data infra up down clean dev-api dev-frontend test test-cov
+.PHONY: setup mock-data infra infra_down infra_up up down clean dev-api dev-api-kill dev-frontend test test-cov
 
 # Install dependencies (first time setup)
 setup:
@@ -36,8 +36,12 @@ clean:
 	docker compose down -v
 	rm -f scripts/output/*.csv scripts/output/*.cypher
 
+# Kill stale API process (if Ctrl-C didn't clean up)
+dev-api-kill:
+	@lsof -ti:8000 | xargs kill -9 2>/dev/null; echo "port 8000 freed"
+
 # Dev mode: start API only (Neo4j must be running)
-dev-api:
+dev-api: dev-api-kill
 	cd $(ROOT_DIR)backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # Dev mode: start frontend only
