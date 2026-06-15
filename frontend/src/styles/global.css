@@ -1,0 +1,57 @@
+/* Graph canvas */
+body, #root { height: 100%; overflow: hidden; }
+
+.graph-container {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, #f5f6fa 0%, #e8ecf1 100%);
+}
+
+.graph-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.graph-loading {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.08);
+  color: #666;
+}
+
+/* Legend */
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #fafafa;
+  font-size: 11px;
+  border-top: 1px solid #e8e8e8;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legend-label {
+  color: #666;
+}
+
+.legend-separator {
+  color: #ccc;
+  margin: 0 4px;
+}
+
+/* Make antd Drawer not block graph interaction */
+.ant-drawer-content-wrapper {
+  box-shadow: -6px 0 16px -8px rgba(0, 0, 0, 0.5) !important;
+}

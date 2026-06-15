@@ -1,0 +1,14 @@
+﻿edge_id,source_node_id,relationship_type,target_node_id,relationship_name,dependency_strength,is_required,discovery_method,health_status,risk_signal,last_verified_at,attrs_json
+e001,env:prod,CONTAINS,app:order,包含,强,是,CMDB/服务目录,normal,,2026-06-15T09:00:00+08:00,{}
+e002,app:order,CONTAINS,comp:order-api,包含,强,是,服务目录,normal,,2026-06-15T09:00:00+08:00,{}
+e003,comp:order-api,DEPLOYED_AS,deploy:cce-prod-01:order:order-api,部署为,强,是,发布平台/K8s API,warning,Deployment 可用副本不足,2026-06-15T09:00:00+08:00,{}
+e004,deploy:cce-prod-01:order:order-api,DEPLOYED_IN,ns:cce-prod-01:order,部署在,强,是,Kubernetes API,normal,,2026-06-15T09:00:00+08:00,{}
+e005,ns:cce-prod-01:order,BELONGS_TO,cluster:cce-prod-01,属于,强,是,Kubernetes API,normal,,2026-06-15T09:00:00+08:00,{}
+e006,svc:cce-prod-01:order:order-api,EXPOSES,deploy:cce-prod-01:order:order-api,暴露,强,是,Kubernetes API,normal,,2026-06-15T09:00:00+08:00,{}
+e007,ing:cce-prod-01:order:order-api,ROUTES_TO,svc:cce-prod-01:order:order-api,路由到,强,是,Kubernetes API,normal,,2026-06-15T09:00:00+08:00,{}
+e008,deploy:cce-prod-01:order:order-api,USES,cm:cce-prod-01:order:order-api-config,使用,中,是,Kubernetes API,normal,,2026-06-15T09:00:00+08:00,{}
+e009,deploy:cce-prod-01:order:order-api,USES,secret:cce-prod-01:order:order-api-secret,使用,强,是,Kubernetes API,warning,Secret 即将过期,2026-06-15T09:00:00+08:00,{}
+e010,deploy:cce-prod-01:order:order-api,USES,image:order-api:1.2.3,使用,强,是,Kubernetes API,warning,镜像存在高危漏洞,2026-06-15T09:00:00+08:00,{}
+e011,image:order-api:1.2.3,STORED_IN,registry:harbor-prod,存储于,中,是,镜像仓库 API,normal,,2026-06-15T09:00:00+08:00,{}
+e012,alert:order-api-availability,MONITORS,comp:order-api,监控,中,是,Prometheus/Grafana,normal,,2026-06-15T09:00:00+08:00,{}
+e013,dash:order-api-overview,VISUALIZES,comp:order-api,可视化,弱,否,Grafana,normal,,2026-06-15T09:00:00+08:00,{}

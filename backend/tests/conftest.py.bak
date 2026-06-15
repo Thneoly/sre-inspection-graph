@@ -1,0 +1,185 @@
+"""pytest 配置与共享 fixtures"""
+
+import pytest
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+
+
+# ============================================================
+# Mock Neo4j Objects
+# ============================================================
+
+class MockNeo4jNode:
+    """模拟 Neo4j 节点 — 同时支持 dict-like 和 attribute 访问"""
+
+    def __init__(self, node_id: str, labels: list[str], properties: dict | None = None):
+        self._id = node_id
+        self._labels = labels
+        self._properties = properties or {}
+        self.element_id = node_id
+        self.labels = set(labels)  # Neo4j returns a set-like container
+
+    def get(self, key, default=None):
+        if key == "node_id":
+            return self._id
+        if key == "id":
+            return self._id
+        if key == "label":
+            return self._labels[0] if self._labels else "Unknown"
+        return self._properties.get(key, default)
+
+    def __iter__(self):
+        """使对象可转为 dict — dict(node)"""
+        all_items = {"node_id": self._id, "id": self._id, "label": self._labels[0] if self._labels else "Unknown"}
+        all_items.update(self._properties)
+        return iter(all_items.items())
+
+    def items(self):
+        return list(self.__iter__())
+
+    def keys(self):
+        return [k for k, _ in self.items()]
+
+
+class MockNeo4jRel:
+    """模拟 Neo4j 关系"""
+
+    def __init__(self, edge_id: str, rel_type: str, start_node: MockNeo4jNode,
+                 end_node: MockNeo4jNode, properties: dict | None = None):
+        self._id = edge_id
+        self._type = rel_type  # 注意：Neo4j 关系有 type 属性
+        self._properties = properties or {}
+        self.element_id = edge_id
+        self.start_node = start_node
+        self.end_node = end_node
+        # type 是个函数还是属性？在 Neo4j 中 relationship.type 返回字符串
+        self.type = rel_type
+
+    def get(self, key, default=None):
+        if key == "edge_id":
+            return self._id
+        if key == "relationship_type":
+            return self._type
+        if key == "relationship_name":
+            return self._properties.get("relationship_name", self._type)
+        return self._properties.get(key, default)
+
+    def __iter__(self):
+        all_items = {"edge_id": self._id, "relationship_type": self._type,
+                     "relationship_name": self._properties.get("relationship_name", self._type)}
+        all_items.update(self._properties)
+        return iter(all_items.items())
+
+    def items(self):
+        return list(self.__iter__())
+
+
+class MockNeo4jPath:
+    """模拟 Neo4j Path（用于含 path 的查询结果）"""
+
+    def __init__(self, nodes: list[MockNeo4jNode], relationships: list[MockNeo4jRel]):
+        self.nodes = nodes
+        self.relationships = relationships
+
+
+# ============================================================
+# 共享 Fixture: 构建真实场景的 mock 数据
+# ============================================================
+
+@pytest.fixture
+def sample_nodes():
+    """一组典型的 ResourceInstance 节点"""
+    return [
+        MockNeo4jNode("app:order", ["Application", "ResourceInstance"], {
+            "node_id": "app:order", "name": "订单应用", "label": "Application",
+            "health_status": "warning", "risk_level": "medium", "owner_team": "订单团队",
+            "app_code": "order", "sla_level": "P1",
+        }),
+        MockNeo4jNode("comp:order-api", ["ApplicationComponent", "ResourceInstance"], {
+            "node_id": "comp:order-api", "name": "订单API组件", "label": "ApplicationComponent",
+            "health_status": "warning", "risk_level": "medium", "owner_team": "订单团队",
+        }),
+        MockNeo4jNode("deploy:order:order-api", ["Deployment", "ResourceInstance"], {
+            "node_id": "deploy:order:order-api", "name": "order-api", "label": "Deployment",
+            "health_status": "normal", "risk_level": "low",
+            "desired_replicas": 3, "available_replicas": 2,
+        }),
+        MockNeo4jNode("pod:order:order-api-xxx", ["Pod", "ResourceInstance"], {
+            "node_id": "pod:order:order-api-xxx", "name": "order-api-xxx", "label": "Pod",
+            "health_status": "critical", "risk_level": "high",
+            "pod_ip": "10.244.1.23", "phase": "Running", "restart_count": 5,
+        }),
+        MockNeo4jNode("node:worker-01", ["KubernetesNode", "ResourceInstance"], {
+            "node_id": "node:worker-01", "name": "worker-01", "label": "KubernetesNode",
+            "health_status": "normal", "risk_level": "low",
+        }),
+    ]
+
+
+@pytest.fixture
+def sample_edges(sample_nodes):
+    """一组典型的 RELATES_TO 关系"""
+    apps = {n._id: n for n in sample_nodes}
+    return [
+        MockNeo4jRel("e001", "CONTAINS", apps["app:order"], apps["comp:order-api"], {
+            "edge_id": "e001", "relationship_type": "CONTAINS",
+            "relationship_name": "包含", "dependency_strength": "强",
+        }),
+        MockNeo4jRel("e003", "DEPLOYED_AS", apps["comp:order-api"], apps["deploy:order:order-api"], {
+            "edge_id": "e003", "relationship_type": "DEPLOYED_AS",
+            "relationship_name": "部署为", "dependency_strength": "强",
+        }),
+        MockNeo4jRel("e100", "CONTAINS", apps["deploy:order:order-api"], apps["pod:order:order-api-xxx"], {
+            "edge_id": "e100", "relationship_type": "CONTAINS",
+            "relationship_name": "包含", "dependency_strength": "强",
+        }),
+        MockNeo4jRel("e101", "SCHEDULED_ON", apps["pod:order:order-api-xxx"], apps["node:worker-01"], {
+            "edge_id": "e101", "relationship_type": "SCHEDULED_ON",
+            "relationship_name": "调度在", "dependency_strength": "强",
+        }),
+    ]
+
+
+@pytest.fixture
+def sample_path(sample_nodes, sample_edges):
+    """构建一条完整的 Path: app → comp → deploy → pod → node"""
+    apps = {n._id: n for n in sample_nodes}
+    path_nodes = [
+        apps["app:order"], apps["comp:order-api"], apps["deploy:order:order-api"],
+        apps["pod:order:order-api-xxx"], apps["node:worker-01"],
+    ]
+    path_edges = sample_edges[:4]
+    return MockNeo4jPath(path_nodes, path_edges)
+
+
+@pytest.fixture
+def mock_neo4j_run_query(sample_path):
+    """创建一个预设的 run_query 替换函数"""
+    def _runner(cypher: str, params: dict | None = None) -> list[dict]:
+        if params and params.get("app_node_id") == "app:order":
+            return [{"path": sample_path}]
+        if params and params.get("node_id") == "node:worker-01":
+            return [{"path": sample_path}]
+        return [{"path": sample_path}]
+    return _runner
+
+
+@pytest.fixture
+def client():
+    """带 mock Neo4j 的 FastAPI TestClient（不依赖真实 Neo4j）"""
+    with patch("app.routers.topology.run_query") as mock_topo, \
+         patch("app.routers.access_link.run_query") as mock_link, \
+         patch("app.routers.node_impact.run_query") as mock_impact, \
+         patch("app.routers.config_impact.run_query") as mock_config, \
+         patch("app.routers.image_risk.run_query") as mock_image, \
+         patch("app.routers.alert_aggregation.run_query") as mock_alert, \
+         patch("app.routers.health.check_connection") as mock_health:
+        mock_health.return_value = True
+        # Default — return empty to avoid errors
+        for m in [mock_topo, mock_link, mock_impact, mock_config, mock_image, mock_alert]:
+            m.return_value = []
+        from app.main import app
+        yield TestClient(app), {
+            "topo": mock_topo, "link": mock_link, "impact": mock_impact,
+            "config": mock_config, "image": mock_image, "alert": mock_alert,
+        }

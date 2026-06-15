@@ -1,0 +1,46 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.pytest_cache/
+*.pyc
+
+# ===== Node / Frontend =====
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Env =====
+.env
+.env.local
+
+# ===== Docker =====
+neo4j_data/
+neo4j_logs/
+
+# ===== Generated =====
+scripts/output/*.csv
+scripts/output/*.cypher
+
+# ===== Claude =====
+.claude/
+
+# ===== Misc =====
+*.log
+*.tmp
+
+# ===== Secrets =====
+data/
