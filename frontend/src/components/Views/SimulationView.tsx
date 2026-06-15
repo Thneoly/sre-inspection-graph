@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Select, Button, Card, Space, Tag, Typography, Divider, Slider, message, Descriptions, Badge } from 'antd';
+import { Select, Button, Card, Space, Tag, Typography, Divider, message, Badge } from 'antd';
 import { ThunderboltOutlined, ForwardOutlined, ReloadOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import api, { type GraphResponse } from '../../api/client';
@@ -45,7 +45,6 @@ export default function SimulationView() {
   const qc = useQueryClient();
   const [faultType, setFaultType] = useState<string>('cpu_spike');
   const [targetId, setTargetId] = useState('pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf');
-  const [stepSec, setStepSec] = useState(300);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isEdge, setIsEdge] = useState(false);
 
@@ -54,7 +53,7 @@ export default function SimulationView() {
   const { data: topoData } = useQuery({ queryKey: ['topology', 'order', 5], queryFn: () => fetchTopology('order', 5) });
 
   const injectMut = useMutation({ mutationFn: () => injectFault(faultType, targetId), onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success('故障已注入'); } });
-  const stepMut = useMutation({ mutationFn: () => stepSim(stepSec), onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success(`推进 ${stepSec}s`); } });
+  const stepMut = useMutation({ mutationFn: () => stepSim(60), onSuccess: (data) => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success(`推进到下一阶段${data.data?.updated ? '' : '（无活跃故障）'}`); } });
   const resetMut = useMutation({ mutationFn: resetSim, onSuccess: () => { refetchStatus(); qc.invalidateQueries({ queryKey: ['topology'] }); message.success('已重置'); } });
 
   const selectedNode = !isEdge ? topoData?.nodes.find(n => n.id === selectedId) : undefined;
@@ -115,14 +114,14 @@ export default function SimulationView() {
 
         <Divider type="vertical" />
 
-        {/* Step */}
+        {/* Step → always advances 1 stage */}
         <Space>
-          <Typography.Text>推进:</Typography.Text>
-          <Slider min={60} max={1800} step={60} value={stepSec} onChange={setStepSec} style={{ width: 120 }}
-            tooltip={{ formatter: (v) => `${Math.floor((v || 0) / 60)}m` }} />
-          <Button icon={<ForwardOutlined />} loading={stepMut.isPending} onClick={() => stepMut.mutate()}>
-            +{Math.floor(stepSec / 60)}m
+          <Button icon={<ForwardOutlined />} type="primary" loading={stepMut.isPending} onClick={() => stepMut.mutate()}>
+            推进下一阶段
           </Button>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            （每次点击固定前进 1 个阶段）
+          </Typography.Text>
         </Space>
 
         {/* Reset */}
@@ -134,8 +133,11 @@ export default function SimulationView() {
         <Space>
           <Badge status={simStatus?.active_count ? 'error' : 'success'} />
           <Typography.Text type="secondary">
-            {simStatus?.active_count ? `${simStatus.active_count} 活跃故障` : '无活跃故障'}
+            {simStatus?.active_count ? `${simStatus.active_count} 活跃故障` : '无活跃故障（需先注入）'}
           </Typography.Text>
+          {simStatus?.active?.[0] && (
+            <Tag color="processing">阶段 {simStatus.active[0].stage + 1}/{simStatus.active[0].total}</Tag>
+          )}
           {simStatus?.unhealthy_nodes?.length ? (
             <Tag color="error">{simStatus.unhealthy_nodes.length} 异常节点</Tag>
           ) : null}
