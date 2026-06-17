@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
 SRE 云原生巡检图谱平台 — cloud-native resource inspection graph platform based on a 4-layer Neo4j model with fault simulation.
@@ -25,9 +27,14 @@ L4 Inspection Results → InspectionRun/Rule/Finding
 ## Commands
 
 ```bash
+# First-time setup (uv sync backend + npm install frontend)
+make setup
+
 # Development
-make infra          # Start Neo4j only (docker compose up -d neo4j neo4j-init)
-make dev-api        # API hot-reload on port 8000
+make infra          # Start Neo4j + run import (depends on mock-data)
+make infra_up       # Restart Neo4j without re-importing data
+make infra_down     # Stop Neo4j only
+make dev-api        # API hot-reload on port 8000 (auto-frees port via dev-api-kill)
 make dev-frontend   # Frontend HMR on port 3000
 
 # Full stack
@@ -39,9 +46,16 @@ make clean          # Remove containers + volumes + generated data
 make test           # Backend 53 tests + Frontend 16 tests
 make test-cov       # Backend coverage report
 
+# Single test
+cd backend && uv run python -m pytest tests/test_routers.py::test_topology -v -p no:asyncio
+cd backend && uv run python -m pytest tests/ -k "fault" -v -p no:asyncio    # filter by name
+cd frontend && npm test -- GraphCanvas                                       # vitest substring match
+
 # Mock data
 make mock-data      # Generate CSV + Cypher → scripts/output/
 ```
+
+Note: backend pytest **must** be run with `-p no:asyncio` — the project uses sync FastAPI TestClient and pytest-asyncio's auto-mode otherwise breaks fixture scoping.
 
 ## Directory Structure
 
@@ -104,6 +118,7 @@ scripts/
 
 ## Node Visual Rules
 
+- **Shape = resource type**, **fill color = health** (green/yellow/red), **border weight + color = risk level** (thin green = low, medium yellow, thick red = high). No per-type fill coloring.
 - **ellipse**: Pod, Container
 - **diamond**: Service, Ingress, ELB, Gateway, APIG, Nacos
 - **hexagon**: KubernetesCluster, KubernetesNode, ContainerRegistry, Region, AZ
@@ -112,6 +127,22 @@ scripts/
 - **parallelogram**: ConfigMap, Secret
 - **triangle**: AlertRule, AlertEvent
 - **tag**: InspectionFinding, InspectionRule
+
+## Inspection Views & Routes
+
+Each view is one router on the backend + one component under `frontend/src/components/Views/` + one Cypher query under `backend/app/db/queries/`.
+
+| Route | Backend router | Purpose |
+|---|---|---|
+| `/topology` | `topology.py` | Full chain Region→AZ→Cluster→NS→Deploy→Pod→Container + middleware |
+| `/access-link` | `access_link.py` | Ingress trace ELB→Ingress→Gateway→Service→Pod |
+| `/node-impact` | `node_impact.py` | KubernetesNode failure blast radius |
+| `/config-impact` | `config_impact.py` | Secret/ConfigMap change impact surface |
+| `/image-risk` | `image_risk.py` | Container image vulnerability propagation |
+| `/alert-aggregation` | `alert_aggregation.py` | Multi-alert rollup by application |
+| `/simulation` | `simulation.py` + `datasource.py` | Fault simulation (DSS-backed) |
+
+Layer toggles (`frontend/src/utils/layers.ts`) filter the response: 基础拓扑 (default) / 可观测 (MONITORS, VISUALIZES) / 风险巡检 (AFFECTS, FIRED_ON, GENERATED).
 
 ## Fault Types (7)
 
