@@ -51,6 +51,9 @@ FOR (n:InspectionFinding) REQUIRE n.node_id IS UNIQUE;
 CREATE CONSTRAINT l4_alert_event_id IF NOT EXISTS
 FOR (n:AlertEvent) REQUIRE n.node_id IS UNIQUE;
 
+CREATE CONSTRAINT recovery_action_id IF NOT EXISTS
+FOR (n:RecoveryAction) REQUIRE n.node_id IS UNIQUE;
+
 
 // ========== 1. 导入 L3 实例节点 ==========
 
@@ -222,33 +225,73 @@ SET r.relationship_type = row.relationship_type,
     r.version = 'v1', r.updated_at = datetime();
 
 
-// ========== 6. 常用查询示例 ==========
+// ========== 6. 导入 RecoveryAction 模板(PRD-001 Sprint 1)==========
 
-// 6.1 查看完整应用拓扑（含 L3 Pod/Container/Node）
+// 6.1 RecoveryAction 模板节点(8 种动作)
+LOAD CSV WITH HEADERS FROM 'file:///recovery_instance_nodes.csv' AS row
+WITH row WHERE row.label = 'RecoveryAction'
+MERGE (n:RecoveryAction:ResourceInstance {node_id: row.node_id})
+SET n.name = row.name, n.label = row.label, n.unique_key = row.unique_key,
+    n.owner_team = row.owner_team, n.lifecycle_status = row.lifecycle_status,
+    n.health_status = row.health_status, n.risk_level = row.risk_level,
+    n.source_system = row.source_system, n.source_ref = row.source_ref,
+    n.attrs_json = row.attrs_json,
+    n.version = 'v1', n.updated_at = datetime();
+
+// 6.2 InspectionFinding -SUGGESTS-> RecoveryAction
+LOAD CSV WITH HEADERS FROM 'file:///recovery_instance_edges.csv' AS row
+MATCH (s:ResourceInstance {node_id: row.source_node_id})
+MATCH (t:ResourceInstance {node_id: row.target_node_id})
+MERGE (s)-[r:RELATES_TO {edge_id: row.edge_id}]->(t)
+SET r.relationship_type = row.relationship_type,
+    r.relationship_name = row.relationship_name,
+    r.dependency_strength = row.dependency_strength,
+    r.is_required = row.is_required,
+    r.discovery_method = row.discovery_method,
+    r.health_status = row.health_status,
+    r.risk_signal = row.risk_signal,
+    r.last_verified_at = row.last_verified_at,
+    r.attrs_json = row.attrs_json,
+    r.version = 'v1', r.updated_at = datetime();
+
+
+// ========== 7. 常用查询示例 ==========
+
+// 7.1 查看完整应用拓扑（含 L3 Pod/Container/Node）
 MATCH path = (app:ResourceInstance {label: 'Application', node_id: 'app:order'})-[*1..6]-(n:ResourceInstance)
 RETURN path LIMIT 200;
 
-// 6.2 查看应用所有未关闭巡检发现
+// 7.2 查看应用所有未关闭巡检发现
 MATCH (finding:InspectionFinding {inspection_status: 'failed'})-[:AFFECTS|PROPAGATES_TO*1..4]-(app:ResourceInstance:Application {node_id: 'app:order'})
 RETURN finding, app;
 
-// 6.3 查看当前 Firing 告警
+// 7.3 查看当前 Firing 告警
 MATCH (alert:AlertEvent {lifecycle_status: 'active'})-[r:FIRED_ON]->(resource:ResourceInstance)
 WHERE alert.health_status = 'critical'
 RETURN alert, resource, r;
 
-// 6.4 查看节点影响范围（爆炸半径）
+// 7.4 查看节点影响范围（爆炸半径）
 MATCH path = (node:KubernetesNode {node_id: 'node:cce-prod-01:worker-02'})<-[*1..4]-(affected:ResourceInstance)
 WHERE ALL(r IN relationships(path) WHERE r.relationship_type IN [
   'SCHEDULED_ON','CONTAINS','DEPLOYED_AS','BELONGS_TO','RUNS'
 ])
 RETURN node, affected;
 
-// 6.5 查看 Pod 最新指标快照
+// 7.5 查看 Pod 最新指标快照
 MATCH (pod:Pod {node_id: 'pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf'})
 MATCH (snap:MetricSnapshot {resource_id: pod.node_id})
 RETURN pod.name, snap.metric_name, snap.current_value, snap.unit, snap.fetched_at
 ORDER BY snap.fetched_at DESC;
+
+// 7.6 查看 Finding 推荐的 RecoveryAction（PRD-001）
+MATCH (f:InspectionFinding)-[r:RELATES_TO {relationship_type: 'SUGGESTS'}]->(a:RecoveryAction)
+RETURN f.name AS finding, a.name AS action, r.attrs_json AS rationale
+ORDER BY f.node_id;
+
+// 7.7 给定一个 Finding，查所有可执行的 RecoveryAction（PRD-001 dry-run 入口）
+MATCH (f:InspectionFinding {node_id: 'finding-run2-001'})-[r:RELATES_TO {relationship_type: 'SUGGESTS'}]->(a:RecoveryAction)
+RETURN a.node_id AS action_id, a.name AS action_name, a.risk_level, a.attrs_json
+ORDER BY a.risk_level;
 """
 
     filepath = os.path.join(OUTPUT_DIR, "neo4j_import_l3_l4_v1.cypher")
@@ -262,14 +305,17 @@ def main():
     print("Generating ALL Mock Data for SRE Inspection Graph")
     print("=" * 60)
 
-    print("\n[1/3] L3 Dynamic Metrics Layer...")
+    print("\n[1/4] L3 Dynamic Metrics Layer...")
     sys.path.insert(0, SCRIPT_DIR)
     run_module("generate_l3_mock_data")
 
-    print("\n[2/3] L4 Inspection Results Layer...")
+    print("\n[2/4] L4 Inspection Results Layer...")
     run_module("generate_l4_mock_data")
 
-    print("\n[3/3] Neo4j Import Cypher Script...")
+    print("\n[3/4] Recovery Action Layer (PRD-001 Sprint 1)...")
+    run_module("generate_recovery_actions")
+
+    print("\n[4/4] Neo4j Import Cypher Script...")
     generate_cypher_import_script()
 
     print("\n" + "=" * 60)
