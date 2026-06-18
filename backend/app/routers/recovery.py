@@ -1,17 +1,19 @@
-"""Recovery Action API — PRD-001 Sprint 1。
+"""Recovery Action API — PRD-001 Sprint 1 + Sprint 2。
 
-Sprint 1 范围:
+Sprint 1(已上线):
 - GET  /api/v1/recovery/actions               列动作模板(可过滤)
 - GET  /api/v1/recovery/actions/{action_id}   单个动作详情
 - GET  /api/v1/recovery/suggestions           基于 InspectionRule 推荐动作
 - POST /api/v1/recovery/dry-run               影响范围预演
 
-Sprint 2 才做(暂未实现):
-- POST /api/v1/recovery/execute
-- GET  /api/v1/recovery/executions/{id}
+Sprint 2(本次):
+- POST /api/v1/recovery/execute               执行动作(low_risk only)
+- GET  /api/v1/recovery/executions            执行历史(过滤 + 分页)
+- GET  /api/v1/recovery/executions/{id}       单次执行详情
+
+Sprint 3 才做:
 - POST /api/v1/recovery/approval/{id}/approve|reject
 - POST /api/v1/recovery/executions/{id}/rollback
-- GET  /api/v1/recovery/history
 """
 
 from typing import Optional
@@ -20,6 +22,9 @@ from pydantic import BaseModel, Field
 
 from app.recovery.action_defs import ACTION_DEFS, get_action, list_actions, suggest_for_rule
 from app.recovery.cascade import dry_run as compute_dry_run
+from app.recovery.execution import execute as run_execution, list_executions, ExecutionError
+from app.datasource.store import store
+from app.datasource.models import RecoveryExecution
 
 router = APIRouter(prefix="/api/v1/recovery", tags=["Recovery"])
 
@@ -33,6 +38,15 @@ class DryRunRequest(BaseModel):
     target_resource_id: str = Field(..., description="目标资源的 node_id")
     input_params: Optional[dict] = Field(default_factory=dict, description="动作输入参数")
     finding_id: Optional[str] = Field(None, description="可选,触发动作的 InspectionFinding")
+
+
+class ExecuteRequest(BaseModel):
+    action_id: str = Field(..., description="动作 ID")
+    target_resource_id: str = Field(..., description="目标资源的 node_id")
+    input_params: Optional[dict] = Field(default_factory=dict, description="动作输入参数")
+    finding_id: Optional[str] = Field(None, description="触发的 Finding")
+    initiated_by: str = Field("system", description="发起人 ID")
+    request_reason: str = Field("", description="申请理由(用于审计 + Sprint 3 审批)")
 
 
 # ============================================================
@@ -142,4 +156,92 @@ def _serialize_suggestion(suggestion: dict) -> dict:
         "risk_level": suggestion.get("risk_level"),
         "requires_approval": suggestion.get("requires_approval", False),
         "target_resource_type": suggestion.get("target_type"),
+    }
+
+
+# ============================================================
+# Sprint 2 端点:execute / executions
+# ============================================================
+
+@router.post("/execute")
+def execute(req: ExecuteRequest):
+    """执行恢复动作(Sprint 2 仅 low_risk)。
+
+    流程:
+    1. 验证 action 存在 + 是 low_risk + 有 handler
+    2. 跑 dry_run 验证目标合法
+    3. 创建 RecoveryExecution(uuid)
+    4. 调用 handler(同步执行,mock)
+    5. 持久化到 Neo4j
+    6. 返回 execution
+
+    medium/high_risk 动作返 501(Sprint 3 加审批流)。
+    """
+    try:
+        execution = run_execution(
+            action_id=req.action_id,
+            target_resource_id=req.target_resource_id,
+            input_params=req.input_params or {},
+            initiated_by=req.initiated_by,
+            finding_id=req.finding_id,
+            request_reason=req.request_reason,
+        )
+    except ExecutionError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+
+    return _serialize_execution(execution)
+
+
+@router.get("/executions")
+def list_recovery_executions(
+    status: Optional[str] = Query(None, pattern="^(pending|dry_run_ok|awaiting_approval|approved|rejected|executing|succeeded|failed|rolled_back)$"),
+    action_id: Optional[str] = Query(None),
+    target_resource_id: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """查询执行历史。"""
+    executions = list_executions(
+        status=status,
+        action_id=action_id,
+        target_resource_id=target_resource_id,
+        limit=limit,
+    )
+    return {
+        "executions": [_serialize_execution(e) for e in executions],
+        "total": len(executions),
+    }
+
+
+@router.get("/executions/{execution_id}")
+def get_execution(execution_id: str):
+    """获取单次执行详情。"""
+    execution = store.get_execution(execution_id)
+    if execution is None:
+        raise HTTPException(404, f"execution not found: {execution_id}")
+    return _serialize_execution(execution)
+
+
+def _serialize_execution(execution: RecoveryExecution) -> dict:
+    """RecoveryExecution → 前端友好 dict。"""
+    return {
+        "execution_id": execution.execution_id,
+        "action_id": execution.action_id,
+        "action_name": (get_action(execution.action_id) or {}).get("name", ""),
+        "target_resource_id": execution.target_resource_id,
+        "target_resource_type": execution.target_resource_type,
+        "finding_id": execution.finding_id,
+        "input_params": execution.input_params,
+        "status": execution.status,
+        "initiated_by": execution.initiated_by,
+        "request_reason": execution.request_reason,
+        "initiated_at": execution.initiated_at,
+        "executed_at": execution.executed_at,
+        "completed_at": execution.completed_at,
+        "result": execution.result,
+        "rollback_execution_id": execution.rollback_execution_id,
+        # dry_run_result 只在详情接口返回(列表太占空间)
+        "dry_run_summary": {
+            "affected_count": execution.dry_run_result.get("affected_count", 0),
+            "estimated_sla_impact": execution.dry_run_result.get("estimated_sla_impact"),
+        } if execution.dry_run_result else None,
     }

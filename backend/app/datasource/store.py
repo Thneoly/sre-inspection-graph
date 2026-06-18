@@ -1,5 +1,8 @@
-"""DSS 内存仓库 — NodeStore / EdgeStore / MetricStore / FaultStore"""
-from app.datasource.models import DataNode, DataEdge, MetricSnapshot, FaultInjection
+"""DSS 内存仓库 — NodeStore / EdgeStore / MetricStore / FaultStore / RecoveryStore"""
+from app.datasource.models import (
+    DataNode, DataEdge, MetricSnapshot, FaultInjection,
+    RecoveryExecution, ApprovalRequest,
+)
 
 
 class DataSourceStore:
@@ -10,6 +13,8 @@ class DataSourceStore:
         self.edges: dict[str, DataEdge] = {}
         self.metrics: dict[str, list[MetricSnapshot]] = {}  # resource_id → [snapshots]
         self.faults: dict[str, FaultInjection] = {}
+        self.executions: dict[str, RecoveryExecution] = {}      # execution_id → execution
+        self.approvals: dict[str, ApprovalRequest] = {}         # approval_id → approval
         self._initialized = False
 
     # ── Nodes ──
@@ -66,11 +71,39 @@ class DataSourceStore:
     def clear_faults(self):
         self.faults.clear()
 
+    # ── Recovery Executions ──
+    def add_execution(self, execution: RecoveryExecution):
+        self.executions[execution.execution_id] = execution
+
+    def get_execution(self, execution_id: str) -> RecoveryExecution | None:
+        return self.executions.get(execution_id)
+
+    def get_all_executions(self) -> list[RecoveryExecution]:
+        return list(self.executions.values())
+
+    def update_execution(self, execution: RecoveryExecution):
+        """覆盖式更新(execution.status 变化时调用)。"""
+        self.executions[execution.execution_id] = execution
+
+    def clear_executions(self):
+        self.executions.clear()
+
+    # ── Approval Requests ──
+    def add_approval(self, approval: ApprovalRequest):
+        self.approvals[approval.approval_id] = approval
+
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None:
+        return self.approvals.get(approval_id)
+
+    def get_pending_approvals(self) -> list[ApprovalRequest]:
+        return [a for a in self.approvals.values() if a.approval_status == "pending"]
+
     # ── Reset ──
     def reset(self):
         """清除所有运行态数据，保留基线"""
         self.metrics.clear()
         self.faults.clear()
+        # executions / approvals 不清——历史是审计资产
 
 
 # Global singleton
