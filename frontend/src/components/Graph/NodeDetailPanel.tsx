@@ -4,6 +4,7 @@ import { CheckCircleOutlined, WarningOutlined, CloseCircleOutlined, LinkOutlined
 import { fetchResourceMetrics } from '../../api/client';
 import type { GraphResponse } from '../../api/client';
 import RecoveryActionsSection from '../Recovery/RecoveryActionsSection';
+import ChangeTimelineSection from './ChangeTimelineSection';
 
 interface DetailPanelProps {
   selectedId: string | null;
@@ -54,7 +55,7 @@ export default function NodeDetailPanel({ selectedId, nodeType, nodeProperties, 
       }
       open={!!selectedId}
       onClose={onClose}
-      width={isEdge ? 320 : 380}
+      width={isEdge ? 320 : 460}
       placement="right"
       mask={false}
       styles={{ body: { padding: 16 } }}
@@ -162,6 +163,13 @@ export default function NodeDetailPanel({ selectedId, nodeType, nodeProperties, 
 
           {/* 快恢动作区(PRD-001 Sprint 1+2) */}
           {type && <RecoveryActionsSection resourceId={selectedId} resourceType={type} />}
+
+          {/* 变更时间线(PRD-002 Sprint 2) */}
+          {selectedId && (
+            <Card title="📅 变更时间线(近 50 条)" size="small" style={{ marginTop: 12, marginBottom: 12 }}>
+              <ChangeTimelineSection resourceId={selectedId} />
+            </Card>
+          )}
 
           <Card title="全部属性" size="small">
             <pre style={{ fontSize: 11, maxHeight: 300, overflow: 'auto', background: '#f5f5f5', padding: 8, borderRadius: 4 }}>

@@ -305,4 +305,141 @@ export function postExecutionRollback(req: {
 }
 
 
+// ============================================================
+// PRD-002 — ChangeEvent
+// ============================================================
+// 字段对标后端 backend/app/changes/event_service.py:_serialize_event()
+// API path 都是 /change-events/*(api 实例 baseURL = /api/v1)。
+
+export type ChangeType =
+  | 'configmap_updated'
+  | 'secret_rotated'
+  | 'deployment_rolled'
+  | 'image_pushed';
+
+export type ChangeSource =
+  | 'k8s_api'
+  | 'argo_cd'
+  | 'gitops'
+  | 'manual'
+  | 'unknown'
+  | 'flagd';
+
+export type ChangeSeverity = 'low' | 'medium' | 'high';
+
+export type CorrelationMatchType = 'direct' | 'propagated';
+
+export interface ChangeEvent {
+  change_event_id: string;
+  change_type: ChangeType;
+  target_resource_id: string;
+  target_resource_type: string;
+  changed_at: string;          // ISO8601
+  changed_by: string;
+  source: ChangeSource;
+  description: string;
+  diff_summary: Record<string, unknown>;
+  related_commit: string;
+  related_pr: string;
+  severity_estimate: ChangeSeverity;
+  propagated_to: string[];
+  propagated_count: number;
+}
+
+export interface CorrelatedChange extends ChangeEvent {
+  match_type: CorrelationMatchType;
+  propagation_distance: number;
+}
+
+export interface ChangeEventListResponse {
+  events: ChangeEvent[];
+  total: number;
+}
+
+export interface ChangeEventTimelineResponse {
+  application_id: string;
+  since: string | null;
+  until: string | null;
+  resources_in_scope: number;
+  events: ChangeEvent[];
+  total: number;
+  by_type: Record<string, number>;
+}
+
+export interface ChangeEventCorrelatedResponse {
+  target_resource_id: string;
+  window_start: string;
+  window_end: string;
+  now: string;
+  include_propagated: boolean;
+  changes: CorrelatedChange[];
+  total: number;
+}
+
+export interface ChangeAffectedResource {
+  resource_id: string;
+  resource_type: string;
+  resource_name: string;
+  path: string[];
+  distance: number;
+}
+
+export interface ChangeEventImpactResponse {
+  change_event_id: string;
+  target_resource_id: string;
+  target_resource_type: string;
+  affected: ChangeAffectedResource[];
+  affected_count: number;
+  severity_estimate: ChangeSeverity;
+}
+
+
+export function fetchChangeEvents(params?: {
+  change_type?: ChangeType;
+  target_resource_id?: string;
+  source?: ChangeSource;
+  since?: string;
+  until?: string;
+  limit?: number;
+}) {
+  return api.get<ChangeEventListResponse>('/change-events', { params });
+}
+
+export function fetchChangeEvent(changeEventId: string) {
+  return api.get<ChangeEvent>(
+    `/change-events/${encodeURIComponent(changeEventId)}`,
+  );
+}
+
+export function fetchCorrelatedChanges(params: {
+  target_resource_id: string;
+  window?: number;
+  since?: string;
+  until?: string;
+  include_propagated?: boolean;
+}) {
+  return api.get<ChangeEventCorrelatedResponse>(
+    '/change-events/correlated',
+    { params },
+  );
+}
+
+export function fetchChangeEventTimeline(
+  application_id: string,
+  since?: string,
+  until?: string,
+) {
+  return api.get<ChangeEventTimelineResponse>(
+    '/change-events/timeline',
+    { params: { application_id, since, until } },
+  );
+}
+
+export function fetchChangeEventImpact(changeEventId: string) {
+  return api.get<ChangeEventImpactResponse>(
+    `/change-events/${encodeURIComponent(changeEventId)}/impact`,
+  );
+}
+
+
 export default api;
