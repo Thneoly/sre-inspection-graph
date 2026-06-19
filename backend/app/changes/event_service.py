@@ -33,7 +33,7 @@ VALID_CHANGE_TYPES = {
     "image_pushed",
 }
 
-VALID_SOURCES = {"k8s_api", "argo_cd", "gitops", "manual", "unknown"}
+VALID_SOURCES = {"k8s_api", "argo_cd", "gitops", "manual", "unknown", "flagd"}
 
 
 class ChangeEventError(Exception):

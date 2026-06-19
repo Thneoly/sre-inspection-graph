@@ -1,7 +1,8 @@
 """Sync orchestrator — 启动 / 停止所有 connector,暴露给 main.py 用。
 
-Sprint 1 只接 K8sConnector,Sprint 2/3 加 Prometheus / Jaeger / flagd 时
-注册一行即可。
+Sprint 1:K8sConnector(拓扑同步)
+Sprint 2:PrometheusConnector + JaegerConnector(metric / trace 接入)
+Sprint 3:FlagdConnector + K8sEventConnector(变更事件)
 
 不在本模块:
 - connector 内部循环逻辑(在 BaseConnector 里)
@@ -15,7 +16,11 @@ from typing import Optional
 
 from app.config import settings
 from app.datasource.connectors.base import BaseConnector
+from app.datasource.connectors.flagd_connector import FlagdConnector
+from app.datasource.connectors.jaeger_connector import JaegerConnector
 from app.datasource.connectors.k8s_connector import K8sConnector
+from app.datasource.connectors.k8s_event_connector import K8sEventConnector
+from app.datasource.connectors.prometheus_connector import PrometheusConnector
 
 
 logger = logging.getLogger(__name__)
@@ -54,21 +59,23 @@ registry = ConnectorRegistry()
 
 
 def init_connectors():
-    """启动时调用 — 根据 config 决定要拉起哪些 connector。
+    """启动时调用 — 注册全部 connector。
 
-    Sprint 1:只在 KUBECONFIGS 有配置时才启动 K8sConnector。
-    没配 KUBECONFIGS → 兜底走 ~/.kube/config(本地开发场景)。
+    每个 connector 自己看 config,如果 URL 空就空跑(不报错)。
     """
     if not settings.connectors_autostart:
         logger.info("connectors_autostart=0, skipping registration")
         return
 
-    # K8sConnector — 至少注册一次(配不配 kubeconfig 由 connector 内部 fallback)
-    k8s_conn = K8sConnector()
-    registry.register(k8s_conn)
+    registry.register(K8sConnector())
+    registry.register(PrometheusConnector())
+    registry.register(JaegerConnector())
+    registry.register(FlagdConnector())
+    registry.register(K8sEventConnector())
+
     logger.info(
-        "registered k8s connector: cluster=%s namespace=%s kubeconfig=%s",
-        k8s_conn.cluster_id, k8s_conn.namespace, k8s_conn.kubeconfig_path or "(default)",
+        "registered connectors: %s (cluster=%s, namespace=%s)",
+        registry.names(), settings.active_cluster, settings.k8s_namespace,
     )
 
 

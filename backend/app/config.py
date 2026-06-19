@@ -38,5 +38,21 @@ class Settings:
     # 启动时是否自动启动 connectors(测试场景设为 0)
     connectors_autostart: bool = os.getenv("CONNECTORS_AUTOSTART", "1") == "1"
 
+    # ─── Prometheus ───
+    prometheus_url: str = os.getenv("PROMETHEUS_URL", "http://localhost:19090")
+    prometheus_sync_interval_seconds: int = int(os.getenv("PROMETHEUS_SYNC_INTERVAL", "30"))
+
+    # ─── Jaeger ───
+    # OTel Demo Helm chart 给 Jaeger 配的 base-path 是 /jaeger/ui
+    # API 路径变成 /jaeger/ui/api/services 而不是 /api/services
+    jaeger_url: str = os.getenv("JAEGER_URL", "http://localhost:16686/jaeger/ui")
+    jaeger_sync_interval_seconds: int = int(os.getenv("JAEGER_SYNC_INTERVAL", "300"))
+    jaeger_lookback_seconds: int = int(os.getenv("JAEGER_LOOKBACK", "300"))
+    jaeger_call_count_threshold: int = int(os.getenv("JAEGER_CALL_COUNT_THRESHOLD", "5"))
+
+    # ─── flagd ───
+    flagd_url: str = os.getenv("FLAGD_URL", "http://localhost:8013")
+    flagd_sync_interval_seconds: int = int(os.getenv("FLAGD_SYNC_INTERVAL", "20"))
+
 
 settings = Settings()

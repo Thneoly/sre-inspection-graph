@@ -57,6 +57,13 @@ prometheus:
     persistentVolume:
       enabled: false  # 用 emptyDir,演示场景不要持久化
     retention: 1h
+    # 默认 chart 给 300Mi 不够 — OTel Demo 跑 14 service 的 metric 至少要 1Gi
+    resources:
+      requests:
+        memory: 1Gi
+        cpu: 200m
+      limits:
+        memory: 1500Mi
 
 # ============================================================
 # 业务 services — 保持默认即可,loadgenerator 限流
