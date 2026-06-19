@@ -1,7 +1,7 @@
 """DSS 内存仓库 — NodeStore / EdgeStore / MetricStore / FaultStore / RecoveryStore"""
 from app.datasource.models import (
     DataNode, DataEdge, MetricSnapshot, FaultInjection,
-    RecoveryExecution, ApprovalRequest,
+    RecoveryExecution, ApprovalRequest, ChangeEvent,
 )
 
 
@@ -15,6 +15,7 @@ class DataSourceStore:
         self.faults: dict[str, FaultInjection] = {}
         self.executions: dict[str, RecoveryExecution] = {}      # execution_id → execution
         self.approvals: dict[str, ApprovalRequest] = {}         # approval_id → approval
+        self.change_events: dict[str, ChangeEvent] = {}         # change_event_id → event
         self._initialized = False
 
     # ── Nodes ──
@@ -110,6 +111,38 @@ class DataSourceStore:
 
     def clear_approvals(self):
         self.approvals.clear()
+
+    # ── Change Events (PRD-002) ──
+    def add_change_event(self, event: ChangeEvent):
+        self.change_events[event.change_event_id] = event
+
+    def get_change_event(self, event_id: str) -> ChangeEvent | None:
+        return self.change_events.get(event_id)
+
+    def list_change_events(
+        self,
+        change_type: str | None = None,
+        target_resource_id: str | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[ChangeEvent]:
+        """按 ISO8601 字符串字典序过滤(同时区下与时间戳序一致)。"""
+        events = list(self.change_events.values())
+        if change_type:
+            events = [e for e in events if e.change_type == change_type]
+        if target_resource_id:
+            events = [e for e in events if e.target_resource_id == target_resource_id]
+        if source:
+            events = [e for e in events if e.source == source]
+        if since:
+            events = [e for e in events if e.changed_at >= since]
+        if until:
+            events = [e for e in events if e.changed_at <= until]
+        return events
+
+    def clear_change_events(self):
+        self.change_events.clear()
 
     # ── Reset ──
     def reset(self):

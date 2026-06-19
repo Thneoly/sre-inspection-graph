@@ -116,6 +116,32 @@ class RecoveryExecution:
 
 
 @dataclass
+class ChangeEvent:
+    """变更事件 — 事件对象,记录"什么时间什么资源被谁怎么改了"。
+
+    PRD-002 Sprint 1。4 类 change_type:
+        configmap_updated / secret_rotated / deployment_rolled / image_pushed
+
+    propagated_to 是写入时一次性算好缓存的影响范围(沿强依赖关系反向 BFS),
+    供 /correlated 查询 O(1) 命中。target 不在 DSS 时仍可记录(propagated_to=[])。
+    """
+    change_event_id: str
+    change_type: str                                  # configmap_updated | secret_rotated |
+                                                       # deployment_rolled | image_pushed
+    target_resource_id: str
+    target_resource_type: str
+    changed_at: str                                   # ISO8601
+    changed_by: str = ""
+    source: str = "manual"                            # k8s_api | argo_cd | gitops | manual | unknown
+    description: str = ""
+    diff_summary: dict[str, Any] = field(default_factory=dict)
+    related_commit: str = ""
+    related_pr: str = ""
+    severity_estimate: str = "low"                    # low | medium | high
+    propagated_to: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ApprovalRequest:
     """审批请求 — 事件对象,只在 high_risk / requires_approval 动作下创建。
 

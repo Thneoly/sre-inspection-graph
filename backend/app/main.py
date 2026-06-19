@@ -13,6 +13,7 @@ from app.routers import (
     simulation,
     datasource,
     recovery,
+    change_event,
 )
 
 # Auto-init DSS on startup
@@ -44,6 +45,7 @@ app.include_router(health.router, prefix="/api/v1")
 app.include_router(simulation.router)
 app.include_router(datasource.router)
 app.include_router(recovery.router)
+app.include_router(change_event.router)
 
 
 @app.on_event("startup")
