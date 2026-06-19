@@ -7,6 +7,7 @@ import ConfigImpactView from './components/Views/ConfigImpactView';
 import ImageRiskView from './components/Views/ImageRiskView';
 import AlertAggregationView from './components/Views/AlertAggregationView';
 import SimulationView from './components/Views/SimulationView';
+import ExecutionsView from './components/Recovery/ExecutionsView';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/config-impact" element={<ConfigImpactView />} />
         <Route path="/image-risk" element={<ImageRiskView />} />
         <Route path="/alert-aggregation" element={<AlertAggregationView />} />
+        <Route path="/recovery/history" element={<ExecutionsView />} />
       </Route>
       <Route path="/simulation" element={<SimulationView />} />
     </Routes>

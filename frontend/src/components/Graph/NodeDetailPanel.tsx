@@ -3,6 +3,7 @@ import { Drawer, Descriptions, Tag, Typography, Space, Card, Statistic } from 'a
 import { CheckCircleOutlined, WarningOutlined, CloseCircleOutlined, LinkOutlined } from '@ant-design/icons';
 import { fetchResourceMetrics } from '../../api/client';
 import type { GraphResponse } from '../../api/client';
+import RecoveryActionsSection from '../Recovery/RecoveryActionsSection';
 
 interface DetailPanelProps {
   selectedId: string | null;
@@ -158,6 +159,9 @@ export default function NodeDetailPanel({ selectedId, nodeType, nodeProperties, 
               </Space>
             </Card>
           )}
+
+          {/* 快恢动作区(PRD-001 Sprint 1+2) */}
+          {type && <RecoveryActionsSection resourceId={selectedId} resourceType={type} />}
 
           <Card title="全部属性" size="small">
             <pre style={{ fontSize: 11, maxHeight: 300, overflow: 'auto', background: '#f5f5f5', padding: 8, borderRadius: 4 }}>

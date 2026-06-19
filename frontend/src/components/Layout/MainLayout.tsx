@@ -9,6 +9,7 @@ import {
   SettingOutlined,
   ContainerOutlined,
   AlertOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons';
 
 const { Sider, Content, Header: AntHeader } = Layout;
@@ -20,6 +21,8 @@ const menuItems: MenuProps['items'] = [
   { key: '/config-impact',     icon: <SettingOutlined />,     label: '配置影响' },
   { key: '/image-risk',        icon: <ContainerOutlined />,   label: '镜像风险' },
   { key: '/alert-aggregation', icon: <AlertOutlined />,       label: '告警归并' },
+  { type: 'divider' },
+  { key: '/recovery/history',  icon: <HistoryOutlined />,     label: '恢复历史' },
 ];
 
 export default function MainLayout() {

@@ -12,12 +12,21 @@ function renderLayout(initialEntry = '/topology') {
 }
 
 describe('MainLayout', () => {
-  it('should render all 6 navigation menu items', () => {
+  it('should render all 7 navigation menu items (6 inspection views + recovery history)', () => {
     renderLayout();
-    const items = ['应用拓扑', '访问链路', '节点影响', '配置影响', '镜像风险', '告警归并'];
+    const items = [
+      '应用拓扑', '访问链路', '节点影响', '配置影响', '镜像风险', '告警归并',
+      '恢复历史',
+    ];
     for (const label of items) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+  });
+
+  it('should render the recovery history entry below the inspection views', () => {
+    renderLayout();
+    // 恢复历史 sits below a divider; assert it renders as a menu entry
+    expect(screen.getByText('恢复历史')).toBeInTheDocument();
   });
 
   it('should render the app title', () => {
