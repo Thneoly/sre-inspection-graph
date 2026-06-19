@@ -112,6 +112,7 @@ class RecoveryExecution:
     completed_at: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     rollback_execution_id: Optional[str] = None
+    reverses_execution_id: Optional[str] = None  # 若本 execution 是回滚动作,指向被回滚的原 execution
 
 
 @dataclass
@@ -131,4 +132,5 @@ class ApprovalRequest:
     approved_at: str = ""
     approval_comment: str = ""
     expiry_at: str = ""
+    approver_team: str = ""  # 负责审批的团队(从 target.owner_team 派生),软记录用
 

@@ -98,6 +98,19 @@ class DataSourceStore:
     def get_pending_approvals(self) -> list[ApprovalRequest]:
         return [a for a in self.approvals.values() if a.approval_status == "pending"]
 
+    def update_approval(self, approval: ApprovalRequest):
+        """覆盖式更新审批状态。"""
+        self.approvals[approval.approval_id] = approval
+
+    def get_approvals_by_status(self, status: str | None = None) -> list[ApprovalRequest]:
+        """按 status 过滤;status=None 返回全部。"""
+        if status is None:
+            return list(self.approvals.values())
+        return [a for a in self.approvals.values() if a.approval_status == status]
+
+    def clear_approvals(self):
+        self.approvals.clear()
+
     # ── Reset ──
     def reset(self):
         """清除所有运行态数据，保留基线"""

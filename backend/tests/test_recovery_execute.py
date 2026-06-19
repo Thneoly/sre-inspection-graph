@@ -58,8 +58,9 @@ def _seed_store():
 
 @pytest.fixture(autouse=True)
 def _clear_executions():
-    """每个测试都从干净 executions 开始。"""
+    """每个测试都从干净 executions/approvals 开始。"""
     store.clear_executions()
+    store.clear_approvals()
 
 
 # ============================================================
@@ -169,17 +170,18 @@ class TestExecutionFlow:
         assert store.get_execution(execution.execution_id) is execution
 
     def test_medium_risk_blocked_in_sprint2(self):
-        from app.recovery.execution import execute, ExecutionError
-        with pytest.raises(ExecutionError) as exc:
-            execute("restart_pod", "pod:order-api-1")
-        assert exc.value.code == 501
-        assert "Sprint 3" in exc.value.message
+        """Sprint 3 后:medium_risk 不再 501,而是进入 awaiting_approval。"""
+        from app.recovery.execution import execute
+        execution = execute("restart_pod", "pod:order-api-1")
+        assert execution.status == "awaiting_approval"
+        assert execution.approval_id is not None
 
     def test_high_risk_blocked_in_sprint2(self):
-        from app.recovery.execution import execute, ExecutionError
-        with pytest.raises(ExecutionError) as exc:
-            execute("rollback_deployment", "deploy:order-api")
-        assert exc.value.code == 501
+        """Sprint 3 后:high_risk 也走审批,不再 501。"""
+        from app.recovery.execution import execute
+        execution = execute("rollback_deployment", "deploy:order-api")
+        assert execution.status == "awaiting_approval"
+        assert execution.approval_id is not None
 
     def test_unknown_action(self):
         from app.recovery.execution import execute, ExecutionError
@@ -262,20 +264,28 @@ class TestExecuteEndpoint:
         assert data["result"]["success"] is True
 
     def test_execute_medium_risk_returns_501(self, client):
+        """Sprint 3 后:medium_risk 返 202 + awaiting_approval。"""
         cli, _ = client
         resp = cli.post("/api/v1/recovery/execute", json={
             "action_id": "restart_pod",
             "target_resource_id": "pod:order-api-1",
         })
-        assert resp.status_code == 501
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "awaiting_approval"
+        assert data["approval_id"] is not None
 
     def test_execute_high_risk_returns_501(self, client):
+        """Sprint 3 后:high_risk 也返 202 + awaiting_approval。"""
         cli, _ = client
         resp = cli.post("/api/v1/recovery/execute", json={
             "action_id": "rollback_deployment",
             "target_resource_id": "deploy:order-api",
         })
-        assert resp.status_code == 501
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "awaiting_approval"
+        assert data["approval_id"] is not None
 
     def test_execute_unknown_action_404(self, client):
         cli, _ = client

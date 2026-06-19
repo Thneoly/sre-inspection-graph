@@ -1,21 +1,27 @@
-"""RecoveryExecution Lifecycle 编排 — PRD-001 Sprint 2。
-
-执行流程:
-    pending  → 创建 RecoveryExecution
-       ↓
-    dry_run_ok → 跑 cascade.dry_run 验证目标合法
-       ↓
-    [low_risk]                    [medium/high_risk - Sprint 3]
-       ↓                                   ↓
-    executing                      awaiting_approval
-       ↓                                   ↓
-    succeeded / failed             approved → executing → succeeded / failed
+"""RecoveryExecution Lifecycle 编排 — PRD-001 Sprint 2 + Sprint 3。
 
 Sprint 2 范围:
-- 只支持 low_risk 动作(scale_deployment / kill_query / restart_service)
-- 同步执行(handler 是 mock,瞬时返回)
-- 持久化到 DSS + Neo4j
-- medium/high_risk 返 501 Not Implemented(Sprint 3 加审批流)
+- low_risk 同步执行(scale_deployment / kill_query / restart_service)
+
+Sprint 3 范围:
+- medium / high_risk 进入审批流(awaiting_approval),approve 后回到 executing
+- 5 个新 handler:restart_pod / rollback_deployment / refresh_secret / drain_node / clear_cache
+- 一键回滚:rollback() 创建反向 execution,直接同步执行(不再二次审批)
+
+执行流程:
+                        ┌─ low_risk + no approval ──────────────┐
+                        │                                       ↓
+    pending → dry_run_ok                                   executing → succeeded
+                        │                                       ↓
+                        └─ medium/high or requires_approval ─→ failed
+                                    ↓
+                            awaiting_approval
+                                    ↓ (approve / reject)
+                            approved / rejected
+                                    ↓ (if approved)
+                                executing → succeeded → [可选 rollback] → rolled_back
+                                                ↓
+                                              failed
 """
 
 import uuid
@@ -24,7 +30,7 @@ from datetime import datetime, timezone
 from app.datasource.models import RecoveryExecution
 from app.datasource.store import store
 from app.db.neo4j_client import get_driver
-from app.recovery.action_defs import ACTION_DEFS, get_action
+from app.recovery.action_defs import get_action
 from app.recovery.cascade import dry_run as compute_dry_run
 from app.recovery.handlers import get_handler, is_executable
 
@@ -37,45 +43,31 @@ class ExecutionError(Exception):
         super().__init__(message)
 
 
+# ============================================================
+# 主入口:execute
+# ============================================================
+
 def execute(action_id: str, target_resource_id: str,
             input_params: dict | None = None,
             initiated_by: str = "system",
             finding_id: str | None = None,
             request_reason: str = "") -> RecoveryExecution:
-    """执行恢复动作完整流程。
+    """执行恢复动作。
 
-    流程:
-      1. 验证 action 存在
-      2. Sprint 2 限制:只允许 low_risk + 已实现 handler 的动作
-      3. 跑 dry_run 验证目标合法
-      4. 创建 RecoveryExecution(status=executing)
-      5. 调用 handler
-      6. 更新 status = succeeded / failed
-      7. 持久化到 Neo4j
-      8. 返回 execution
+    - low_risk + 不需要审批 → 同步执行,返回 status=succeeded/failed
+    - medium / high_risk 或 requires_approval=True → 创建 awaiting_approval execution +
+      ApprovalRequest,返回 status=awaiting_approval(调用方据此判断是否要审批)
 
-    抛 ExecutionError 表示**前置校验失败**(动作不存在、目标非法、需要审批等);
+    抛 ExecutionError 表示**前置校验失败**(动作不存在、目标非法等);
     handler 内部失败不抛异常,而是 status=failed + result.error。
     """
     action = get_action(action_id)
     if action is None:
         raise ExecutionError(f"unknown action_id: {action_id}", 404)
 
-    # Sprint 2 限制
-    if action["risk_level"] != "low":
-        raise ExecutionError(
-            f"action '{action_id}' is {action['risk_level']} risk, "
-            f"approval flow not implemented yet (Sprint 3)",
-            code=501,
-        )
-    if action["requires_approval"]:
-        raise ExecutionError(
-            f"action '{action_id}' requires approval, not implemented yet (Sprint 3)",
-            code=501,
-        )
     if not is_executable(action_id):
         raise ExecutionError(
-            f"action '{action_id}' has no execute handler in Sprint 2",
+            f"action '{action_id}' has no execute handler",
             code=501,
         )
 
@@ -90,6 +82,8 @@ def execute(action_id: str, target_resource_id: str,
     # 创建 RecoveryExecution
     now_iso = datetime.now(timezone.utc).isoformat()
     target_node = store.get_node(target_resource_id)
+    needs_approval = action["risk_level"] != "low" or action["requires_approval"]
+
     execution = RecoveryExecution(
         execution_id=str(uuid.uuid4()),
         action_id=action_id,
@@ -98,42 +92,152 @@ def execute(action_id: str, target_resource_id: str,
         finding_id=finding_id,
         input_params=dict(input_params or {}),
         dry_run_result=dry_result,
-        status="executing",
+        status="awaiting_approval" if needs_approval else "executing",
         initiated_by=initiated_by,
         request_reason=request_reason,
         initiated_at=now_iso,
-        executed_at=now_iso,
+        executed_at="" if needs_approval else now_iso,
     )
     store.add_execution(execution)
 
-    # 调用 handler
-    handler = get_handler(action_id)
-    context = {
-        "execution_id": execution.execution_id,
-        "initiated_by": initiated_by,
-    }
+    if needs_approval:
+        # 创建审批请求,返回(由 routers 给 202 响应)
+        from app.recovery.approval import request_approval
 
-    try:
-        result = handler(target_resource_id, input_params or {}, context)
-    except Exception as e:    # noqa — handler 不应抛但兜底
-        result = {"success": False, "error": f"handler raised: {type(e).__name__}: {e}"}
+        approval = request_approval(
+            execution=execution,
+            requested_by=initiated_by,
+            request_reason=request_reason,
+        )
+        execution.approval_id = approval.approval_id
+        store.update_execution(execution)
+        # awaiting_approval 不写 Neo4j(避免一个动作产生多次写入);由 _continue 阶段写
+        return execution
 
-    # 更新状态
-    execution.completed_at = datetime.now(timezone.utc).isoformat()
-    execution.result = result
-    execution.status = "succeeded" if result.get("success") else "failed"
-    store.update_execution(execution)
+    # low_risk → 同步执行
+    return _run_handler_and_persist(execution)
 
-    # 持久化到 Neo4j(失败不影响内存执行结果)
-    try:
-        _persist_execution(execution)
-    except Exception as e:    # noqa
-        execution.result.setdefault("warnings", []).append(
-            f"Neo4j persist warning: {type(e).__name__}: {e}"
+
+# ============================================================
+# Sprint 3:审批通过后继续执行
+# ============================================================
+
+def _continue_after_approval(execution_id: str) -> RecoveryExecution:
+    """approve 端点调,标记 execution 进入 executing 并跑 handler。
+
+    从 awaiting_approval 进入 executing → succeeded / failed。
+    """
+    execution = store.get_execution(execution_id)
+    if execution is None:
+        raise ExecutionError(f"execution not found: {execution_id}", 404)
+    if execution.status != "awaiting_approval":
+        raise ExecutionError(
+            f"execution status is {execution.status}, expected awaiting_approval",
+            code=409,
         )
 
-    return execution
+    now_iso = datetime.now(timezone.utc).isoformat()
+    execution.status = "executing"
+    execution.executed_at = now_iso
+    store.update_execution(execution)
 
+    return _run_handler_and_persist(execution)
+
+
+# ============================================================
+# Sprint 3:回滚
+# ============================================================
+
+def rollback(execution_id: str,
+             initiated_by: str = "system",
+             reason: str = "") -> RecoveryExecution:
+    """对一个 succeeded execution 执行回滚。
+
+    创建一个反向 execution(reverses_execution_id 指向原 exec),
+    直接同步执行反向 handler,**不再二次审批**(用户已确认设计)。
+
+    仅允许 status=succeeded 的 execution 回滚;rolled_back 后不可再回滚。
+    """
+    original = store.get_execution(execution_id)
+    if original is None:
+        raise ExecutionError(f"execution not found: {execution_id}", 404)
+    if original.status != "succeeded":
+        raise ExecutionError(
+            f"only succeeded executions can be rolled back (current: {original.status})",
+            code=409,
+        )
+    if original.rollback_execution_id:
+        raise ExecutionError(
+            f"execution already rolled back by {original.rollback_execution_id}",
+            code=409,
+        )
+
+    action = get_action(original.action_id)
+    rollback_action_id = (action or {}).get("rollback_action_id")
+    if not rollback_action_id:
+        raise ExecutionError(
+            f"action '{original.action_id}' has no rollback_action_id",
+            code=400,
+        )
+
+    # 反向参数:scale_deployment 的反向是 scale_deployment(replicas_delta 取反)
+    rollback_params = _derive_rollback_params(original)
+
+    # 跑 dry_run(允许失败但不阻塞 — 回滚是兜底操作)
+    dry_result = compute_dry_run(rollback_action_id, original.target_resource_id, rollback_params)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rb_execution = RecoveryExecution(
+        execution_id=str(uuid.uuid4()),
+        action_id=rollback_action_id,
+        target_resource_id=original.target_resource_id,
+        target_resource_type=original.target_resource_type,
+        finding_id=original.finding_id,
+        input_params=rollback_params,
+        dry_run_result=dry_result,
+        status="executing",
+        initiated_by=initiated_by,
+        request_reason=reason or f"rollback of {execution_id}",
+        initiated_at=now_iso,
+        executed_at=now_iso,
+        reverses_execution_id=execution_id,
+    )
+    store.add_execution(rb_execution)
+
+    rb_execution = _run_handler_and_persist(rb_execution)
+
+    # 若回滚成功,把原 execution 标 rolled_back;失败则原 execution 保持 succeeded
+    if rb_execution.status == "succeeded":
+        original.rollback_execution_id = rb_execution.execution_id
+        original.status = "rolled_back"
+        original.completed_at = datetime.now(timezone.utc).isoformat()
+        store.update_execution(original)
+        try:
+            _persist_execution(original)
+        except Exception as e:    # noqa
+            original.result.setdefault("warnings", []).append(
+                f"Neo4j rolled_back persist warning: {type(e).__name__}: {e}"
+            )
+
+    return rb_execution
+
+
+def _derive_rollback_params(original: RecoveryExecution) -> dict:
+    """根据原动作类型派生反向参数。
+
+    scale_deployment: replicas_delta 取反
+    其他动作:rollback_action_id 多为 None,Sprint 3 内只 scale 真正可回滚。
+    其他场景直接复用原参数(handler 自行处理幂等)。
+    """
+    if original.action_id == "scale_deployment":
+        delta = original.input_params.get("replicas_delta", 0)
+        return {"replicas_delta": -delta}
+    return dict(original.input_params)
+
+
+# ============================================================
+# 列表 + 持久化
+# ============================================================
 
 def list_executions(status: str | None = None,
                     action_id: str | None = None,
@@ -155,9 +259,43 @@ def list_executions(status: str | None = None,
     if target_resource_id:
         executions = [e for e in executions if e.target_resource_id == target_resource_id]
 
-    # 按 initiated_at 倒序
     executions.sort(key=lambda e: e.initiated_at or "", reverse=True)
     return executions[:limit]
+
+
+def _run_handler_and_persist(execution: RecoveryExecution) -> RecoveryExecution:
+    """执行 handler,更新 status,持久化到 Neo4j。供 execute / _continue / rollback 复用。"""
+    handler = get_handler(execution.action_id)
+    if handler is None:
+        execution.result = {"success": False, "error": f"no handler for action {execution.action_id}"}
+        execution.status = "failed"
+        execution.completed_at = datetime.now(timezone.utc).isoformat()
+        store.update_execution(execution)
+        return execution
+
+    context = {
+        "execution_id": execution.execution_id,
+        "initiated_by": execution.initiated_by,
+    }
+
+    try:
+        result = handler(execution.target_resource_id, execution.input_params, context)
+    except Exception as e:    # noqa
+        result = {"success": False, "error": f"handler raised: {type(e).__name__}: {e}"}
+
+    execution.completed_at = datetime.now(timezone.utc).isoformat()
+    execution.result = result
+    execution.status = "succeeded" if result.get("success") else "failed"
+    store.update_execution(execution)
+
+    try:
+        _persist_execution(execution)
+    except Exception as e:    # noqa
+        execution.result.setdefault("warnings", []).append(
+            f"Neo4j persist warning: {type(e).__name__}: {e}"
+        )
+
+    return execution
 
 
 def _persist_execution(execution: RecoveryExecution):
@@ -181,6 +319,7 @@ def _persist_execution(execution: RecoveryExecution):
                 e.completed_at = $cat,
                 e.request_reason = $reason,
                 e.result_json = $rjson,
+                e.reverses_execution_id = $reverses,
                 e.label = 'RecoveryExecution',
                 e.name = $name,
                 e.health_status = $health,
@@ -199,6 +338,7 @@ def _persist_execution(execution: RecoveryExecution):
               cat=execution.completed_at,
               reason=execution.request_reason,
               rjson=str(execution.result),
+              reverses=execution.reverses_execution_id or "",
               name=f"{execution.action_id} on {execution.target_resource_id}",
               health="normal" if execution.status == "succeeded" else "critical",
               )
@@ -227,3 +367,16 @@ def _persist_execution(execution: RecoveryExecution):
                     r.last_verified_at = datetime(),
                     r.version = 'v1'
             """, eid=execution.execution_id, fid=execution.finding_id)
+
+        # 回滚 execution 关联到原 execution(REVERSES)
+        if execution.reverses_execution_id:
+            s.run("""
+                MATCH (e:RecoveryExecution {execution_id: $eid})
+                MATCH (orig:RecoveryExecution {execution_id: $oid})
+                MERGE (e)-[r:RELATES_TO {edge_id: 'exec_rev_' + $eid}]->(orig)
+                SET r.relationship_type = 'REVERSES',
+                    r.relationship_name = '回滚',
+                    r.dependency_strength = '强',
+                    r.last_verified_at = datetime(),
+                    r.version = 'v1'
+            """, eid=execution.execution_id, oid=execution.reverses_execution_id)

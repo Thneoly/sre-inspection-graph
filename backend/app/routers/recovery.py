@@ -1,4 +1,4 @@
-"""Recovery Action API — PRD-001 Sprint 1 + Sprint 2。
+"""Recovery Action API — PRD-001 Sprint 1 + 2 + 3。
 
 Sprint 1(已上线):
 - GET  /api/v1/recovery/actions               列动作模板(可过滤)
@@ -6,25 +6,34 @@ Sprint 1(已上线):
 - GET  /api/v1/recovery/suggestions           基于 InspectionRule 推荐动作
 - POST /api/v1/recovery/dry-run               影响范围预演
 
-Sprint 2(本次):
-- POST /api/v1/recovery/execute               执行动作(low_risk only)
+Sprint 2:
+- POST /api/v1/recovery/execute               执行动作(low_risk 同步;medium/high 进审批)
 - GET  /api/v1/recovery/executions            执行历史(过滤 + 分页)
 - GET  /api/v1/recovery/executions/{id}       单次执行详情
 
-Sprint 3 才做:
-- POST /api/v1/recovery/approval/{id}/approve|reject
-- POST /api/v1/recovery/executions/{id}/rollback
+Sprint 3:
+- POST /api/v1/recovery/approvals/{id}/approve   审批通过(自动触发执行)
+- POST /api/v1/recovery/approvals/{id}/reject    审批驳回
+- GET  /api/v1/recovery/approvals                按 status 列审批
+- GET  /api/v1/recovery/approvals/{id}           单条审批详情
+- POST /api/v1/recovery/executions/{id}/rollback 回滚已成功的执行
 """
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from app.recovery.action_defs import ACTION_DEFS, get_action, list_actions, suggest_for_rule
 from app.recovery.cascade import dry_run as compute_dry_run
-from app.recovery.execution import execute as run_execution, list_executions, ExecutionError
+from app.recovery.execution import (
+    execute as run_execution,
+    list_executions,
+    rollback as run_rollback,
+    ExecutionError,
+)
+from app.recovery import approval as approval_mod
 from app.datasource.store import store
-from app.datasource.models import RecoveryExecution
+from app.datasource.models import RecoveryExecution, ApprovalRequest
 
 router = APIRouter(prefix="/api/v1/recovery", tags=["Recovery"])
 
@@ -164,18 +173,16 @@ def _serialize_suggestion(suggestion: dict) -> dict:
 # ============================================================
 
 @router.post("/execute")
-def execute(req: ExecuteRequest):
-    """执行恢复动作(Sprint 2 仅 low_risk)。
+def execute(req: ExecuteRequest, response: Response):
+    """执行恢复动作。
 
     流程:
-    1. 验证 action 存在 + 是 low_risk + 有 handler
+    1. 验证 action 存在 + 有 handler
     2. 跑 dry_run 验证目标合法
     3. 创建 RecoveryExecution(uuid)
-    4. 调用 handler(同步执行,mock)
-    5. 持久化到 Neo4j
-    6. 返回 execution
-
-    medium/high_risk 动作返 501(Sprint 3 加审批流)。
+    4. low_risk + 不需要审批 → 同步 handler → 200 + status=succeeded/failed
+       medium / high_risk 或 requires_approval=True → 创建 ApprovalRequest
+       → 202 + status=awaiting_approval + approval_id
     """
     try:
         execution = run_execution(
@@ -188,6 +195,10 @@ def execute(req: ExecuteRequest):
         )
     except ExecutionError as e:
         raise HTTPException(status_code=e.code, detail=e.message)
+
+    # awaiting_approval → 202 Accepted
+    if execution.status == "awaiting_approval":
+        response.status_code = 202
 
     return _serialize_execution(execution)
 
@@ -238,10 +249,135 @@ def _serialize_execution(execution: RecoveryExecution) -> dict:
         "executed_at": execution.executed_at,
         "completed_at": execution.completed_at,
         "result": execution.result,
+        "approval_id": execution.approval_id,
         "rollback_execution_id": execution.rollback_execution_id,
+        "reverses_execution_id": execution.reverses_execution_id,
         # dry_run_result 只在详情接口返回(列表太占空间)
         "dry_run_summary": {
             "affected_count": execution.dry_run_result.get("affected_count", 0),
             "estimated_sla_impact": execution.dry_run_result.get("estimated_sla_impact"),
+            "rollback_action_id": execution.dry_run_result.get("rollback_action_id"),
         } if execution.dry_run_result else None,
+    }
+
+
+# ============================================================
+# Sprint 3 端点:approvals + rollback
+# ============================================================
+
+class ApprovalDecisionRequest(BaseModel):
+    approver_id: str = Field(..., description="审批人 ID(任填,只做审计)")
+    comment: str = Field("", description="审批意见")
+
+
+class RollbackRequest(BaseModel):
+    initiated_by: str = Field("system", description="发起回滚的用户")
+    reason: str = Field("", description="回滚理由")
+
+
+@router.get("/approvals")
+def list_approval_requests(
+    status: Optional[str] = Query(
+        None, pattern="^(pending|approved|rejected|expired)$",
+        description="按状态过滤;默认全部",
+    ),
+):
+    """列出审批请求(读时顺手把过期 pending 标 expired)。"""
+    approvals = approval_mod.list_approvals(status=status)
+    # 按申请时间倒序
+    approvals.sort(key=lambda a: a.requested_at or "", reverse=True)
+    return {
+        "approvals": [_serialize_approval(a) for a in approvals],
+        "total": len(approvals),
+    }
+
+
+@router.get("/approvals/{approval_id}")
+def get_approval_detail(approval_id: str):
+    """单条审批详情(顺手过期检查)。"""
+    approval = approval_mod.get_approval(approval_id)
+    if approval is None:
+        raise HTTPException(404, f"approval not found: {approval_id}")
+    return _serialize_approval(approval)
+
+
+@router.post("/approvals/{approval_id}/approve")
+def approve_approval(approval_id: str, req: ApprovalDecisionRequest):
+    """批准审批请求 → 自动触发后续执行。
+
+    返回结构:`{approval, execution}`。execution 应为 succeeded 或 failed。
+    """
+    try:
+        approval, execution = approval_mod.approve(
+            approval_id, req.approver_id, req.comment,
+        )
+    except approval_mod.ApprovalError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+    except ExecutionError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+
+    return {
+        "approval": _serialize_approval(approval),
+        "execution": _serialize_execution(execution),
+    }
+
+
+@router.post("/approvals/{approval_id}/reject")
+def reject_approval(approval_id: str, req: ApprovalDecisionRequest):
+    """驳回审批请求 → execution.status=rejected。"""
+    try:
+        approval, execution = approval_mod.reject(
+            approval_id, req.approver_id, req.comment,
+        )
+    except approval_mod.ApprovalError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+
+    return {
+        "approval": _serialize_approval(approval),
+        "execution": _serialize_execution(execution) if execution else None,
+    }
+
+
+@router.post("/executions/{execution_id}/rollback")
+def rollback_execution(execution_id: str, req: RollbackRequest):
+    """回滚一个已成功的 execution。创建反向 execution,直接同步执行(不审批)。"""
+    try:
+        rb_execution = run_rollback(
+            execution_id=execution_id,
+            initiated_by=req.initiated_by,
+            reason=req.reason,
+        )
+    except ExecutionError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+
+    return _serialize_execution(rb_execution)
+
+
+def _serialize_approval(approval: ApprovalRequest) -> dict:
+    """ApprovalRequest → 前端友好 dict。"""
+    execution = store.get_execution(approval.execution_id)
+    return {
+        "approval_id": approval.approval_id,
+        "execution_id": approval.execution_id,
+        "requested_by": approval.requested_by,
+        "requested_at": approval.requested_at,
+        "request_reason": approval.request_reason,
+        "approver_id": approval.approver_id,
+        "approver_team": approval.approver_team,
+        "approval_status": approval.approval_status,
+        "approved_at": approval.approved_at,
+        "approval_comment": approval.approval_comment,
+        "expiry_at": approval.expiry_at,
+        # 嵌入关联 execution 摘要(列表场景前端可直接展示动作名 + 目标)
+        "execution_summary": {
+            "action_id": execution.action_id,
+            "action_name": (get_action(execution.action_id) or {}).get("name", ""),
+            "target_resource_id": execution.target_resource_id,
+            "target_resource_type": execution.target_resource_type,
+            "status": execution.status,
+            "dry_run_summary": {
+                "affected_count": execution.dry_run_result.get("affected_count", 0),
+                "estimated_sla_impact": execution.dry_run_result.get("estimated_sla_impact"),
+            } if execution.dry_run_result else None,
+        } if execution else None,
     }
