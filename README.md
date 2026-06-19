@@ -1,6 +1,6 @@
 # SRE 云原生巡检图谱平台
 
-基于 Neo4j 四层模型的云原生资源巡检与故障模拟平台。
+基于 Neo4j 四层模型的云原生资源巡检 + 故障模拟 + **恢复动作引擎(含审批流 + 一键回滚)** 平台。
 
 ## 架构
 
@@ -10,6 +10,7 @@ L2 资源实例图谱  →  应用/组件/Deployment/Pod/中间件 30+ 实例
 L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent
 L4 巡检结果层    →  InspectionRun/Rule/Finding
 +  故障模拟引擎   →  FaultScenario + 时间线推进 + 数据维度注入
++  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001)
 ```
 
 ## 技术栈
@@ -65,6 +66,38 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 配置影响 | `/config-impact` | Secret/ConfigMap 变更影响面 |
 | 镜像风险 | `/image-risk` | 镜像漏洞影响传播 |
 | 告警归并 | `/alert-aggregation` | 多告警按应用归并 |
+| 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
+| 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
+
+## 恢复动作引擎(PRD-001)
+
+8 个动作覆盖全部资源类型,运维点击 → dry-run 预演 → (可选审批) → 执行 → 出问题一键回滚。
+
+| 动作 | 风险 | 目标 | 是否要审批 |
+|---|---|---|---|
+| `scale_deployment` | low | Deployment | 否 |
+| `kill_query` | low | MySQL | 否 |
+| `restart_service` | low | Service | 否 |
+| `restart_pod` | medium | Pod | 是 |
+| `refresh_secret` | medium | Secret | 是 |
+| `clear_cache` | medium | Redis | 是 |
+| `rollback_deployment` | high | Deployment | 是 |
+| `drain_node` | high | KubernetesNode | 是 |
+
+**生命周期**: `pending → dry_run_ok → awaiting_approval → approved/rejected → executing → succeeded/failed → rolled_back`
+
+**关键设计**:
+- low_risk → 同步执行 (HTTP 200);medium/high → 创建 ApprovalRequest (HTTP 202)
+- `approver_team` 从 `target.owner_team` 派生,沿 `BELONGS_TO` 上溯到 Component / Application(软记录,不强制 RBAC)
+- 审批 24h TTL,**读时检查**(无后台 cron)
+- 一键回滚:`POST /executions/{id}/rollback` 直接走反向 handler,**不再二次审批**(原动作已审批,反向是"撤销")
+- handler 当前是 mock(改 DSS 状态),Phase 2 接入真实 client-go / pymysql / redis-py
+
+**端到端验证**:
+```bash
+make dev-api &                    # 终端 1
+bash scripts/sprint3_e2e_test.sh  # 终端 2 — 8 步检查 high_risk 审批流 + 回滚
+```
 
 ## 故障模拟（独立页面）
 
@@ -101,25 +134,30 @@ make dev-frontend   # 终端3: 前端 (HMR)
 ```
 ├── doc/               # 设计文档 (8 份)
 ├── datas/             # 原始 CSV 数据
-├── scripts/           # Mock 生成 + 故障注入脚本
+├── scripts/           # Mock 生成 + 故障注入 + E2E 测试脚本
+│   ├── sprint3_e2e_test.sh   # 审批流 + 回滚端到端手测
 │   └── output/        # 生成的 CSV + Cypher
 ├── backend/
 │   ├── app/
 │   │   ├── db/        # Neo4j 客户端 + 6 视图 Cypher 查询
-│   │   ├── routers/   # API 路由 (视图 + simulation + health)
+│   │   ├── routers/   # API 路由 (视图 + simulation + recovery + health)
+│   │   ├── recovery/  # PRD-001:action_defs / cascade / execution / approval / handlers
+│   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
 │   │   ├── models/    # Pydantic 模型
 │   │   └── services/  # 业务逻辑
-│   └── tests/         # 53 pytest
+│   └── tests/         # 157 pytest (含 104 个 recovery 测试)
 ├── frontend/
 │   └── src/
 │       ├── components/
 │       │   ├── Graph/      # GraphCanvas + NodeDetailPanel + LayerToggle
 │       │   ├── Views/      # 6 视图 + SimulationView
+│       │   ├── Recovery/   # RecoveryActionsSection / DryRunModal /
+│       │   │              # ExecutionsView / ApprovalsView (PRD-001)
 │       │   └── Layout/     # MainLayout (antd)
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 16 vitest
+│       └── __tests__/      # 38 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -128,6 +166,6 @@ make dev-frontend   # 终端3: 前端 (HMR)
 ## 测试
 
 ```bash
-make test          # backend 53 + frontend 16 = 69 tests
+make test          # backend 157 + frontend 38 = 195 tests
 make test-cov      # backend coverage
 ```
