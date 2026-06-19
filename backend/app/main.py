@@ -14,10 +14,16 @@ from app.routers import (
     datasource,
     recovery,
     change_event,
+    connectors,
 )
 
 # Auto-init DSS on startup
 from app.datasource.loader import load_baseline
+from app.datasource.connectors.sync_orchestrator import (
+    init_connectors,
+    start_all_connectors,
+    stop_all_connectors,
+)
 
 app = FastAPI(
     title="SRE Inspection Graph API",
@@ -46,14 +52,29 @@ app.include_router(simulation.router)
 app.include_router(datasource.router)
 app.include_router(recovery.router)
 app.include_router(change_event.router)
+app.include_router(connectors.router)
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
     try:
         load_baseline()
     except Exception as e:
         print(f"DSS init warning: {e}")
+    # PRD-004 — 注册 + 启动数据源 connectors(K8s / Prom / Jaeger / flagd)
+    try:
+        init_connectors()
+        await start_all_connectors()
+    except Exception as e:
+        print(f"connectors startup warning: {e}")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        await stop_all_connectors()
+    except Exception as e:
+        print(f"connectors shutdown warning: {e}")
 
 
 @app.get("/")

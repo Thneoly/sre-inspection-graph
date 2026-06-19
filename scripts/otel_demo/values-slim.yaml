@@ -1,0 +1,76 @@
+# OTel Demo 0.32.0 — slim values
+# 砍掉 OpenSearch / Grafana(平台聚焦图谱视角,不重做监控可视化)
+# 保留:14 业务 service + Prometheus + Jaeger + OTel Collector + flagd + valkey + kafka + postgres
+#
+# 实测占用 ~3GB / 2 CPU,vm 集群(16GB / 9C)充裕。
+
+# ============================================================
+# 砍掉重资源组件
+# ============================================================
+opensearch:
+  enabled: false
+
+grafana:
+  enabled: false
+
+# ============================================================
+# 保留组件 — 略调资源
+# ============================================================
+opentelemetry-collector:
+  enabled: true
+  resources:
+    limits:
+      memory: 200Mi
+
+jaeger:
+  enabled: true
+  provisionDataStore:
+    cassandra: false
+  allInOne:
+    enabled: true
+    resources:
+      limits:
+        memory: 400Mi
+  storage:
+    type: memory
+  agent:
+    enabled: false
+  collector:
+    enabled: false
+  query:
+    enabled: false
+
+prometheus:
+  enabled: true
+  alertmanager:
+    enabled: false
+  configmapReload:
+    prometheus:
+      enabled: false
+  kube-state-metrics:
+    enabled: false
+  prometheus-node-exporter:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+  server:
+    persistentVolume:
+      enabled: false  # 用 emptyDir,演示场景不要持久化
+    retention: 1h
+
+# ============================================================
+# 业务 services — 保持默认即可,loadgenerator 限流
+# ============================================================
+components:
+  loadgenerator:
+    envOverrides:
+      - name: LOCUST_USERS
+        value: "5"  # 默认 10,降到 5 让流量更克制
+      - name: LOCUST_SPAWN_RATE
+        value: "1"
+
+# ============================================================
+# 平台不依赖的可选组件
+# ============================================================
+# frontendProxy 留着 — 演示访问链路
+# flagd 必留 — Sprint 3 用
