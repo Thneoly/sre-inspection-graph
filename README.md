@@ -1,16 +1,18 @@
 # SRE 云原生巡检图谱平台
 
-基于 Neo4j 四层模型的云原生资源巡检 + 故障模拟 + **恢复动作引擎(含审批流 + 一键回滚)** 平台。
+基于 Neo4j 四层模型的云原生资源巡检 + 故障模拟 + **恢复动作引擎(含审批流 + 一键回滚)** + **OpenTelemetry Demo 真实数据接入(PRD-004)** 平台。
 
 ## 架构
 
 ```
 L1 资源类型图谱  →  14 类型节点 + 35 关系
 L2 资源实例图谱  →  应用/组件/Deployment/Pod/中间件 30+ 实例
-L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent
+L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent + ChangeEvent
 L4 巡检结果层    →  InspectionRun/Rule/Finding
 +  故障模拟引擎   →  FaultScenario + 时间线推进 + 数据维度注入
 +  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001)
++  变更事件追踪   →  ChangeEvent + 故障关联查询 (PRD-002)
++  实数据 connector → K8s + Prometheus + Jaeger + flagd + K8s events (PRD-004)
 ```
 
 ## 技术栈
@@ -99,6 +101,45 @@ make dev-api &                    # 终端 1
 bash scripts/sprint3_e2e_test.sh  # 终端 2 — 8 步检查 high_risk 审批流 + 回滚
 ```
 
+## OpenTelemetry Demo 真实数据接入(PRD-004)
+
+平台从 mock CSV 升级为接入 vm 集群上跑的 **OpenTelemetry Demo 0.32.0**(14 微服务 + Postgres/Valkey/Kafka/flagd)作为第一个真实数据源。5 个 connector 30 秒轮询写入 DSS:
+
+| Connector | 拉什么 | 写入 |
+|---|---|---|
+| `k8s` | Deployment/Pod/Service/ConfigMap/Secret(kubernetes-asyncio) | DataNode + DataEdge,17 业务 service 自动建模 |
+| `prometheus` | OTel Collector spanmetrics(p99 / error_rate / request_rate) | MetricSnapshot,自动推导 component health(green/yellow/red) |
+| `jaeger` | trace span ChildOf 引用 | CALLS 边,call_count_5m ≥ 5 阈值过滤 |
+| `flagd` | feature flag state diff | ChangeEvent(source=flagd) |
+| `k8s_events` | ScalingReplicaSet / SuccessfulRescale | ChangeEvent(deployment_rolled) |
+
+**控制端点**(`/api/v1/connectors`):
+- `GET /status` — 5 个 connector 整体健康
+- `POST /{name}/sync-now` — 手动触发一次 sync,返回 SyncResult
+
+**8 个 OTel demo fault scenarios**(`backend/app/recovery/scenarios/otel_demo_scenarios.py`):flag 名 → 目标 component → 推荐 PRD-001 action。涵盖 productCatalogFailure / cartFailure / paymentServiceFailure / kafkaQueueProblems 等。
+
+**部署 + 验证**:
+```bash
+# 1. vm 集群安装 OTel demo(锁定 chart 0.32.0)
+bash scripts/otel_demo/deploy.sh
+
+# 2. 起三个 port-forward(Prometheus / Jaeger / flagd)
+kubectl -n otel-demo port-forward svc/otel-demo-prometheus-server 19090:9090
+kubectl -n otel-demo port-forward svc/otel-demo-jaeger-query 16686:16686
+kubectl -n otel-demo port-forward svc/otel-demo-flagd 8013:8013
+
+# 3. 起 API(带正确 env)
+KUBECONFIGS=vm-cluster=$HOME/.kube/vm-config \
+PROMETHEUS_URL=http://localhost:19090 \
+JAEGER_URL=http://localhost:16686/jaeger/ui \
+FLAGD_URL=http://localhost:8013 \
+make dev-api
+
+# 4. E2E
+bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
+```
+
 ## 故障模拟（独立页面）
 
 访问 `/simulation` 或从拓扑页右上角「⚡ 故障模拟」进入。
@@ -166,6 +207,6 @@ bash scripts/sprint3_e2e_test.sh  # 终端 2 — 8 步检查 high_risk 审批流
 ## 测试
 
 ```bash
-make test          # backend 157 + frontend 38 = 195 tests
+make test          # backend 285 + frontend 38 = 323 tests
 make test-cov      # backend coverage
 ```

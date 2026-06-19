@@ -4,18 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SRE 云原生巡检图谱平台 — cloud-native resource inspection graph platform based on a 4-layer Neo4j model with fault simulation **and a recovery action engine (PRD-001) covering 8 actions, dry-run, approval flow, and one-click rollback**.
+SRE 云原生巡检图谱平台 — cloud-native resource inspection graph platform based on a 4-layer Neo4j model with fault simulation, **a recovery action engine (PRD-001) covering 8 actions / dry-run / approval flow / one-click rollback**, **change event tracking with correlated query (PRD-002)**, and **real-data ingestion via 5 OTel-Demo connectors (PRD-004)**.
 
 ## Architecture
 
 ```
 L1 Resource Type Graph  →  14 type nodes + 35 relationships (static, in CSV)
 L2 Resource Instance Graph → application/component/Deployment/Pod/middleware instances
-L3 Dynamic Observability → MetricQuery + MetricSnapshot + AlertEvent
+L3 Dynamic Observability → MetricQuery + MetricSnapshot + AlertEvent + ChangeEvent
 L4 Inspection Results → InspectionRun/Rule/Finding
 
 + Data Source Service (DSS) → in-memory cache layer, decouples fault injection from Neo4j
 + Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback
++ Change Event Tracking (PRD-002) → ChangeEvent + correlated query + propagation BFS
++ Real-data Connectors (PRD-004) → K8s / Prometheus / Jaeger / flagd / K8s-events
 ```
 
 ## Tech Stack
@@ -44,13 +46,14 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 157 tests + Frontend 38 tests
+make test           # Backend 285 tests + Frontend 38 tests
 make test-cov       # Backend coverage report
 
 # Single test
 cd backend && uv run python -m pytest tests/test_routers.py::test_topology -v -p no:asyncio
 cd backend && uv run python -m pytest tests/ -k "fault" -v -p no:asyncio    # filter by name
 cd backend && uv run python -m pytest tests/ -k "recovery" -v -p no:asyncio # 104 recovery tests
+cd backend && uv run python -m pytest tests/test_sprint23_connectors.py -v -p no:asyncio  # 39 PRD-004 tests
 cd frontend && npm test -- GraphCanvas                                       # vitest substring match
 
 # Mock data
@@ -58,6 +61,9 @@ make mock-data      # Generate CSV + Cypher → scripts/output/
 
 # E2E (Sprint 3 — approval flow + rollback)
 bash scripts/sprint3_e2e_test.sh    # 8 步检查 high_risk 审批流 + 一键回滚
+
+# E2E (PRD-004 — 5 connector live verify against vm cluster)
+bash scripts/otel_demo_e2e.sh       # 7 步检查 K8s/Prom/Jaeger/flagd/k8s_events + scenarios
 ```
 
 Note: backend pytest **must** be run with `-p no:asyncio` — the project uses sync FastAPI TestClient and pytest-asyncio's auto-mode otherwise breaks fixture scoping.
@@ -74,10 +80,21 @@ backend/
 │   │   └── queries/         # 6 Cypher view queries (view1..view6)
 │   ├── datasource/          # DSS — Data Source Service
 │   │   ├── models.py        # DataNode, DataEdge, MetricSnapshot, FaultInjection,
-│   │   │                    # RecoveryExecution, ApprovalRequest
+│   │   │                    # RecoveryExecution, ApprovalRequest, ChangeEvent
 │   │   ├── store.py         # In-memory singleton stores
 │   │   ├── loader.py        # Load baseline from Neo4j → DSS
-│   │   └── fault_injector.py # Fault injection via DSS
+│   │   ├── fault_injector.py # Fault injection via DSS
+│   │   └── connectors/      # PRD-004 — real-data connectors
+│   │       ├── base.py      # BaseConnector + asyncio polling loop
+│   │       ├── k8s_connector.py / k8s_mapper.py  # K8s topology sync
+│   │       ├── prometheus_connector.py + prometheus_queries.py + health_rules.py
+│   │       ├── jaeger_connector.py + trace_aggregator.py  # CALLS edges
+│   │       ├── flagd_connector.py        # flag diff → ChangeEvent
+│   │       ├── k8s_event_connector.py    # K8s event → ChangeEvent
+│   │       └── sync_orchestrator.py      # ConnectorRegistry singleton
+│   ├── changes/             # PRD-002 — ChangeEvent service
+│   │   ├── event_service.py # record_change + correlated query + timeline
+│   │   └── propagation.py   # Reverse BFS along PROPAGATION_EDGES
 │   ├── recovery/            # PRD-001 Recovery Action Engine
 │   │   ├── action_defs.py   # 8 action templates (single source of truth)
 │   │   ├── cascade.py       # Reverse-cascade BFS for dry-run impact
@@ -85,12 +102,15 @@ backend/
 │   │   │                    # medium-high → awaiting_approval / rollback)
 │   │   ├── approval.py      # request / approve / reject / 24h TTL /
 │   │   │                    # _derive_approver_team along BELONGS_TO
-│   │   └── handlers/        # 8 mock handlers (Phase 2 → real K8s/MySQL/Redis)
+│   │   ├── handlers/        # 8 mock handlers (Phase 2 → real K8s/MySQL/Redis)
+│   │   └── scenarios/       # 8 OTel-demo flag → action mappings (PRD-004)
 │   ├── routers/
 │   │   ├── topology.py, access_link.py, node_impact.py, config_impact.py,
 │   │   │   image_risk.py, alert_aggregation.py, health.py
 │   │   ├── recovery.py      # PRD-001 endpoints (actions / dry-run / execute /
 │   │   │                    # executions / approvals / rollback)
+│   │   ├── change_event.py  # PRD-002 endpoints (record / correlated / timeline)
+│   │   ├── connectors.py    # PRD-004 endpoints (status / sync-now)
 │   │   ├── simulation.py    # Legacy fault simulation (direct Neo4j writes)
 │   │   └── datasource.py    # DSS REST API (extraction + injection)
 │   ├── models/              # Pydantic: GraphNode, GraphEdge, GraphResponse, metrics
@@ -220,3 +240,58 @@ cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints,
 ### E2E
 
 `bash scripts/sprint3_e2e_test.sh` runs 8 curl steps against a live API: high_risk submit → approval list → approve → duplicate-approve 409 → low_risk sync → rollback → original marked rolled_back → duplicate-rollback 409.
+
+## OTel Demo Real-Data Connectors — PRD-004
+
+5 asyncio-based connectors poll the vm cluster (otel-demo namespace, OTel demo Helm chart 0.32.0) every 30s and write to DSS. Frontend untouched in this PRD — verification is curl-only.
+
+| Connector | Source | Writes |
+|---|---|---|
+| `k8s` | kubernetes-asyncio (Deployment/Pod/Service/CM/Secret) | DataNode + DataEdge with `discovery_method=k8s_connector` |
+| `prometheus` | OTel Collector spanmetrics (`duration_milliseconds_*`, `calls_total`) | MetricSnapshot + auto-derives component `health` |
+| `jaeger` | Jaeger HTTP `/api/traces` (ChildOf span refs) | CALLS edges with `call_count_5m`, threshold ≥ 5 |
+| `flagd` | gRPC `/flagd.evaluation.v1.Service/ResolveAll` | ChangeEvent (source=flagd) on flag diff |
+| `k8s_events` | K8s events (ScalingReplicaSet / SuccessfulRescale) | ChangeEvent (deployment_rolled) |
+
+### Key Design Decisions
+
+1. **`discovery_method` property** isolates connector-owned data from baseline. Diff-update only touches nodes/edges with the matching method.
+2. **First-sync baseline** for flagd / k8s_events: snapshot current state but emit zero events (avoids 100+ ChangeEvents on startup).
+3. **Service name normalization**: `_service_to_component_id("cartservice", ...)` → `comp:vm-cluster:otel-demo:cart` (strips "service" suffix). `frauddetectionservice` → `fraud-detection`.
+4. **Health derivation in connector**: `derive_health(snapshots)` returns None if no data (don't refresh), `red` if any critical breach, `yellow` if any warning, else `green`. Critical beats warning across metrics.
+5. **PromQL window 5m**: shorter windows return 0 results because OTel collector pushes spanmetrics at scrape interval too long for `rate()` over 2m.
+6. **Jaeger base-path**: Helm chart 0.32.0 sets `--query.base-path=/jaeger/ui`, so API is at `/jaeger/ui/api/services` not `/api/services` (default `JAEGER_URL` reflects this).
+7. **CALLS edge threshold ≥ 5**: filter noise from one-off cross-service calls. Self-calls excluded.
+8. **8 fault scenarios** (`backend/app/recovery/scenarios/otel_demo_scenarios.py`): map flag name (`productCatalogFailure` / `cartServiceFailure` / etc.) → target component → recommended PRD-001 action (restart_pod / clear_cache / scale_deployment / rollback_deployment / restart_service).
+
+### File Map
+
+- BaseConnector: `backend/app/datasource/connectors/base.py` — abstract `sync_once()`, swallowed exceptions, `status()` for control endpoint
+- K8s: `k8s_connector.py` (kubernetes-asyncio loops + `_index_rs_to_deploy`) + `k8s_mapper.py` (pure-function mapping, `normalize_component_name`, `detect_middleware`, `is_infra`)
+- Prometheus: `prometheus_connector.py` + `prometheus_queries.py` (3 PromQL templates, QueryDef thresholds) + `health_rules.py` (warn/critical → green/yellow/red)
+- Jaeger: `jaeger_connector.py` + `trace_aggregator.py` (counts CHILD_OF span pairs across traces)
+- flagd: `flagd_connector.py` (`_extract_value` for boolValue/doubleValue/stringValue/intValue, `_state_differs` by variant)
+- K8s events: `k8s_event_connector.py` (`INTERESTING_REASONS`, `_event_to_change` with ReplicaSet → Deployment name strip)
+- Orchestrator: `sync_orchestrator.py` (`registry`, `init_connectors`, `start_all_connectors`, `stop_all_connectors`)
+- Tests: `backend/tests/test_sprint23_connectors.py` (39 tests via `asyncio.run()` + `httpx.AsyncClient` patched with AsyncMock)
+
+### Endpoints (`/api/v1/connectors`)
+
+- `GET /status` — list all connectors with `running`, `error_count_24h`, `last_result`
+- `GET /{name}` — single connector status detail
+- `POST /{name}/sync-now` — trigger one sync, return SyncResult
+
+### E2E
+
+`bash scripts/otel_demo_e2e.sh` checks 5 connectors registered → forces sync on each → checks DSS for nodes/edges/metrics/CALLS/ChangeEvents → lists 8 OTel demo scenarios. Requires port-forwards to Prometheus (19090), Jaeger (16686), flagd (8013) and API started with `KUBECONFIGS / PROMETHEUS_URL / JAEGER_URL / FLAGD_URL` env vars.
+
+## Change Event Tracking — PRD-002 Sprint 1
+
+ChangeEvent is a typed event recording **what was changed by whom on which resource at what time**. Sprint 1 ships backend-only (model + correlated query + propagation BFS); Sprint 2 will ship frontend timeline.
+
+- 4 change types: `configmap_updated` / `secret_rotated` / `deployment_rolled` / `image_pushed`
+- Sources: `k8s_api` / `argo_cd` / `gitops` / `manual` / `unknown` / `flagd` (added by PRD-004 Sprint 3)
+- Propagation: `derive_propagation(target_id)` does reverse BFS on PROPAGATION_EDGES (USES, CONTAINS, DEPLOYED_AS, BELONGS_TO, RUNS, SCHEDULED_ON, EXPOSES, ROUTES_TO), capped at depth 4
+- `severity_estimate`: `len(propagated) >= 10` → high, ≥ 5 → medium, else low
+- Endpoints (`/api/v1/change-events`): POST create / GET list with filters / GET `/correlated?target_resource_id=X&window=300` / GET `/{id}/impact` / GET `/timeline?application_id=Y`
+- DSS-only (no Neo4j double-write yet); 25 unit tests + mock generator (`scripts/generate_change_events.py`, ~150 events across 7 days)
