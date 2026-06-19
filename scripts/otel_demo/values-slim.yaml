@@ -76,6 +76,13 @@ components:
       - name: LOCUST_SPAWN_RATE
         value: "1"
 
+  # accountingservice 默认 50Mi 不够 .NET runtime + Kafka 消费,
+  # 实测 OOMKilled 13 次 → 提到 200Mi
+  accountingService:
+    resources:
+      limits:
+        memory: 200Mi
+
 # ============================================================
 # 平台不依赖的可选组件
 # ============================================================
