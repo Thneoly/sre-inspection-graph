@@ -1,17 +1,22 @@
-"""ChangeEvent 业务编排 — PRD-002 Sprint 1。
+"""ChangeEvent 业务编排 — PRD-002 Sprint 1 + Sprint 2 (Neo4j 双写)。
 
 职责:
-- record_change() : 创建事件 + 一次性算 propagated_to + 推导 severity_estimate + 写 DSS
+- record_change() : 创建事件 + 一次性算 propagated_to + 推导 severity_estimate +
+                    写 DSS,然后 best-effort dual-write 到 Neo4j
 - correlated_changes() : 故障关联查询(window-based 时间窗 + direct/propagated 双匹配)
 - application_timeline() : 沿 BELONGS_TO 拉应用所有资源,聚合事件返回时间线
 - get_impact() : 给定事件 ID,返回该事件影响的资源 + 路径
 
 设计:
-- ChangeEvent 仅写入 DSS 内存(Sprint 2 再考虑 Neo4j 双写)
+- DSS 是主存储 — Neo4j 写入失败只 logger.warning,不影响 API 返回
 - propagated_to 在 record 时算一次,/correlated 查询走 O(n) 扫描即可
 - 时间窗口比较直接拿 ISO8601 字符串字典序(同时区下与时间戳序一致),不解析 datetime
+- Neo4j 持久化模式参考 backend/app/recovery/execution.py:_persist_execution()
+  双标签 :ChangeEvent:ResourceInstance + RELATES_TO {relationship_type:'CHANGED'} 边
 """
 
+import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -24,6 +29,10 @@ from app.changes.propagation import (
 )
 from app.datasource.models import ChangeEvent
 from app.datasource.store import store
+from app.db import neo4j_client as n4j
+
+
+logger = logging.getLogger(__name__)
 
 
 VALID_CHANGE_TYPES = {
@@ -97,6 +106,14 @@ def record_change(
         propagated_to=propagated,
     )
     store.add_change_event(event)
+    # Sprint 2 — best-effort dual-write 到 Neo4j。失败只 warning,不影响 API
+    try:
+        _persist_change_event(event)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "ChangeEvent Neo4j persist failed for %s: %s: %s",
+            event.change_event_id, type(e).__name__, e,
+        )
     return event
 
 
@@ -291,3 +308,84 @@ def _shift_iso(iso: str, delta_seconds: int) -> str:
         dt = datetime.fromisoformat(iso)
     dt = dt + timedelta(seconds=delta_seconds)
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ============================================================
+# Neo4j 双写 — Sprint 2
+# ============================================================
+
+def _persist_change_event(event: ChangeEvent) -> None:
+    """ChangeEvent → Neo4j。
+
+    结构对标 backend/app/recovery/execution.py:_persist_execution():
+    - MERGE :ChangeEvent:ResourceInstance 节点(node_id 为 change_event_id)
+    - MATCH target ResourceInstance + MERGE RELATES_TO {relationship_type:'CHANGED'} 边
+      target 不存在则跳过(只丢边,不创 stub 污染图)
+    - 不写 PROPAGATES_TO 扇出边 — propagated_to 作 list 属性即可,
+      避免 high severity 事件一次写 10+ 边
+
+    设计抉择:
+    - diff_summary 是 nested dict,Neo4j 不支持 → JSON 串成 diff_summary_json
+    - propagated_to 是 list[str],Neo4j 原生支持
+    - 失败必须由调用方捕获(record_change 已包 try/except)
+    """
+    driver = n4j.get_driver()
+    if driver is None:
+        return  # test mode / 未配置 Neo4j
+
+    with driver.session() as s:
+        # (a) MERGE 节点
+        s.run(
+            """
+            MERGE (e:ChangeEvent:ResourceInstance {node_id: $eid})
+            SET e.change_event_id = $eid,
+                e.change_type = $ctype,
+                e.target_resource_id = $tid,
+                e.target_resource_type = $ttype,
+                e.changed_at = $cat,
+                e.changed_by = $by,
+                e.source = $src,
+                e.description = $desc,
+                e.diff_summary_json = $diff,
+                e.related_commit = $commit,
+                e.related_pr = $pr,
+                e.severity_estimate = $sev,
+                e.propagated_to = $propagated,
+                e.propagated_count = $pc,
+                e.label = 'ChangeEvent',
+                e.name = $ctype,
+                e.health_status = 'green',
+                e.version = 'v1',
+                e.updated_at = datetime()
+            """,
+            eid=event.change_event_id,
+            ctype=event.change_type,
+            tid=event.target_resource_id,
+            ttype=event.target_resource_type,
+            cat=event.changed_at,
+            by=event.changed_by,
+            src=event.source,
+            desc=event.description,
+            diff=json.dumps(event.diff_summary, ensure_ascii=False, sort_keys=True),
+            commit=event.related_commit,
+            pr=event.related_pr,
+            sev=event.severity_estimate,
+            propagated=event.propagated_to,
+            pc=len(event.propagated_to),
+        )
+
+        # (b) RELATES_TO 主边 → target(不存在则不建,避免 stub)
+        s.run(
+            """
+            MATCH (e:ChangeEvent {change_event_id: $eid})
+            MATCH (t:ResourceInstance {node_id: $tid})
+            MERGE (e)-[r:RELATES_TO {edge_id: 'change_target_' + $eid}]->(t)
+            SET r.relationship_type = 'CHANGED',
+                r.relationship_name = '变更',
+                r.dependency_strength = '弱',
+                r.last_verified_at = datetime(),
+                r.version = 'v1'
+            """,
+            eid=event.change_event_id,
+            tid=event.target_resource_id,
+        )

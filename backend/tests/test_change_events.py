@@ -282,6 +282,104 @@ class TestRecordChange:
 
 
 # ============================================================
+# 4b. Neo4j dual-write — Sprint 2
+# ============================================================
+
+class TestNeo4jPersistence:
+    """ChangeEvent → Neo4j 持久化 — best-effort 模式。
+
+    Neo4j 写失败必须 logger.warning 而非抛异常 — DSS 是主存储,
+    Neo4j 只是审计副本,断网 / 宕机不能阻塞业务 API。
+    """
+
+    def test_record_change_persists_with_correct_cypher(self):
+        """validate cypher 调用形态 + 主参数 + RELATES_TO 边。"""
+        from unittest.mock import MagicMock, patch
+        from app.changes import event_service
+
+        recording_session = MagicMock()
+        recording_driver = MagicMock()
+        recording_driver.session.return_value.__enter__.return_value = recording_session
+
+        with patch.object(event_service.n4j, "get_driver", return_value=recording_driver):
+            ev = event_service.record_change(
+                change_type="deployment_rolled",
+                target_resource_id="deploy:order:order-api",
+                changed_by="argo-cd",
+                source="argo_cd",
+                description="rollout v1.2.4",
+            )
+
+        # 应该调了 2 次 s.run — (a) MERGE 节点 + (b) RELATES_TO 边
+        assert recording_session.run.call_count == 2
+
+        # 第一调:节点 MERGE
+        node_call = recording_session.run.call_args_list[0]
+        cypher_node, kwargs_node = node_call.args[0], node_call.kwargs
+        assert "MERGE (e:ChangeEvent:ResourceInstance" in cypher_node
+        assert kwargs_node["eid"] == ev.change_event_id
+        assert kwargs_node["ctype"] == "deployment_rolled"
+        assert kwargs_node["tid"] == "deploy:order:order-api"
+        assert kwargs_node["src"] == "argo_cd"
+        assert kwargs_node["sev"] == ev.severity_estimate
+        # propagated_to 是 list,Neo4j 原生支持
+        assert isinstance(kwargs_node["propagated"], list)
+        assert kwargs_node["pc"] == len(ev.propagated_to)
+
+        # 第二调:RELATES_TO 边(MATCH target,不存在则跳过)
+        edge_call = recording_session.run.call_args_list[1]
+        cypher_edge, kwargs_edge = edge_call.args[0], edge_call.kwargs
+        assert "MATCH (t:ResourceInstance {node_id: $tid})" in cypher_edge
+        assert "MERGE (e)-[r:RELATES_TO" in cypher_edge
+        assert "r.relationship_type = 'CHANGED'" in cypher_edge
+        assert kwargs_edge["eid"] == ev.change_event_id
+        assert kwargs_edge["tid"] == "deploy:order:order-api"
+
+    def test_record_change_neo4j_failure_does_not_break_api(self):
+        """get_driver 抛异常时,record_change 仍返回 event(只 warning)。"""
+        from unittest.mock import patch
+        from app.changes import event_service
+
+        def boom():
+            raise RuntimeError("neo4j unreachable")
+
+        with patch.object(event_service.n4j, "get_driver", side_effect=boom):
+            ev = event_service.record_change(
+                change_type="configmap_updated",
+                target_resource_id="cm:order-config",
+            )
+
+        # event 已被写到 DSS,即使 Neo4j 写失败
+        assert ev.change_event_id.startswith("ce-")
+        from app.datasource.store import store
+        assert store.get_change_event(ev.change_event_id) is ev
+
+    def test_record_change_diff_summary_serialized_as_json(self):
+        """nested diff_summary 必须 JSON 串成 diff_summary_json 才能落 Neo4j。"""
+        import json
+        from unittest.mock import MagicMock, patch
+        from app.changes import event_service
+
+        recording_session = MagicMock()
+        recording_driver = MagicMock()
+        recording_driver.session.return_value.__enter__.return_value = recording_session
+
+        diff = {"max_pool_size": {"old": 20, "new": 50}, "timeout": "30s"}
+        with patch.object(event_service.n4j, "get_driver", return_value=recording_driver):
+            event_service.record_change(
+                change_type="configmap_updated",
+                target_resource_id="cm:order-config",
+                diff_summary=diff,
+            )
+
+        # 节点 MERGE 调用的 diff 参数必须是合法 JSON 串
+        node_kwargs = recording_session.run.call_args_list[0].kwargs
+        assert isinstance(node_kwargs["diff"], str)
+        parsed = json.loads(node_kwargs["diff"])
+        assert parsed == diff
+
+
+# ============================================================
 # 5. correlated_changes
 # ============================================================
 
