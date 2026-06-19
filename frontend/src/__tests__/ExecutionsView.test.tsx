@@ -10,10 +10,11 @@ vi.mock('../api/client', async () => {
   return {
     ...actual,
     fetchRecoveryExecutions: vi.fn(),
+    postExecutionRollback: vi.fn(),
   };
 });
 
-import { fetchRecoveryExecutions } from '../api/client';
+import { fetchRecoveryExecutions, postExecutionRollback } from '../api/client';
 
 describe('ExecutionsView', () => {
   beforeEach(() => {
@@ -83,5 +84,53 @@ describe('ExecutionsView', () => {
     );
     expect(screen.getByText('输入参数')).toBeInTheDocument();
     expect(screen.getByText('执行结果')).toBeInTheDocument();
+  });
+
+  it('shows 回滚 button only for succeeded executions with rollback_action_id', async () => {
+    // mockExecutionSucceeded: scale_deployment + rollback_action_id="scale_deployment" → 显示回滚
+    // mockExecutionFailed: failed + rollback_action_id=null → 不显示
+    vi.mocked(fetchRecoveryExecutions).mockResolvedValueOnce({
+      data: { executions: [mockExecutionSucceeded, mockExecutionFailed], total: 2 },
+    } as never);
+
+    render(<ExecutionsView />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText('扩缩 Deployment')).toBeInTheDocument());
+    // 只有一行有"回滚"按钮(succeeded + 有 rollback_action_id)
+    const rollbackButtons = screen.getAllByRole('button', { name: /回滚/ });
+    expect(rollbackButtons).toHaveLength(1);
+  });
+
+  it('triggers rollback API after confirmation modal', async () => {
+    vi.mocked(fetchRecoveryExecutions).mockResolvedValue({
+      data: { executions: [mockExecutionSucceeded], total: 1 },
+    } as never);
+    vi.mocked(postExecutionRollback).mockResolvedValueOnce({
+      data: {
+        ...mockExecutionSucceeded,
+        execution_id: 'rb-001',
+        reverses_execution_id: mockExecutionSucceeded.execution_id,
+      },
+    } as never);
+
+    const user = userEvent.setup();
+    render(<ExecutionsView />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText('扩缩 Deployment')).toBeInTheDocument());
+
+    // Click the rollback button → opens Modal.confirm
+    await user.click(screen.getByRole('button', { name: /回滚/ }));
+
+    // Confirm modal action — Modal.confirm 渲染一个 OK 按钮(text 为"确认回滚")
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /确认回滚/ })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole('button', { name: /确认回滚/ }));
+
+    await waitFor(() => expect(postExecutionRollback).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(postExecutionRollback).mock.calls[0][0]).toMatchObject({
+      execution_id: mockExecutionSucceeded.execution_id,
+      initiated_by: 'web-ui',
+    });
   });
 });

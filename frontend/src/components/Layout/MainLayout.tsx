@@ -10,6 +10,7 @@ import {
   ContainerOutlined,
   AlertOutlined,
   HistoryOutlined,
+  AuditOutlined,
 } from '@ant-design/icons';
 
 const { Sider, Content, Header: AntHeader } = Layout;
@@ -22,6 +23,7 @@ const menuItems: MenuProps['items'] = [
   { key: '/image-risk',        icon: <ContainerOutlined />,   label: '镜像风险' },
   { key: '/alert-aggregation', icon: <AlertOutlined />,       label: '告警归并' },
   { type: 'divider' },
+  { key: '/recovery/approvals', icon: <AuditOutlined />,      label: '审批中心' },
   { key: '/recovery/history',  icon: <HistoryOutlined />,     label: '恢复历史' },
 ];
 

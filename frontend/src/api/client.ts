@@ -167,8 +167,38 @@ export interface RecoveryExecution {
   executed_at: string;
   completed_at: string;
   result: Record<string, unknown>;
+  approval_id: string | null;
   rollback_execution_id: string | null;
-  dry_run_summary: { affected_count: number; estimated_sla_impact: string | null } | null;
+  reverses_execution_id: string | null;
+  dry_run_summary: {
+    affected_count: number;
+    estimated_sla_impact: string | null;
+    rollback_action_id?: string | null;
+  } | null;
+}
+
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+
+export interface ApprovalRequest {
+  approval_id: string;
+  execution_id: string;
+  requested_by: string;
+  requested_at: string;
+  request_reason: string;
+  approver_id: string;
+  approver_team: string;
+  approval_status: ApprovalStatus;
+  approved_at: string;
+  approval_comment: string;
+  expiry_at: string;
+  execution_summary: {
+    action_id: string;
+    action_name: string;
+    target_resource_id: string;
+    target_resource_type: string;
+    status: ExecutionStatus;
+    dry_run_summary: { affected_count: number; estimated_sla_impact: string | null } | null;
+  } | null;
 }
 
 // Endpoints
@@ -226,6 +256,51 @@ export function fetchRecoveryExecutions(params?: {
 export function fetchRecoveryExecution(executionId: string) {
   return api.get<RecoveryExecution>(
     `/recovery/executions/${encodeURIComponent(executionId)}`,
+  );
+}
+
+// Sprint 3 — Approval flow + rollback
+
+export function fetchApprovals(params?: { status?: ApprovalStatus }) {
+  return api.get<{ approvals: ApprovalRequest[]; total: number }>('/recovery/approvals', {
+    params,
+  });
+}
+
+export function fetchApproval(approvalId: string) {
+  return api.get<ApprovalRequest>(`/recovery/approvals/${encodeURIComponent(approvalId)}`);
+}
+
+export function postApprovalApprove(req: {
+  approval_id: string;
+  approver_id: string;
+  comment?: string;
+}) {
+  return api.post<{ approval: ApprovalRequest; execution: RecoveryExecution }>(
+    `/recovery/approvals/${encodeURIComponent(req.approval_id)}/approve`,
+    { approver_id: req.approver_id, comment: req.comment ?? '' },
+  );
+}
+
+export function postApprovalReject(req: {
+  approval_id: string;
+  approver_id: string;
+  comment?: string;
+}) {
+  return api.post<{ approval: ApprovalRequest; execution: RecoveryExecution | null }>(
+    `/recovery/approvals/${encodeURIComponent(req.approval_id)}/reject`,
+    { approver_id: req.approver_id, comment: req.comment ?? '' },
+  );
+}
+
+export function postExecutionRollback(req: {
+  execution_id: string;
+  initiated_by?: string;
+  reason?: string;
+}) {
+  return api.post<RecoveryExecution>(
+    `/recovery/executions/${encodeURIComponent(req.execution_id)}/rollback`,
+    { initiated_by: req.initiated_by ?? 'web-ui', reason: req.reason ?? '' },
   );
 }
 

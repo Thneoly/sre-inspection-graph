@@ -8,6 +8,7 @@ import type {
   RecoveryAction,
   RecoveryExecution,
   DryRunResult,
+  ApprovalRequest,
 } from '../../api/client';
 
 export const mockActionScale: RecoveryAction = {
@@ -125,8 +126,14 @@ export const mockExecutionSucceeded: RecoveryExecution = {
   executed_at: '2026-06-19T10:00:01Z',
   completed_at: '2026-06-19T10:00:31Z',
   result: { previous_replicas: 3, new_replicas: 5 },
+  approval_id: null,
   rollback_execution_id: null,
-  dry_run_summary: { affected_count: 5, estimated_sla_impact: 'minimal' },
+  reverses_execution_id: null,
+  dry_run_summary: {
+    affected_count: 5,
+    estimated_sla_impact: 'minimal',
+    rollback_action_id: 'scale_deployment',
+  },
 };
 
 export const mockExecutionFailed: RecoveryExecution = {
@@ -140,4 +147,52 @@ export const mockExecutionFailed: RecoveryExecution = {
   result: { error: 'connection refused' },
   initiated_by: 'system',
   request_reason: '',
+  dry_run_summary: {
+    affected_count: 0,
+    estimated_sla_impact: 'minimal',
+    rollback_action_id: null,    // restart_service 无回滚
+  },
+};
+
+export const mockExecutionAwaitingApproval: RecoveryExecution = {
+  ...mockExecutionSucceeded,
+  execution_id: 'exec-003',
+  action_id: 'rollback_deployment',
+  action_name: '回滚 Deployment',
+  status: 'awaiting_approval',
+  approval_id: 'approval-001',
+  result: {},
+  completed_at: '',
+  executed_at: '',
+};
+
+export const mockApprovalPending: ApprovalRequest = {
+  approval_id: 'approval-001',
+  execution_id: 'exec-003',
+  requested_by: 'alice@example.com',
+  requested_at: '2026-06-19T10:00:00Z',
+  request_reason: 'v1.2.3 上线后告警增多',
+  approver_id: '',
+  approver_team: '订单团队',
+  approval_status: 'pending',
+  approved_at: '',
+  approval_comment: '',
+  expiry_at: '2026-06-20T10:00:00Z',
+  execution_summary: {
+    action_id: 'rollback_deployment',
+    action_name: '回滚 Deployment',
+    target_resource_id: 'deploy:cce-prod-01:order:order-api',
+    target_resource_type: 'Deployment',
+    status: 'awaiting_approval',
+    dry_run_summary: { affected_count: 5, estimated_sla_impact: 'medium' },
+  },
+};
+
+export const mockApprovalApproved: ApprovalRequest = {
+  ...mockApprovalPending,
+  approval_id: 'approval-002',
+  approval_status: 'approved',
+  approver_id: 'bob@example.com',
+  approved_at: '2026-06-19T10:05:00Z',
+  approval_comment: '业务侧已知会',
 };

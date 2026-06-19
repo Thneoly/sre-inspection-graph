@@ -83,6 +83,12 @@ export default function DryRunModal({
         message.success(`执行成功 (${exec.execution_id.slice(0, 8)})`);
       } else if (exec.status === 'failed') {
         message.error(`执行失败: ${JSON.stringify(exec.result?.error || exec.result)}`);
+      } else if (exec.status === 'awaiting_approval') {
+        // Sprint 3: medium / high_risk 进入审批
+        message.success({
+          content: `已提交审批,请到「审批中心」操作 (approval ${exec.approval_id?.slice(0, 8) ?? ''})`,
+          duration: 4,
+        });
       } else {
         message.info(`状态: ${exec.status}`);
       }
@@ -139,9 +145,9 @@ export default function DryRunModal({
   };
 
   const isHighRisk = action?.risk_level === 'high';
-  const needsApproval = action?.requires_approval || false;
-  const canExecute =
-    !!dryRunResult && dryRunResult.target_valid && action?.risk_level === 'low' && !needsApproval;
+  const needsApproval = !!(action?.requires_approval || (action && action.risk_level !== 'low'));
+  // Sprint 3:dry-run 通过即可点执行 — low_risk 直接生效;medium/high 提交进审批
+  const canExecute = !!dryRunResult && dryRunResult.target_valid;
 
   if (!action) return null;
 
@@ -178,7 +184,7 @@ export default function DryRunModal({
           loading={executeMutation.isPending}
           onClick={handleExecute}
         >
-          {needsApproval || isHighRisk ? '审批后执行 (Sprint 3)' : '执行'}
+          {needsApproval ? '请求审批' : '执行'}
         </Button>,
       ]}
     >
@@ -310,8 +316,8 @@ export default function DryRunModal({
               type="info"
               showIcon
               style={{ marginTop: 16 }}
-              message="此动作需审批 (Sprint 3 上线)"
-              description="当前 Sprint 2 仅支持 low_risk + 不需审批的动作直接执行。"
+              message="此动作需审批"
+              description="提交后会创建审批请求,请到「审批中心」由该资源 owner_team 的负责人批准。"
             />
           )}
         </>

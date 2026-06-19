@@ -128,12 +128,21 @@ describe('DryRunModal', () => {
     await waitFor(() => expect(findExecuteBtn()).not.toBeDisabled());
   });
 
-  it('keeps 执行 button disabled for high_risk actions even after dry-run', async () => {
-    // Build a high_risk dry-run result
+  it('shows 请求审批 button for high_risk and submits an approval request', async () => {
+    // Sprint 3:high_risk 不再禁用,而是变成"请求审批"按钮,点击调 postRecoveryExecute
     vi.mocked(postRecoveryDryRun).mockResolvedValueOnce({
       data: { ...mockDryRunValid, risk_level: 'high', requires_approval: true },
     } as never);
+    vi.mocked(postRecoveryExecute).mockResolvedValueOnce({
+      data: {
+        ...mockExecutionSucceeded,
+        execution_id: 'exec-pending',
+        status: 'awaiting_approval',
+        approval_id: 'approval-xyz',
+      },
+    } as never);
 
+    const onExecuted = vi.fn();
     const user = userEvent.setup();
     render(
       <DryRunModal
@@ -141,6 +150,7 @@ describe('DryRunModal', () => {
         action={mockActionRollback}
         targetResourceId="deploy:cce-prod-01:order:order-api"
         onClose={() => {}}
+        onExecuted={onExecuted}
       />,
       { wrapper: makeWrapper() },
     );
@@ -148,9 +158,19 @@ describe('DryRunModal', () => {
     await user.click(screen.getByRole('button', { name: /预演/ }));
     await waitFor(() => expect(postRecoveryDryRun).toHaveBeenCalled());
 
-    // High-risk + requires_approval → execute button stays disabled, label says 审批后执行
-    const btn = screen.getByRole('button', { name: /审批后执行/ });
-    expect(btn).toBeDisabled();
+    // 按钮文案变成"请求审批",且不再 disabled
+    const approvalBtn = screen.getByText('请求审批').closest('button') as HTMLButtonElement;
+    expect(approvalBtn).not.toBeDisabled();
+
+    await user.click(approvalBtn);
+
+    await waitFor(() => expect(postRecoveryExecute).toHaveBeenCalledTimes(1));
+    // onExecuted 收到 awaiting_approval 状态
+    await waitFor(() =>
+      expect(onExecuted).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'awaiting_approval', approval_id: 'approval-xyz' }),
+      ),
+    );
   });
 
   it('calls execute API and notifies parent via onExecuted on success', async () => {

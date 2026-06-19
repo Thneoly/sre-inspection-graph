@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Table,
   Tag,
@@ -10,10 +10,15 @@ import {
   Drawer,
   Descriptions,
   Empty,
+  Button,
+  Modal,
+  message,
 } from 'antd';
+import { RollbackOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
   fetchRecoveryExecutions,
+  postExecutionRollback,
   type RecoveryExecution,
   type ExecutionStatus,
 } from '../../api/client';
@@ -45,6 +50,7 @@ export default function ExecutionsView() {
   const [statusFilter, setStatusFilter] = useState<ExecutionStatus | undefined>();
   const [actionFilter, setActionFilter] = useState<string | undefined>();
   const [selectedExecution, setSelectedExecution] = useState<RecoveryExecution | null>(null);
+  const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ['recovery-executions', statusFilter, actionFilter],
@@ -58,6 +64,59 @@ export default function ExecutionsView() {
   });
 
   const executions = data?.executions || [];
+
+  const rollbackMutation = useMutation({
+    mutationFn: postExecutionRollback,
+    onSuccess: (resp) => {
+      const rb = resp.data;
+      if (rb.status === 'succeeded') {
+        message.success(`回滚成功 (${rb.execution_id.slice(0, 8)})`);
+      } else {
+        message.error(
+          `回滚失败: ${typeof rb.result?.error === 'string' ? rb.result.error : '未知错误'}`,
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: ['recovery-executions'] });
+    },
+    onError: (err: { response?: { data?: { detail?: string } }; message: string }) => {
+      const detail = err.response?.data?.detail || err.message;
+      message.error(`回滚被拒: ${detail}`);
+    },
+  });
+
+  const handleRollback = (row: RecoveryExecution) => {
+    Modal.confirm({
+      title: '确认回滚此执行?',
+      content: (
+        <Space direction="vertical" size={4}>
+          <Typography.Text>
+            动作:<Typography.Text strong>{row.action_name}</Typography.Text>
+          </Typography.Text>
+          <Typography.Text>
+            目标:<Typography.Text code>{row.target_resource_id}</Typography.Text>
+          </Typography.Text>
+          <Typography.Text type="warning" style={{ fontSize: 12 }}>
+            将创建反向 execution,直接执行(不再二次审批)。
+          </Typography.Text>
+        </Space>
+      ),
+      okText: '确认回滚',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () =>
+        rollbackMutation.mutateAsync({
+          execution_id: row.execution_id,
+          initiated_by: 'web-ui',
+          reason: `manual rollback of ${row.execution_id.slice(0, 8)}`,
+        }),
+    });
+  };
+
+  const canRollback = (row: RecoveryExecution): boolean =>
+    row.status === 'succeeded' &&
+    !row.rollback_execution_id &&
+    !row.reverses_execution_id &&    // 不允许回滚一个回滚
+    !!row.dry_run_summary?.rollback_action_id;
 
   const columns: ColumnsType<RecoveryExecution> = [
     {
@@ -110,6 +169,27 @@ export default function ExecutionsView() {
       key: 'request_reason',
       ellipsis: true,
       render: (r: string) => r ? <Text style={{ fontSize: 12 }}>{r}</Text> : <Text type="secondary">-</Text>,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 100,
+      render: (_, row) =>
+        canRollback(row) ? (
+          <Button
+            size="small"
+            icon={<RollbackOutlined />}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleRollback(row);
+            }}
+            loading={rollbackMutation.isPending}
+          >
+            回滚
+          </Button>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 11 }}>-</Text>
+        ),
     },
   ];
 

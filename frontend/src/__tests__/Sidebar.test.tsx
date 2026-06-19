@@ -12,20 +12,21 @@ function renderLayout(initialEntry = '/topology') {
 }
 
 describe('MainLayout', () => {
-  it('should render all 7 navigation menu items (6 inspection views + recovery history)', () => {
+  it('should render all 8 navigation menu items (6 inspection views + approval center + recovery history)', () => {
     renderLayout();
     const items = [
       '应用拓扑', '访问链路', '节点影响', '配置影响', '镜像风险', '告警归并',
-      '恢复历史',
+      '审批中心', '恢复历史',
     ];
     for (const label of items) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
   });
 
-  it('should render the recovery history entry below the inspection views', () => {
+  it('should render the approval center entry above the recovery history', () => {
     renderLayout();
-    // 恢复历史 sits below a divider; assert it renders as a menu entry
+    // 审批中心 + 恢复历史 共同位于分隔符下方
+    expect(screen.getByText('审批中心')).toBeInTheDocument();
     expect(screen.getByText('恢复历史')).toBeInTheDocument();
   });
 
