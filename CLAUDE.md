@@ -18,7 +18,7 @@ L4 Inspection Results → InspectionRun/Rule/Finding
 + Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback
 + Change Event Tracking (PRD-002) → ChangeEvent + correlated query + propagation BFS
 + Real-data Connectors (PRD-004) → K8s / Prometheus / Jaeger / flagd / K8s-events
-+ Self-Inspection Report (PRD-003) → Jinja2 Markdown 报告 + 5 模块 + 异步生成
++ Self-Inspection Report (PRD-003) → Jinja2 Markdown 报告 + 3 模板 + 12 模块 + 邮件订阅
 ```
 
 ## Tech Stack
@@ -47,7 +47,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 316 tests + Frontend 56 tests
+make test           # Backend 362 tests + Frontend 62 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -331,13 +331,13 @@ CSV bulk import: `scripts/import_change_events.py` reads `scripts/output/change_
 - Tests: `backend/tests/test_change_events.py` (47 tests incl. 3 Neo4j persistence + 7 recovery-suggestion) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (10 tests)
 - Mock generator: `scripts/generate_change_events.py` (~150 events across 7 days); bulk import: `scripts/import_change_events.py`
 
-## Self-Inspection Report — PRD-003 Sprint 1
+## Self-Inspection Report — PRD-003 Sprint 1 + Sprint 2
 
-一键生成应用级自检报告(Markdown)。Sprint 1 范围:`application_health` 模板 + Markdown 输出(Jinja2),异步生成 + 状态轮询 + 下载。**PDF / matplotlib 图表 / 另两模板 / 邮件订阅 延后**(决策:报告主读者是工程团队,Markdown 够用)。
+一键生成自检报告(Markdown)。Sprint 1 上线 `application_health` 模板 + 异步生成;**Sprint 2** 加 `cluster_overview` + `incident_report` 模板 + APScheduler cron 订阅 + SMTP 邮件 + Neo4j 订阅持久化。**PDF / matplotlib 图表 / IM 推送 延后**(决策:报告主读者是工程团队,Markdown 够用)。
 
 ### 数据源适配(重要)
 
-PRD §3.4 假设复用 `inspection_service` / `alert_service` —— **这两个不存在**。`services/` 只有 `graph_service`(Neo4j 记录格式化器)+ `metrics_service`。View routers 是纯 Neo4j、测试态 mock 返空。→ **报告 5 大模块全部从 DSS store 采集**。`InspectionFinding`/`AlertEvent` 在 DSS 无对应模型,Health Score 公式从「节点 health_status + 活跃故障」适配(Phase 2 接真实巡检 finding 切回 PRD 原公式)。
+PRD §3.4 假设复用 `inspection_service` / `alert_service` —— **这两个不存在**。`services/` 只有 `graph_service`(Neo4j 记录格式化器)+ `metrics_service`。View routers 是纯 Neo4j、测试态 mock 返空。→ **报告所有模块全部从 DSS store 采集**。`InspectionFinding`/`AlertEvent` 在 DSS 无对应模型,Health Score 公式从「节点 health_status + 活跃故障」适配(Phase 2 接真实巡检 finding 切回 PRD 原公式)。
 
 ### Health Score 适配公式
 
@@ -348,45 +348,86 @@ PRD 原公式(critical Finding -10 / warning -3 / fault Pod -2)→ DSS 适配:
 - `score = max(0, 100 - critical*10 - warning*3 - fault_pod*2)`
 - rating:`≥80 健康 / 60-79 健康警告 / 40-59 风险中 / <40 风险高`
 
-### 5 大模块(全 DSS 采集)
+### 模板与模块
 
-| 模块 | 采集内容 |
-|---|---|
-| health_score | 调 `compute_health_score`(应用子树 = `find_descendants` 正向 BFS) |
-| seven_views | 拓扑统计(组件/Deployment/Pod 计数 + 就绪)+ 健康分布 + 活跃故障 + 变更统计 + 恢复统计 |
-| risk_list | red/yellow 节点 + 活跃故障 + high-severity ChangeEvent,按严重度分组 |
-| recommended_actions | fault_type→动作映射 + high-severity 变更调 `suggest_for_change`(复用 PRD-002 Phase 2),去重 |
-| historical_trends | 近 N 天按天聚合 ChangeEvent/RecoveryExecution 计数(文本表格,无图表) |
+**`application_health`(Sprint 1)** — 5 模块:health_score / seven_views / risk_list / recommended_actions / historical_trends。scope 必含 `application_id`。
+
+**`cluster_overview`(Sprint 2)** — 4 模块 + 跨应用聚合:
+- `cluster_health` — 列所有 Application,逐个 `compute_health_score`,按 score 升序 + rating 分布
+- `cluster_risk_top_n` — Top-N 风险应用 + 全局活跃故障 + 高危变更计数
+- `cluster_changes` — by_type 变更聚合 + Top-5 受变更资源
+- `cluster_recoveries` — RecoveryExecution status 分布 + 成功率
+- scope 可空(全公司)或 `cluster_id`(L1 模型反向 BFS 不通,简化为 `resource_id` prefix 匹配,Phase 2 重做)
+
+**`incident_report`(Sprint 2)** — 3 模块,围绕单个事件锚点:
+- 锚点解析:`scope.fault_id`(DSS FaultInjection)或 `change_event_id`(DSS ChangeEvent),二选一;失败 → `ValueError` → generator failed 分支
+- `incident_summary` — 锚点元信息 + 反向 BFS 受影响节点(`derive_propagation` 复用 PRD-002)
+- `incident_timeline` — 锚点 ±window_seconds(默认 3600s)内交叉 ChangeEvent + RecoveryExecution,按时间排序(返回 key 用 `events` 不是 `items` — Jinja2 与 dict.items() 冲突)
+- `incident_recoveries` — 已执行恢复 + 推荐后续(change 锚点调 `suggest_for_change`)
 
 ### 异步生成
 
-- `generate_report(report_id)` 同步函数:按 task.modules 顺序采集(每步更新 progress/current_step)→ Jinja2 渲染 → 落盘 `backend/reports/{id}.md` → status=completed;异常 → failed + error_message
+- `generate_report(report_id)` 同步函数:按 `template_id` 路由到 `gatherers_for_template()` 对应表 → 顺序调采集函数(每步更新 progress/current_step)→ Jinja2 渲染 `{template_id}.md` → 落盘 `backend/reports/{id}.md` → completed;异常 → failed + error_message
 - `run_generation_background(report_id)` 包 `threading.Thread`(daemon)。**测试直接调同步 `generate_report` 避免线程 flaky**
-- `report_store` 单例(对标 DSS `store`)hold 所有 ReportTask;uvicorn 重启任务丢失(产物在磁盘),Sprint 2 做持久化索引
+- `report_store` 单例(对标 DSS `store`)hold 所有 ReportTask;uvicorn 重启任务丢失(产物在磁盘)
+
+### 订阅 + 调度(Sprint 2)
+
+- `ReportSubscription` dataclass + `subscription_store` 单例(`backend/app/reports/subscription_store.py`)— 字段:template_id / scope / modules / cron / recipients / enabled / last_run_at / last_status / last_error / last_report_id
+- `ReportScheduler` 包 APScheduler `BackgroundScheduler`(`backend/app/reports/scheduler.py`)— `register_subscription` 用 `CronTrigger.from_crontab` 注册 cron job;`unregister` / `reload_all` / `trigger_now`
+- job 触发 → `_run_subscription_safely(sub_id)`:读 sub → 创建一次性 ReportTask → 同步 `generate_report` → 调 `EmailSender.send(recipients, subject, body=markdown, attachments=[.md])` → 更新 `last_*`
+- `EmailSender` 抽象(`backend/app/reports/email_sender.py`):`InMemoryEmailSender`(默认 / 测试,sent 列表累加)+ `SmtpEmailSender`(stdlib smtplib,`SMTP_HOST` env 切真 SMTP)+ `get_email_sender()` 单例工厂
+- 启动时 `load_subscriptions_from_neo4j()` 反向 hydrate + `report_scheduler.start()` + `reload_all()`(`backend/app/main.py` lifespan)
+
+### Neo4j 订阅持久化(Sprint 2)
+
+`backend/app/reports/persistence.py` 镜像 `_persist_change_event` best-effort 模式:
+- `_persist_subscription(sub)` — `MERGE (:ReportSubscription:ResourceInstance {node_id: $sid})`,scope 用 JSON str(`scope_json`)、modules / recipients 原生 list
+- `_delete_subscription_node(sub_id)` — `DETACH DELETE`
+- `load_subscriptions_from_neo4j()` — `MATCH (:ReportSubscription) RETURN ...` 反向 hydrate;Neo4j 离线 → `logger.warning` 不阻塞启动
+- 失败一律 `logger.warning` 不抛(API / 内存 store 不阻塞)
 
 ### 端点(`/api/v1/reports`)
 
-- `POST /generate` → 202 + `{report_id, status:"pending", estimated_completion_seconds}`(校验 template_id ∈ {application_health}、format ∈ {markdown})
+报告:
+- `POST /generate` → 202 + `{report_id, status:"pending"}`(校验 template_id ∈ 3 个、format ∈ {markdown}、按模板校验 modules 子集、application_id / anchor 必填)
 - `GET /{id}/status` → `{status, progress, current_step, error_message}`
-- `GET /{id}/download?format=markdown` → FileResponse(.md),非 completed → 409
+- `GET /{id}/download?format=markdown` → FileResponse(.md),非 completed → 409,非 markdown → 400
 - `GET /` → 列表(过滤 template_id / application_id)
+
+订阅(Sprint 2):
+- `POST /subscriptions`(201)— 校验 cron / recipients / scope → 注册 scheduler → Neo4j dual-write
+- `GET /subscriptions` / `GET /subscriptions/{id}`
+- `PATCH /subscriptions/{id}` — 改 cron / enabled / recipients / modules,自动重注册 scheduler
+- `DELETE /subscriptions/{id}`(204)— scheduler 注销 + Neo4j delete
+- `POST /subscriptions/{id}/trigger` — 同步立即跑(发邮件 + 更新 last_*)
+- `GET /sent-emails` — 仅 InMemoryEmailSender 模式调试,生产 SMTP → 501
 
 ### 前端
 
-- `/reports` 页(`ReportsView`)—— Table(状态/进度/下载)+「生成新报告」Modal(模板/应用/时间范围 1d/7d/30d/模块多选),generating 行 3s 自动刷新
+- `/reports` 页(`ReportsView`)外层 antd `<Tabs>`:
+  - 「报告列表」(`ReportsListPanel`)— Table + 「生成新报告」Modal,模板 Select 切换时动态切换 scope 输入(应用 ID / 集群 ID / fault_id + change_event_id 二选一)+ 同步模块默认值;3s 刷新
+  - 「订阅管理」(`SubscriptionsPanel`)— Table(模板/范围/cron Tag/收件人 Tag/最近运行/启用 Switch/操作) + 「新建订阅」Modal(动态 scope + 4 个 cron 预设按钮 + 收件人逗号分隔输入 + 模块多选 + enabled Switch);行操作:立即运行 / Switch 启停 / 删除(Popconfirm);5s 刷新
 - `NodeDetailPanel` 仅 Application 节点显示「📄 自检报告」Card,一键生成
-- 下载:`utils/download.ts` `downloadBlob`(全项目首个 blob 下载 —— createObjectURL + `<a download>` + revoke)
+- 下载:`utils/download.ts` `downloadBlob`(全项目首个 blob 下载 — createObjectURL + `<a download>` + revoke)
 
 ### Key Design Decisions
 
-1. **Markdown-only Sprint 1** —— 不上 weasyprint(PDF 延后)、不上 matplotlib(趋势用文本表格)。原生库已就绪,Phase 2 可平滑切 PDF。
-2. **DSS 为唯一数据源** —— view routers 纯 Neo4j 测试态返空,报告必须可测,故全走 DSS。Health Score 适配公式是这一选择的直接后果。
-3. **threading + 内存任务表** —— 不引入 Celery;`report_store` 单例对标 DSS。后台线程测试里用同步调用替代。
-4. **模块按需启用** —— `modules` 字段控制采集 + 模板 `{% if modules.x %}` 双重过滤,部分模块报告省略对应 section。
-5. **产物落盘 + gitignore** —— `backend/reports/{id}.md`,`.gitignore` 加 `backend/reports/`。
+1. **Markdown-only** —— 不上 weasyprint(PDF 延后)、不上 matplotlib(趋势用文本表格)。原生库已就绪,Phase 2 可平滑切 PDF
+2. **DSS 为唯一数据源** —— view routers 纯 Neo4j 测试态返空,报告必须可测,故全走 DSS。Health Score 适配公式是这一选择的直接后果
+3. **threading + 内存任务表** —— 不引入 Celery;`report_store` 单例对标 DSS。后台线程测试里用同步调用替代
+4. **多模板路由** —— `gatherers_for_template(template_id)` 返回对应 gatherer 字典,延迟 import 避免循环依赖(cluster_modules / incident_modules 反向引用 health_score)
+5. **incident 锚点 fault_id / change_event_id 二选一** —— 没有独立 Incident 模型,复用现有 DSS 资源,失败抛 `ValueError` → generator failed 分支
+6. **EmailSender 抽象 + 单例工厂** —— 默认 InMemoryEmailSender 不污染线上;`SMTP_HOST` env 切真 SMTP;`reset_email_sender()` 测试用
+7. **APScheduler BackgroundScheduler** —— 同步 scheduler 配 FastAPI lifespan 简洁;`trigger_now` 暴露给 API + 测试免起线程
+8. **订阅 Neo4j dual-write** —— uvicorn 重启订阅不丢;失败不阻塞主流程(同 `_persist_change_event` 模式)
+9. **cluster_id prefix 匹配** —— L1 模型 KubernetesCluster 不直接 CONTAINS Application,反向 BFS 走不通;Sprint 2 简化为 `resource_id` 字符串 prefix,Phase 2 重做
+10. **Jinja2 字段名避开 `items`** —— `incident_timeline` 返回 `events` 而非 `items`,避免与 dict.items() 方法冲突
 
 ### File Map
 
-- 后端:`backend/app/reports/{store,health_score,modules,generator}.py` + `templates/application_health.md`;`backend/app/routers/report.py`;注册于 `backend/app/main.py`
-- 前端:`frontend/src/components/Views/ReportsView.tsx`,`frontend/src/components/Graph/NodeDetailPanel.tsx`,`frontend/src/utils/download.ts`,`frontend/src/api/client.ts`
-- 测试:`backend/tests/test_reports.py`(21 tests)+ `frontend/src/__tests__/{ReportsView,NodeDetailPanelReport}.test.tsx`(8 tests)
+- 后端核心:`backend/app/reports/{store,health_score,modules,generator}.py` + `cluster_modules.py` + `incident_modules.py` + `subscription_store.py` + `email_sender.py` + `scheduler.py` + `persistence.py`
+- 模板:`backend/app/reports/templates/{application_health,cluster_overview,incident_report}.md`
+- API:`backend/app/routers/report.py`(报告 4 端点 + 订阅 7 端点),注册于 `backend/app/main.py`(lifespan startup hydrate + scheduler.start)
+- 前端:`frontend/src/components/Views/{ReportsView,SubscriptionsPanel}.tsx`,`frontend/src/components/Graph/NodeDetailPanel.tsx`,`frontend/src/utils/download.ts`,`frontend/src/api/client.ts`
+- 测试:`backend/tests/test_reports.py`(21)+ `test_reports_sprint2.py`(22 — cluster/incident/multi-template)+ `test_reports_sprint2_sub.py`(24 — 订阅 / 邮件 / 调度 / persistence)+ `frontend/src/__tests__/{ReportsView,NodeDetailPanelReport,SubscriptionsPanel}.test.tsx`(14)

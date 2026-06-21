@@ -13,6 +13,7 @@ L4 巡检结果层    →  InspectionRun/Rule/Finding
 +  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001)
 +  变更事件追踪   →  ChangeEvent + 故障关联查询 + 前端时间线 + Neo4j 双写 (PRD-002)
 +  实数据 connector → K8s + Prometheus + Jaeger + flagd + K8s events (PRD-004)
++  自检报告引擎   →  Jinja2 Markdown + 3 模板 + 邮件订阅 + APScheduler (PRD-003)
 ```
 
 ## 技术栈
@@ -71,7 +72,7 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
 | 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
 | 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 (PRD-002) |
-| 报告中心 | `/reports` | 自检报告生成 + 下载 (PRD-003) |
+| 报告中心 | `/reports` | 自检报告生成 + 下载 + 邮件订阅 (PRD-003) |
 
 ## 恢复动作引擎(PRD-001)
 
@@ -188,7 +189,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
 │   │   ├── models/    # Pydantic 模型
 │   │   └── services/  # 业务逻辑
-│   └── tests/         # 157 pytest (含 104 个 recovery 测试)
+│   └── tests/         # 362 pytest (含 104 个 recovery + 67 个 reports 测试)
 ├── frontend/
 │   └── src/
 │       ├── components/
@@ -200,7 +201,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 56 vitest
+│       └── __tests__/      # 62 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -209,6 +210,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 316 + frontend 56 = 372 tests
+make test          # backend 362 + frontend 62 = 424 tests
 make test-cov      # backend coverage
 ```
