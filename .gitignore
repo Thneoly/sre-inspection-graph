@@ -1,6 +1,9 @@
 # ===== Python =====
 __pycache__/
 *.py[cod]
+
+# PRD-003 报告产物(运行时生成)
+backend/reports/
 *.egg-info/
 dist/
 *.egg

@@ -15,6 +15,7 @@ from app.routers import (
     recovery,
     change_event,
     connectors,
+    report,
 )
 
 # Auto-init DSS on startup
@@ -53,6 +54,7 @@ app.include_router(datasource.router)
 app.include_router(recovery.router)
 app.include_router(change_event.router)
 app.include_router(connectors.router)
+app.include_router(report.router)
 
 
 @app.on_event("startup")
