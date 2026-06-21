@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
-import { Drawer, Descriptions, Tag, Typography, Space, Card, Statistic } from 'antd';
-import { CheckCircleOutlined, WarningOutlined, CloseCircleOutlined, LinkOutlined } from '@ant-design/icons';
-import { fetchResourceMetrics } from '../../api/client';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { Button, Drawer, Descriptions, Tag, Typography, Space, Card, Statistic, message } from 'antd';
+import { CheckCircleOutlined, WarningOutlined, CloseCircleOutlined, LinkOutlined, FileTextOutlined } from '@ant-design/icons';
+import { fetchResourceMetrics, postReportGenerate, ALL_REPORT_MODULES } from '../../api/client';
 import type { GraphResponse } from '../../api/client';
 import RecoveryActionsSection from '../Recovery/RecoveryActionsSection';
 import ChangeTimelineSection from './ChangeTimelineSection';
@@ -30,6 +30,17 @@ export default function NodeDetailPanel({ selectedId, nodeType, nodeProperties, 
     queryKey: ['metrics', selectedId],
     queryFn: () => fetchResourceMetrics(selectedId!).then(r => r.data),
     enabled: !!selectedId && !isEdge,
+  });
+
+  // PRD-003 Sprint 1 — 在 Application 节点上生成健康报告
+  const generateReportMutation = useMutation({
+    mutationFn: postReportGenerate,
+    onSuccess: () => {
+      message.success('已生成健康报告,请到「报告中心」下载');
+    },
+    onError: (err: { response?: { data?: { detail?: string } }; message: string }) => {
+      message.error(`生成失败:${err.response?.data?.detail || err.message}`);
+    },
   });
 
   const health = String(nodeProperties?.health_status || 'normal');
@@ -168,6 +179,32 @@ export default function NodeDetailPanel({ selectedId, nodeType, nodeProperties, 
           {selectedId && (
             <Card title="📅 变更时间线(近 50 条)" size="small" style={{ marginTop: 12, marginBottom: 12 }}>
               <ChangeTimelineSection resourceId={selectedId} />
+            </Card>
+          )}
+
+          {/* 自检报告(PRD-003 Sprint 1) — 仅 Application 节点 */}
+          {selectedId && type === 'Application' && (
+            <Card title="📄 自检报告" size="small" style={{ marginTop: 12, marginBottom: 12 }}>
+              <Space direction="vertical" style={{ width: '100%' }} size="small">
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  一键生成本应用的健康度评分 + 风险清单 + 推荐动作 Markdown 报告。
+                </Typography.Text>
+                <Button
+                  type="primary"
+                  icon={<FileTextOutlined />}
+                  loading={generateReportMutation.isPending}
+                  onClick={() =>
+                    generateReportMutation.mutate({
+                      template_id: 'application_health',
+                      scope: { application_id: selectedId },
+                      format: 'markdown',
+                      modules: [...ALL_REPORT_MODULES],
+                    })
+                  }
+                >
+                  生成健康报告
+                </Button>
+              </Space>
             </Card>
           )}
 

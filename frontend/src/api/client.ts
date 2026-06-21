@@ -474,4 +474,91 @@ export function fetchChangeEventRecoverySuggestion(changeEventId: string) {
 }
 
 
+// ============================================================
+// PRD-003 — 自检报告生成(Sprint 1: Markdown)
+// ============================================================
+
+export type ReportTemplate = 'application_health';
+export type ReportStatus = 'pending' | 'generating' | 'completed' | 'failed';
+export type ReportModule =
+  | 'health_score'
+  | 'seven_views'
+  | 'risk_list'
+  | 'recommended_actions'
+  | 'historical_trends';
+
+export interface ReportScope {
+  application_id?: string;
+  cluster_id?: string;
+  time_range_start?: string;
+  time_range_end?: string;
+}
+
+export interface ReportTask {
+  report_id: string;
+  template_id: ReportTemplate;
+  scope: ReportScope;
+  modules: ReportModule[];
+  format: string;
+  status: ReportStatus;
+  progress: number;
+  current_step: string;
+  error_message: string | null;
+  has_markdown: boolean;
+  file_path: string | null;
+  created_at: string;
+  completed_at: string;
+}
+
+export interface ReportStatusResponse {
+  report_id: string;
+  status: ReportStatus;
+  progress: number;
+  current_step: string;
+  error_message: string | null;
+}
+
+export const ALL_REPORT_MODULES: ReportModule[] = [
+  'health_score',
+  'seven_views',
+  'risk_list',
+  'recommended_actions',
+  'historical_trends',
+];
+
+export function postReportGenerate(req: {
+  template_id: ReportTemplate;
+  scope: ReportScope;
+  format?: string;
+  modules?: ReportModule[];
+}) {
+  return api.post<{ report_id: string; status: ReportStatus; estimated_completion_seconds: number }>(
+    '/reports/generate',
+    req,
+  );
+}
+
+export function fetchReportStatus(reportId: string) {
+  return api.get<ReportStatusResponse>(`/reports/${encodeURIComponent(reportId)}/status`);
+}
+
+export function fetchReports(params?: {
+  template_id?: ReportTemplate;
+  application_id?: string;
+  limit?: number;
+}) {
+  return api.get<{ reports: ReportTask[]; total: number; returned: number }>('/reports', {
+    params,
+  });
+}
+
+/** 下载报告 Markdown(blob)。全项目首个 blob 下载。 */
+export function downloadReport(reportId: string) {
+  return api.get<Blob>(`/reports/${encodeURIComponent(reportId)}/download`, {
+    responseType: 'blob',
+    params: { format: 'markdown' },
+  });
+}
+
+
 export default api;
