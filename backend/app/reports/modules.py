@@ -269,3 +269,24 @@ MODULE_GATHERERS: dict[str, Any] = {
     "recommended_actions": gather_recommended_actions,
     "historical_trends": gather_historical_trends,
 }
+
+
+# ============================================================
+# 模板路由表 — generator 按 template_id 取对应 gatherer 字典
+# ============================================================
+
+def _get_template_gatherers() -> dict[str, dict[str, Any]]:
+    """延迟 import 避免循环依赖(cluster_modules / incident_modules 反向引用 health_score)。"""
+    from app.reports.cluster_modules import CLUSTER_MODULE_GATHERERS
+    from app.reports.incident_modules import INCIDENT_MODULE_GATHERERS
+
+    return {
+        "application_health": MODULE_GATHERERS,
+        "cluster_overview": CLUSTER_MODULE_GATHERERS,
+        "incident_report": INCIDENT_MODULE_GATHERERS,
+    }
+
+
+def gatherers_for_template(template_id: str) -> dict[str, Any]:
+    """按模板返回 {模块名: gather 函数} 字典。未知模板返回空。"""
+    return _get_template_gatherers().get(template_id, {})

@@ -13,17 +13,44 @@ from typing import Any, Optional
 
 VALID_STATUSES = ("pending", "generating", "completed", "failed")
 
-# Sprint 1 只支持一个模板
-VALID_TEMPLATES = ("application_health",)
+# Sprint 2 支持 3 个模板
+VALID_TEMPLATES = ("application_health", "cluster_overview", "incident_report")
 
-# 5 大模块(每个在模板里可选启用)
-ALL_MODULES = (
+# application_health 模板的 5 大模块(Sprint 1)
+ALL_MODULES_APP = (
     "health_score",
     "seven_views",
     "risk_list",
     "recommended_actions",
     "historical_trends",
 )
+
+# cluster_overview 模板的 4 模块(Sprint 2)
+ALL_MODULES_CLUSTER = (
+    "cluster_health",
+    "cluster_risk_top_n",
+    "cluster_changes",
+    "cluster_recoveries",
+)
+
+# incident_report 模板的 3 模块(Sprint 2)
+ALL_MODULES_INCIDENT = (
+    "incident_summary",
+    "incident_timeline",
+    "incident_recoveries",
+)
+
+# 默认全模块(report router 老路径仍 import ALL_MODULES 当默认 — 保留向后兼容)
+ALL_MODULES = ALL_MODULES_APP
+
+
+def modules_for_template(template_id: str) -> tuple[str, ...]:
+    """按模板返回合法模块清单(供 router 校验 + 默认值)。"""
+    return {
+        "application_health": ALL_MODULES_APP,
+        "cluster_overview": ALL_MODULES_CLUSTER,
+        "incident_report": ALL_MODULES_INCIDENT,
+    }.get(template_id, ())
 
 
 @dataclass

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from app.reports.modules import MODULE_GATHERERS
+from app.reports.modules import gatherers_for_template
 from app.reports.store import report_store
 
 
@@ -63,17 +63,22 @@ def generate_report(report_id: str) -> None:
             "time_range_end": task.scope.get("time_range_end"),
         }
 
+        # 按 template_id 取对应模块表(cluster / incident / app)
+        template_gatherers = gatherers_for_template(task.template_id)
+        if not template_gatherers:
+            raise ValueError(f"unsupported template_id: {task.template_id}")
+
         # 按 task.modules 顺序采集;未启用的模块不采(模板里也用 if 跳过)
         context: dict = {
             "report_id": report_id,
             "scope": task.scope,
             "generated_at": _now_iso(),
-            "modules": {m: (m in task.modules) for m in MODULE_GATHERERS},
+            "modules": {m: (m in task.modules) for m in template_gatherers},
         }
 
         total = len(task.modules)
         for i, module_name in enumerate(task.modules):
-            gatherer = MODULE_GATHERERS.get(module_name)
+            gatherer = template_gatherers.get(module_name)
             if gatherer is None:
                 continue
             report_store.update_task(
@@ -81,7 +86,16 @@ def generate_report(report_id: str) -> None:
                 current_step=f"采集 {module_name}",
                 progress=int(i / max(total, 1) * 80),
             )
-            context[module_name] = gatherer(app_id, time_range=time_range)
+            # 应用级模块用 app_id 第一参数;集群/事件模块用 scope/cluster_id —— 统一传 kwargs
+            if task.template_id == "application_health":
+                context[module_name] = gatherer(app_id, time_range=time_range)
+            elif task.template_id == "cluster_overview":
+                context[module_name] = gatherer(
+                    cluster_id=task.scope.get("cluster_id"),
+                    time_range=time_range,
+                )
+            else:  # incident_report
+                context[module_name] = gatherer(task.scope)
 
         report_store.update_task(report_id, current_step="渲染 Markdown", progress=90)
 

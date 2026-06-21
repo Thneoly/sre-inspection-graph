@@ -18,7 +18,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.reports.generator import new_report_id, run_generation_background
-from app.reports.store import ALL_MODULES, ReportTask, VALID_TEMPLATES, report_store
+from app.reports.store import (
+    ReportTask,
+    VALID_TEMPLATES,
+    modules_for_template,
+    report_store,
+)
 
 
 router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
@@ -31,17 +36,19 @@ router = APIRouter(prefix="/api/v1/reports", tags=["Reports"])
 class ReportScope(BaseModel):
     application_id: Optional[str] = None
     cluster_id: Optional[str] = None
+    fault_id: Optional[str] = Field(None, description="incident_report 锚点(二选一)")
+    change_event_id: Optional[str] = Field(None, description="incident_report 锚点(二选一)")
     time_range_start: Optional[str] = Field(None, description="ISO8601 起")
     time_range_end: Optional[str] = Field(None, description="ISO8601 止")
 
 
 class GenerateRequest(BaseModel):
-    template_id: str = Field(..., description="application_health(Sprint 1 唯一)")
+    template_id: str = Field(..., description="application_health | cluster_overview | incident_report")
     scope: ReportScope
-    format: str = Field("markdown", description="Sprint 1 仅 markdown")
-    modules: list[str] = Field(
-        default_factory=lambda: list(ALL_MODULES),
-        description="启用的模块子集,默认全部 5 个",
+    format: str = Field("markdown", description="Sprint 1/2 仅 markdown")
+    modules: Optional[list[str]] = Field(
+        default=None,
+        description="启用的模块子集,默认按模板全选",
     )
 
 
@@ -52,24 +59,33 @@ class GenerateRequest(BaseModel):
 @router.post("/generate", status_code=202)
 def generate(req: GenerateRequest):
     if req.template_id not in VALID_TEMPLATES:
-        raise HTTPException(400, f"unsupported template_id: {req.template_id}; Sprint 1 only supports {VALID_TEMPLATES}")
+        raise HTTPException(400, f"unsupported template_id: {req.template_id}; valid: {list(VALID_TEMPLATES)}")
     if req.format not in ("markdown",):
-        raise HTTPException(400, f"unsupported format: {req.format}; Sprint 1 only supports markdown")
+        raise HTTPException(400, f"unsupported format: {req.format}; Sprint 1/2 only supports markdown")
 
-    # 校验 modules
-    bad = [m for m in req.modules if m not in ALL_MODULES]
+    valid_modules = modules_for_template(req.template_id)
+    modules = req.modules if req.modules is not None else list(valid_modules)
+
+    # 校验 modules 子集合法
+    bad = [m for m in modules if m not in valid_modules]
     if bad:
-        raise HTTPException(400, f"unknown modules: {bad}; valid: {list(ALL_MODULES)}")
+        raise HTTPException(
+            400,
+            f"unknown modules for template '{req.template_id}': {bad}; valid: {list(valid_modules)}",
+        )
 
-    if not req.scope.application_id:
+    # 模板-specific scope 必填校验
+    if req.template_id == "application_health" and not req.scope.application_id:
         raise HTTPException(400, "scope.application_id required for application_health template")
+    if req.template_id == "incident_report" and not (req.scope.fault_id or req.scope.change_event_id):
+        raise HTTPException(400, "scope.fault_id or scope.change_event_id required for incident_report template")
 
     report_id = new_report_id()
     task = ReportTask(
         report_id=report_id,
         template_id=req.template_id,
         scope=req.scope.model_dump(),
-        modules=list(req.modules),
+        modules=list(modules),
         format=req.format,
         status="pending",
         created_at=_now_iso(),
@@ -100,6 +116,8 @@ def status(report_id: str):
 
 @router.get("/{report_id}/download")
 def download(report_id: str, format: str = Query("markdown")):
+    if format != "markdown":
+        raise HTTPException(400, f"unsupported format: {format}; Sprint 1/2 only supports markdown")
     task = report_store.get_task(report_id)
     if task is None:
         raise HTTPException(404, f"report not found: {report_id}")
