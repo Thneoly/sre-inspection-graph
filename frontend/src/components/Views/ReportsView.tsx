@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from 'antd';
@@ -20,8 +21,11 @@ import { FileTextOutlined, DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ALL_REPORT_MODULES,
+  CLUSTER_REPORT_MODULES,
+  INCIDENT_REPORT_MODULES,
   downloadReport,
   fetchReports,
+  modulesForTemplate,
   postReportGenerate,
   type ReportModule,
   type ReportStatus,
@@ -29,6 +33,7 @@ import {
   type ReportTemplate,
 } from '../../api/client';
 import { downloadBlob } from '../../utils/download';
+import SubscriptionsPanel from './SubscriptionsPanel';
 
 const { Text } = Typography;
 
@@ -52,6 +57,19 @@ const moduleLabel: Record<ReportModule, string> = {
   risk_list: '风险清单',
   recommended_actions: '推荐动作',
   historical_trends: '历史趋势',
+  cluster_health: '集群健康',
+  cluster_risk_top_n: '风险 Top-N',
+  cluster_changes: '变更汇总',
+  cluster_recoveries: '恢复汇总',
+  incident_summary: '事件摘要',
+  incident_timeline: '时间线',
+  incident_recoveries: '恢复 & 推荐',
+};
+
+const templateLabel: Record<ReportTemplate, string> = {
+  application_health: '应用健康报告',
+  cluster_overview: '集群/总览',
+  incident_report: '事件报告',
 };
 
 type RangePreset = '1d' | '7d' | '30d';
@@ -72,21 +90,45 @@ function fullTimestamp(iso: string): string {
 }
 
 /**
- * 报告中心 — PRD-003 Sprint 1。
+ * 报告中心 — PRD-003 Sprint 1 + Sprint 2。
  *
- * - Table 列历史报告(模板/应用/状态/进度/创建时间/下载),generating 行 3s 自动刷新
- * - 「生成新报告」按钮 → Modal 表单(模板/应用/时间范围/模块多选)
- * - 下载(completed 行)→ blob → .md 文件
+ * - Tab「报告列表」:Table + 生成新报告 Modal(动态 scope 字段)
+ * - Tab「订阅管理」:SubscriptionsPanel
  */
 export default function ReportsView() {
+  return (
+    <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
+      <Tabs
+        defaultActiveKey="list"
+        items={[
+          { key: 'list', label: '报告列表', children: <ReportsListPanel /> },
+          { key: 'subs', label: '订阅管理', children: <SubscriptionsPanel /> },
+        ]}
+      />
+    </div>
+  );
+}
+
+interface FormValues {
+  template_id: ReportTemplate;
+  application_id?: string;
+  cluster_id?: string;
+  fault_id?: string;
+  change_event_id?: string;
+  range: RangePreset;
+  modules: ReportModule[];
+}
+
+function ReportsListPanel() {
   const [modalOpen, setModalOpen] = useState(false);
   const queryClient = useQueryClient();
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<FormValues>();
+  const templateWatch = Form.useWatch('template_id', form) ?? 'application_health';
 
   const { data, isLoading } = useQuery({
     queryKey: ['reports'],
     queryFn: () => fetchReports().then((r) => r.data),
-    refetchInterval: 3000, // 让 generating 行自动刷新到 completed
+    refetchInterval: 3000,
   });
 
   const generateMutation = useMutation({
@@ -131,12 +173,17 @@ export default function ReportsView() {
       title: '模板',
       dataIndex: 'template_id',
       key: 'template_id',
-      render: (t: string) => (t === 'application_health' ? '应用健康报告' : t),
+      render: (t: ReportTemplate) => templateLabel[t] || t,
     },
     {
-      title: '应用',
-      key: 'application_id',
-      render: (_: unknown, r: ReportTask) => r.scope.application_id || r.scope.cluster_id || '-',
+      title: '范围',
+      key: 'scope',
+      render: (_: unknown, r: ReportTask) =>
+        r.scope.application_id ||
+        r.scope.cluster_id ||
+        r.scope.fault_id ||
+        r.scope.change_event_id ||
+        '总览',
     },
     {
       title: '状态',
@@ -181,18 +228,25 @@ export default function ReportsView() {
   const handleSubmit = () => {
     form
       .validateFields()
-      .then((vals: {
-        template_id: ReportTemplate;
-        application_id: string;
-        range: RangePreset;
-        modules: ReportModule[];
-      }) => {
+      .then((vals) => {
+        const scope: Record<string, string> = {};
+        if (vals.template_id === 'application_health' && vals.application_id) {
+          scope.application_id = vals.application_id;
+        }
+        if (vals.template_id === 'cluster_overview' && vals.cluster_id) {
+          scope.cluster_id = vals.cluster_id;
+        }
+        if (vals.template_id === 'incident_report') {
+          if (vals.fault_id) scope.fault_id = vals.fault_id;
+          if (vals.change_event_id) scope.change_event_id = vals.change_event_id;
+        }
+        if (vals.range) {
+          scope.time_range_start = isoMinusSeconds(RANGE_SECONDS[vals.range]);
+        }
+
         generateMutation.mutate({
           template_id: vals.template_id,
-          scope: {
-            application_id: vals.application_id,
-            time_range_start: isoMinusSeconds(RANGE_SECONDS[vals.range]),
-          },
+          scope,
           format: 'markdown',
           modules: vals.modules,
         });
@@ -201,7 +255,7 @@ export default function ReportsView() {
   };
 
   return (
-    <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
+    <>
       <Card
         title={
           <Space>
@@ -238,6 +292,7 @@ export default function ReportsView() {
         confirmLoading={generateMutation.isPending}
         okText="生成"
         cancelText="取消"
+        width={640}
       >
         <Form
           form={form}
@@ -251,16 +306,42 @@ export default function ReportsView() {
         >
           <Form.Item name="template_id" label="模板" rules={[{ required: true }]}>
             <Select
-              options={[{ value: 'application_health', label: '应用健康报告' }]}
+              options={[
+                { value: 'application_health', label: '应用健康报告' },
+                { value: 'cluster_overview', label: '集群/全公司总览' },
+                { value: 'incident_report', label: '事件报告' },
+              ]}
+              onChange={(v: ReportTemplate) => {
+                form.setFieldValue('modules', modulesForTemplate(v));
+              }}
             />
           </Form.Item>
-          <Form.Item
-            name="application_id"
-            label="应用 ID"
-            rules={[{ required: true, message: '请输入应用 ID' }]}
-          >
-            <Input placeholder="app:order" />
-          </Form.Item>
+
+          {templateWatch === 'application_health' && (
+            <Form.Item
+              name="application_id"
+              label="应用 ID"
+              rules={[{ required: true, message: '请输入应用 ID' }]}
+            >
+              <Input placeholder="app:order" />
+            </Form.Item>
+          )}
+          {templateWatch === 'cluster_overview' && (
+            <Form.Item name="cluster_id" label="集群 ID(可空=全公司)">
+              <Input placeholder="vm-cluster" />
+            </Form.Item>
+          )}
+          {templateWatch === 'incident_report' && (
+            <>
+              <Form.Item name="fault_id" label="故障 ID(fault_id / change_event_id 二选一)">
+                <Input placeholder="flt-xxx" />
+              </Form.Item>
+              <Form.Item name="change_event_id" label="变更事件 ID">
+                <Input placeholder="ce-xxx" />
+              </Form.Item>
+            </>
+          )}
+
           <Form.Item name="range" label="时间范围">
             <Radio.Group>
               <Radio.Button value="1d">近 1 天</Radio.Button>
@@ -268,13 +349,20 @@ export default function ReportsView() {
               <Radio.Button value="30d">近 30 天</Radio.Button>
             </Radio.Group>
           </Form.Item>
+
           <Form.Item name="modules" label="启用模块">
             <Checkbox.Group
-              options={ALL_REPORT_MODULES.map((m) => ({ label: moduleLabel[m], value: m }))}
+              options={
+                templateWatch === 'cluster_overview'
+                  ? CLUSTER_REPORT_MODULES.map((m) => ({ label: moduleLabel[m], value: m }))
+                  : templateWatch === 'incident_report'
+                    ? INCIDENT_REPORT_MODULES.map((m) => ({ label: moduleLabel[m], value: m }))
+                    : ALL_REPORT_MODULES.map((m) => ({ label: moduleLabel[m], value: m }))
+              }
             />
           </Form.Item>
         </Form>
       </Modal>
-    </div>
+    </>
   );
 }

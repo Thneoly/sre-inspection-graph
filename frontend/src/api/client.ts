@@ -475,21 +475,33 @@ export function fetchChangeEventRecoverySuggestion(changeEventId: string) {
 
 
 // ============================================================
-// PRD-003 — 自检报告生成(Sprint 1: Markdown)
+// PRD-003 — 自检报告生成(Sprint 1: Markdown / Sprint 2: 多模板 + 订阅)
 // ============================================================
 
-export type ReportTemplate = 'application_health';
+export type ReportTemplate = 'application_health' | 'cluster_overview' | 'incident_report';
 export type ReportStatus = 'pending' | 'generating' | 'completed' | 'failed';
 export type ReportModule =
+  // application_health
   | 'health_score'
   | 'seven_views'
   | 'risk_list'
   | 'recommended_actions'
-  | 'historical_trends';
+  | 'historical_trends'
+  // cluster_overview
+  | 'cluster_health'
+  | 'cluster_risk_top_n'
+  | 'cluster_changes'
+  | 'cluster_recoveries'
+  // incident_report
+  | 'incident_summary'
+  | 'incident_timeline'
+  | 'incident_recoveries';
 
 export interface ReportScope {
   application_id?: string;
   cluster_id?: string;
+  fault_id?: string;
+  change_event_id?: string;
   time_range_start?: string;
   time_range_end?: string;
 }
@@ -526,6 +538,30 @@ export const ALL_REPORT_MODULES: ReportModule[] = [
   'historical_trends',
 ];
 
+export const CLUSTER_REPORT_MODULES: ReportModule[] = [
+  'cluster_health',
+  'cluster_risk_top_n',
+  'cluster_changes',
+  'cluster_recoveries',
+];
+
+export const INCIDENT_REPORT_MODULES: ReportModule[] = [
+  'incident_summary',
+  'incident_timeline',
+  'incident_recoveries',
+];
+
+export function modulesForTemplate(template: ReportTemplate): ReportModule[] {
+  switch (template) {
+    case 'cluster_overview':
+      return CLUSTER_REPORT_MODULES;
+    case 'incident_report':
+      return INCIDENT_REPORT_MODULES;
+    default:
+      return ALL_REPORT_MODULES;
+  }
+}
+
 export function postReportGenerate(req: {
   template_id: ReportTemplate;
   scope: ReportScope;
@@ -558,6 +594,63 @@ export function downloadReport(reportId: string) {
     responseType: 'blob',
     params: { format: 'markdown' },
   });
+}
+
+
+// ============================================================
+// PRD-003 Sprint 2 — 报告订阅(/reports/subscriptions)
+// ============================================================
+
+export interface ReportSubscription {
+  subscription_id: string;
+  template_id: ReportTemplate;
+  scope: ReportScope;
+  modules: ReportModule[];
+  cron: string;
+  recipients: string[];
+  enabled: boolean;
+  created_at: string;
+  last_run_at: string;
+  last_status: 'never' | 'ok' | 'failed';
+  last_error: string;
+  last_report_id: string;
+}
+
+export function fetchSubscriptions(params?: {
+  template_id?: ReportTemplate;
+  application_id?: string;
+}) {
+  return api.get<{ subscriptions: ReportSubscription[]; total: number }>('/reports/subscriptions', {
+    params,
+  });
+}
+
+export function postSubscription(req: {
+  template_id: ReportTemplate;
+  scope: ReportScope;
+  modules?: ReportModule[];
+  cron: string;
+  recipients: string[];
+  enabled?: boolean;
+}) {
+  return api.post<ReportSubscription>('/reports/subscriptions', req);
+}
+
+export function patchSubscription(id: string, patch: Partial<{
+  cron: string;
+  recipients: string[];
+  enabled: boolean;
+  modules: ReportModule[];
+}>) {
+  return api.patch<ReportSubscription>(`/reports/subscriptions/${encodeURIComponent(id)}`, patch);
+}
+
+export function deleteSubscription(id: string) {
+  return api.delete<void>(`/reports/subscriptions/${encodeURIComponent(id)}`);
+}
+
+export function postTriggerSubscription(id: string) {
+  return api.post<ReportSubscription>(`/reports/subscriptions/${encodeURIComponent(id)}/trigger`);
 }
 
 

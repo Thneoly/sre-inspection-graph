@@ -1,11 +1,12 @@
 /**
- * Test fixtures for Reports components — PRD-003 Sprint 1.
+ * Test fixtures for Reports components — PRD-003 Sprint 1 + Sprint 2.
  *
  * 字段镜像后端 backend/app/reports/store.py:ReportTask.to_dict()。
  */
 import type {
   ReportTask,
   ReportTemplate,
+  ReportSubscription,
 } from '../../api/client';
 
 export const mockReportPending: ReportTask = {
@@ -60,4 +61,48 @@ export const mockGenerateResponse = {
   report_id: 'rpt-new111222333',
   status: 'pending' as const,
   estimated_completion_seconds: 5,
+};
+
+
+// ============================================================
+// PRD-003 Sprint 2 — 订阅 fixtures
+// ============================================================
+
+export const mockSubscriptionWeekly: ReportSubscription = {
+  subscription_id: 'sub-weekly-001',
+  template_id: 'application_health',
+  scope: { application_id: 'app:order' },
+  modules: ['health_score', 'seven_views', 'risk_list', 'recommended_actions', 'historical_trends'],
+  cron: '0 9 * * 1',
+  recipients: ['sre@example.com'],
+  enabled: true,
+  created_at: '2026-06-20T03:00:00Z',
+  last_run_at: '2026-06-20T09:00:00Z',
+  last_status: 'ok',
+  last_error: '',
+  last_report_id: 'rpt-done11122233',
+};
+
+export const mockSubscriptionFailed: ReportSubscription = {
+  ...mockSubscriptionWeekly,
+  subscription_id: 'sub-failed-002',
+  scope: { cluster_id: 'vm-cluster' },
+  template_id: 'cluster_overview',
+  cron: '0 9 1 * *',
+  recipients: ['ops@example.com'],
+  last_status: 'failed',
+  last_error: 'SMTPException: refused',
+};
+
+export const mockSubscriptionDisabled: ReportSubscription = {
+  ...mockSubscriptionWeekly,
+  subscription_id: 'sub-disabled-003',
+  enabled: false,
+  last_status: 'never',
+  last_run_at: '',
+};
+
+export const mockSubscriptionList = {
+  subscriptions: [mockSubscriptionWeekly, mockSubscriptionFailed, mockSubscriptionDisabled],
+  total: 3,
 };
