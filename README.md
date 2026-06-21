@@ -199,7 +199,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 46 vitest
+│       └── __tests__/      # 48 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -208,6 +208,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 288 + frontend 46 = 334 tests
+make test          # backend 295 + frontend 48 = 343 tests
 make test-cov      # backend coverage
 ```

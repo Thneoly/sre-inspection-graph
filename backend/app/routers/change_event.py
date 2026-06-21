@@ -22,6 +22,7 @@ from app.changes.event_service import (
     application_timeline,
     correlated_changes,
     get_impact,
+    get_recovery_suggestion,
     record_change,
     serialize,
 )
@@ -136,5 +137,18 @@ def get_change_event(change_event_id: str):
 def event_impact(change_event_id: str):
     try:
         return get_impact(change_event_id)
+    except ChangeEventError as e:
+        raise HTTPException(status_code=e.code, detail=str(e))
+
+
+@router.get("/{change_event_id}/recovery-suggestion")
+def event_recovery_suggestion(change_event_id: str):
+    """PRD-002 Phase 2 — 从变更事件推荐可直接调起的 PRD-001 恢复动作。
+
+    返回每个候选动作 + 解析后的可执行目标(direct / propagated / unresolved)。
+    unresolved 时 resolved_target_resource_id 为 null,前端只展示建议不发起执行。
+    """
+    try:
+        return get_recovery_suggestion(change_event_id)
     except ChangeEventError as e:
         raise HTTPException(status_code=e.code, detail=str(e))

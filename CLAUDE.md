@@ -46,7 +46,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 288 tests + Frontend 46 tests
+make test           # Backend 295 tests + Frontend 48 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -313,10 +313,19 @@ CSV bulk import: `scripts/import_change_events.py` reads `scripts/output/change_
 2. **`/change-timeline` page** (`ChangeTimelineView`) — application-level timeline with range presets (1h/6h/24h/7d), type checkboxes, `by_type` Tag aggregation, and a detail Drawer rendering the `/{id}/impact` tree via antd `Tree`. Menu entry `变更时间线` (`FieldTimeOutlined`), 5s refetch.
 3. **ConfigImpactView** — right-side `近 24h 变更资源` Card (280px, flex): aggregates 24h changes onto visible graph nodes, top 20 by count, click selects the node.
 
+### Sprint 2.5 — 从变更直接调起恢复动作(集成 PRD-001)
+
+`prd-002 §9` 点名的 Phase 2 项「变更回滚(从此处直接调起 PRD-001 rollback)」。在变更事件抽屉里展示推荐恢复动作 + 一键发起执行,把"看到变更"贯通到"执行恢复"。
+
+- 后端 `CHANGE_ACTION_SUGGESTIONS`(`action_defs.py`)按 `change_type` 推荐动作,镜像 `RULE_ACTION_SUGGESTIONS` 结构:`configmap_updated`→`rollback_deployment` / `secret_rotated`→`refresh_secret`+`rollback_deployment` / `deployment_rolled`→`rollback_deployment` / `image_pushed`→`rollback_deployment`
+- 目标解析 `get_recovery_suggestion(event_id)`(`event_service.py`):事件 target 类型与动作 `target_type` 匹配 → `direct`;否则在已算好的 `propagated_to`(反向 BFS)里找第一个类型匹配节点 → `propagated`(例:ConfigMap 变更 → 找到 USES 它的 Deployment);都不可达 → `unresolved`(`resolved_target_resource_id=null`,前端禁用执行按钮)
+- 端点 `GET /api/v1/change-events/{id}/recovery-suggestion`
+- 前端 `RecoverySuggestionCard`(`ChangeTimelineView.tsx`)挂在事件抽屉底部:展示动作名 / risk / 置信度 / 目标解析 tag + `发起` 按钮调 `postRecoveryExecute`(high_risk → awaiting_approval 提示去审批中心)。unresolved 时按钮 disabled 并提示手动指定
+
 ### File Map
 
-- Backend: `backend/app/changes/event_service.py` (`record_change` + `_persist_change_event`)
+- Backend: `backend/app/changes/event_service.py` (`record_change` + `_persist_change_event` + `get_recovery_suggestion`), `backend/app/recovery/action_defs.py` (`CHANGE_ACTION_SUGGESTIONS` + `suggest_for_change`)
 - API: `backend/app/routers/change_event.py`
-- Frontend: `frontend/src/components/Graph/ChangeTimelineSection.tsx`, `frontend/src/components/Views/ChangeTimelineView.tsx`, `frontend/src/components/Views/ConfigImpactView.tsx`, `frontend/src/components/Graph/NodeDetailPanel.tsx`, `frontend/src/api/client.ts`
-- Tests: `backend/tests/test_change_events.py` (40 tests incl. 3 Neo4j persistence) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (8 tests)
+- Frontend: `frontend/src/components/Graph/ChangeTimelineSection.tsx`, `frontend/src/components/Views/ChangeTimelineView.tsx` (含 `RecoverySuggestionCard`), `frontend/src/components/Views/ConfigImpactView.tsx`, `frontend/src/components/Graph/NodeDetailPanel.tsx`, `frontend/src/api/client.ts`
+- Tests: `backend/tests/test_change_events.py` (47 tests incl. 3 Neo4j persistence + 7 recovery-suggestion) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (10 tests)
 - Mock generator: `scripts/generate_change_events.py` (~150 events across 7 days); bulk import: `scripts/import_change_events.py`

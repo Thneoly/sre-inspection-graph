@@ -324,3 +324,42 @@ def suggest_for_rule(rule_id: str) -> list[dict]:
         }
         for action_id, rationale, confidence in suggestions
     ]
+
+
+# ============================================================
+# ChangeEvent -> Action 推荐映射(PRDC-002 Phase 2 集成 PRD-001)
+# 按 change_type 推荐可执行的恢复动作。与 RULE_ACTION_SUGGESTIONS 同构,
+# 但触发源是"变更"而非"巡检 finding"。每条 (action_id, rationale, confidence)。
+# 注意:变更事件的 target(如 ConfigMap)与 action 的 target_type(如 Deployment)
+# 可能不匹配 —— 由 event_service.get_recovery_suggestion() 负责沿 propagated_to 解析。
+# ============================================================
+
+CHANGE_ACTION_SUGGESTIONS: dict[str, list[tuple[str, str, float]]] = {
+    "configmap_updated": [
+        ("rollback_deployment", "ConfigMap 漂移 → 回滚 Deployment 滚动恢复旧配置", 0.65),
+    ],
+    "secret_rotated": [
+        ("refresh_secret", "Secret 轮换后刷新挂载,推动 Pod 重新加载", 0.80),
+        ("rollback_deployment", "回滚到挂载旧 Secret 版本的 Deployment revision", 0.55),
+    ],
+    "deployment_rolled": [
+        ("rollback_deployment", "新版本异常 → 回滚到上一 revision", 0.90),
+    ],
+    "image_pushed": [
+        ("rollback_deployment", "高危镜像 → 回滚到合规版本", 0.75),
+    ],
+}
+
+
+def suggest_for_change(change_type: str) -> list[dict]:
+    """给定 ChangeEvent.change_type,返回推荐动作列表(含动作模板元数据)。"""
+    suggestions = CHANGE_ACTION_SUGGESTIONS.get(change_type, [])
+    return [
+        {
+            "action_id": action_id,
+            "rationale": rationale,
+            "confidence": confidence,
+            **(ACTION_DEFS.get(action_id) or {}),
+        }
+        for action_id, rationale, confidence in suggestions
+    ]

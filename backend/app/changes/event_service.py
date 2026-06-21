@@ -30,6 +30,7 @@ from app.changes.propagation import (
 from app.datasource.models import ChangeEvent
 from app.datasource.store import store
 from app.db import neo4j_client as n4j
+from app.recovery.action_defs import suggest_for_change
 
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,72 @@ def get_impact(event_id: str) -> dict[str, Any]:
         "affected": affected,
         "affected_count": len(affected),
         "severity_estimate": event.severity_estimate,
+    }
+
+
+# ============================================================
+# 查询 — 变更 → 恢复动作推荐(PRDC-002 Phase 2 集成 PRD-001)
+# ============================================================
+
+def get_recovery_suggestion(event_id: str) -> dict[str, Any]:
+    """给定变更事件 ID,返回可直接调起的 PRD-001 恢复动作推荐。
+
+    对每个候选动作解析"可执行目标":
+    - direct:事件 target_resource_type == action.target_type → 用事件 target 本身
+    - propagated:否则在 event.propagated_to(已算好的反向 BFS)里找第一个
+      类型匹配的节点 —— 例如 ConfigMap 变更 → 找到 USES 它的 Deployment
+    - unresolved:propagated_to 里也没有匹配类型 → resolved_target 为 None,
+      前端隐藏触发按钮(只展示建议,不让一键发起)
+
+    未找到事件 → ChangeEventError 404。
+    """
+    event = store.get_change_event(event_id)
+    if event is None:
+        raise ChangeEventError(f"change_event not found: {event_id}", code=404)
+
+    suggestions = suggest_for_change(event.change_type)
+    enriched: list[dict[str, Any]] = []
+    for sugg in suggestions:
+        action_target_type = sugg.get("target_type", "")
+        resolved_id: Optional[str] = None
+        resolved_type = ""
+        match_kind = "unresolved"
+
+        if action_target_type and event.target_resource_type == action_target_type:
+            # 直接命中 —— 事件 target 本身就是动作目标
+            resolved_id = event.target_resource_id
+            resolved_type = event.target_resource_type
+            match_kind = "direct"
+        else:
+            # 沿 propagated_to 找第一个类型匹配的节点
+            for pid in event.propagated_to:
+                node = store.get_node(pid)
+                if node is not None and node.type == action_target_type:
+                    resolved_id = pid
+                    resolved_type = node.type
+                    match_kind = "propagated"
+                    break
+
+        enriched.append({
+            "action_id": sugg["action_id"],
+            "action_name": sugg.get("name", sugg["action_id"]),
+            "rationale": sugg.get("rationale", ""),
+            "confidence": sugg.get("confidence", 0.0),
+            "risk_level": sugg.get("risk_level"),
+            "requires_approval": sugg.get("requires_approval", False),
+            "target_type": action_target_type,
+            "resolved_target_resource_id": resolved_id,
+            "resolved_target_type": resolved_type,
+            "target_match": match_kind,
+        })
+
+    return {
+        "change_event_id": event.change_event_id,
+        "change_type": event.change_type,
+        "target_resource_id": event.target_resource_id,
+        "target_resource_type": event.target_resource_type,
+        "suggestions": enriched,
+        "total": len(enriched),
     }
 
 

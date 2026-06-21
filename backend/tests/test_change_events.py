@@ -605,3 +605,91 @@ class TestEndpoints:
         c, _ = client
         resp = c.get("/api/v1/change-events/timeline?application_id=app:nope")
         assert resp.status_code == 404
+
+
+# ============================================================
+# 7. 变更 → 恢复动作推荐(PRDC-002 Phase 2 集成 PRD-001)
+# ============================================================
+
+class TestRecoverySuggestion:
+    def test_deployment_rolled_direct_match(self):
+        from app.changes.event_service import record_change, get_recovery_suggestion
+        ev = record_change("deployment_rolled", "deploy:order-api")
+        sug = get_recovery_suggestion(ev.change_event_id)
+        assert sug["change_type"] == "deployment_rolled"
+        assert sug["total"] >= 1
+        top = sug["suggestions"][0]
+        assert top["action_id"] == "rollback_deployment"
+        # 事件 target 本身就是 Deployment → direct
+        assert top["target_match"] == "direct"
+        assert top["resolved_target_resource_id"] == "deploy:order-api"
+        assert top["resolved_target_type"] == "Deployment"
+        assert top["requires_approval"] is True  # high_risk
+
+    def test_configmap_updated_resolves_deployment_via_propagation(self):
+        from app.changes.event_service import record_change, get_recovery_suggestion
+        # ConfigMap 变更 → propagated_to 含 USES 它的 Pod,再逆向 CONTAINS 到 Deployment
+        ev = record_change("configmap_updated", "cm:order-config")
+        assert "deploy:order-api" in ev.propagated_to  # 前置断言:BFS 确实命中 Deployment
+
+        sug = get_recovery_suggestion(ev.change_event_id)
+        top = sug["suggestions"][0]
+        assert top["action_id"] == "rollback_deployment"
+        # ConfigMap ≠ Deployment,但 propagated_to 里有 Deployment → propagated
+        assert top["target_match"] == "propagated"
+        assert top["resolved_target_resource_id"] == "deploy:order-api"
+        assert top["resolved_target_type"] == "Deployment"
+
+    def test_image_pushed_unresolved_when_no_deployment_in_propagation(self):
+        from app.changes.event_service import record_change, get_recovery_suggestion
+        # USES_IMAGE 不在 PROPAGATION_EDGES 白名单 → img 节点 propagated_to 为空
+        ev = record_change("image_pushed", "img:order:1.2.3")
+        assert ev.propagated_to == []
+
+        sug = get_recovery_suggestion(ev.change_event_id)
+        top = sug["suggestions"][0]
+        assert top["action_id"] == "rollback_deployment"
+        # propagated_to 里没有 Deployment → unresolved,前端不应展示一键执行
+        assert top["target_match"] == "unresolved"
+        assert top["resolved_target_resource_id"] is None
+
+    def test_secret_rotated_has_both_direct_and_propagated(self):
+        from app.changes.event_service import record_change, get_recovery_suggestion
+        ev = record_change("secret_rotated", "secret:order-db")
+        sug = get_recovery_suggestion(ev.change_event_id)
+        # refresh_secret(direct, Secret 匹配) + rollback_deployment(propagated, Deployment)
+        by_action = {s["action_id"]: s for s in sug["suggestions"]}
+        assert "refresh_secret" in by_action
+        assert by_action["refresh_secret"]["target_match"] == "direct"
+        assert by_action["refresh_secret"]["resolved_target_resource_id"] == "secret:order-db"
+        assert "rollback_deployment" in by_action
+        assert by_action["rollback_deployment"]["target_match"] == "propagated"
+
+    def test_unknown_event_404(self):
+        from app.changes.event_service import get_recovery_suggestion, ChangeEventError
+        with pytest.raises(ChangeEventError) as exc:
+            get_recovery_suggestion("ce-nope")
+        assert exc.value.code == 404
+
+    def test_endpoint_returns_suggestions(self, client):
+        c, _ = client
+        # 先录入一个 deployment_rolled
+        created = c.post("/api/v1/change-events", json={
+            "change_type": "deployment_rolled",
+            "target_resource_id": "deploy:order-api",
+            "changed_by": "argo-cd",
+            "source": "argo_cd",
+            "description": "rollout v1.2.4",
+        })
+        eid = created.json()["change_event_id"]
+        resp = c.get(f"/api/v1/change-events/{eid}/recovery-suggestion")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["change_event_id"] == eid
+        assert body["suggestions"][0]["action_id"] == "rollback_deployment"
+        assert body["suggestions"][0]["target_match"] == "direct"
+
+    def test_endpoint_404_unknown_event(self, client):
+        c, _ = client
+        resp = c.get("/api/v1/change-events/ce-missing/recovery-suggestion")
+        assert resp.status_code == 404

@@ -441,5 +441,37 @@ export function fetchChangeEventImpact(changeEventId: string) {
   );
 }
 
+// PRD-002 Phase 2 — 变更 → 恢复动作推荐(集成 PRD-001)
+
+export type ChangeRecoveryTargetMatch = 'direct' | 'propagated' | 'unresolved';
+
+export interface ChangeRecoverySuggestionItem {
+  action_id: string;
+  action_name: string;
+  rationale: string;
+  confidence: number;
+  risk_level: RiskLevel | null;
+  requires_approval: boolean;
+  target_type: string;
+  resolved_target_resource_id: string | null;
+  resolved_target_type: string;
+  target_match: ChangeRecoveryTargetMatch;
+}
+
+export interface ChangeRecoverySuggestionResponse {
+  change_event_id: string;
+  change_type: ChangeType;
+  target_resource_id: string;
+  target_resource_type: string;
+  suggestions: ChangeRecoverySuggestionItem[];
+  total: number;
+}
+
+export function fetchChangeEventRecoverySuggestion(changeEventId: string) {
+  return api.get<ChangeRecoverySuggestionResponse>(
+    `/change-events/${encodeURIComponent(changeEventId)}/recovery-suggestion`,
+  );
+}
+
 
 export default api;

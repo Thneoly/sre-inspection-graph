@@ -7,6 +7,7 @@ import {
   mockTimelineResponse,
   mockEmptyTimelineResponse,
   mockImpactResponse,
+  mockSuggestionDirect,
 } from './fixtures/changeEvents';
 
 vi.mock('../api/client', async () => {
@@ -15,17 +16,47 @@ vi.mock('../api/client', async () => {
     ...actual,
     fetchChangeEventTimeline: vi.fn(),
     fetchChangeEventImpact: vi.fn(),
+    fetchChangeEventRecoverySuggestion: vi.fn(),
+    postRecoveryExecute: vi.fn(),
   };
 });
 
 import {
   fetchChangeEventTimeline,
   fetchChangeEventImpact,
+  fetchChangeEventRecoverySuggestion,
+  postRecoveryExecute,
 } from '../api/client';
 
 describe('ChangeTimelineView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // 默认:抽屉里的恢复建议返回 direct 可执行;各测试可覆盖
+    vi.mocked(fetchChangeEventRecoverySuggestion).mockResolvedValue({
+      data: mockSuggestionDirect,
+    } as never);
+    vi.mocked(postRecoveryExecute).mockResolvedValue({
+      data: {
+        execution_id: 'exec-suggest-1',
+        action_id: 'rollback_deployment',
+        action_name: '回滚 Deployment',
+        target_resource_id: 'deploy:order:order-api',
+        target_resource_type: 'Deployment',
+        finding_id: null,
+        input_params: {},
+        status: 'awaiting_approval',
+        initiated_by: 'change-timeline',
+        request_reason: '',
+        initiated_at: '',
+        executed_at: '',
+        completed_at: '',
+        result: {},
+        approval_id: 'appr-1',
+        rollback_execution_id: null,
+        reverses_execution_id: null,
+        dry_run_summary: null,
+      },
+    } as never);
   });
 
   it('renders empty state when application has no changes in range', async () => {
@@ -121,5 +152,67 @@ describe('ChangeTimelineView', () => {
     );
     // 其它类型仍在
     expect(screen.getByText('rotate db password')).toBeInTheDocument();
+  });
+
+  it('shows recovery suggestion card in drawer and triggers execute on click', async () => {
+    vi.mocked(fetchChangeEventTimeline).mockResolvedValue({
+      data: mockTimelineResponse,
+    } as never);
+    vi.mocked(fetchChangeEventImpact).mockResolvedValue({
+      data: mockImpactResponse,
+    } as never);
+
+    render(<ChangeTimelineView />, { wrapper: makeWrapper() });
+
+    // 打开 Secret 事件抽屉
+    await waitFor(() => expect(screen.getByText('rotate db password')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('rotate db password'));
+
+    // 推荐恢复动作卡片渲染 — 含动作名 + 直接目标 tag + 置信度
+    await waitFor(() => expect(screen.getByText('🚀 推荐恢复动作(从此变更直接调起)')).toBeInTheDocument());
+    expect(screen.getByText('回滚 Deployment')).toBeInTheDocument();
+    expect(screen.getByText('直接目标')).toBeInTheDocument();
+    expect(screen.getByText('置信度 90%')).toBeInTheDocument();
+
+    // 点击发起按钮 → 调用 postRecoveryExecute,带 resolved target + reason
+    const btn = screen.getByRole('button', { name: /发起/ });
+    await userEvent.click(btn);
+
+    await waitFor(() => expect(postRecoveryExecute).toHaveBeenCalledTimes(1));
+    const callArg = vi.mocked(postRecoveryExecute).mock.calls[0][0];
+    expect(callArg.action_id).toBe('rollback_deployment');
+    expect(callArg.target_resource_id).toBe('deploy:order:order-api');
+    expect(callArg.initiated_by).toBe('change-timeline');
+  });
+
+  it('disables execute button when target is unresolved', async () => {
+    vi.mocked(fetchChangeEventTimeline).mockResolvedValue({
+      data: mockTimelineResponse,
+    } as never);
+    vi.mocked(fetchChangeEventRecoverySuggestion).mockResolvedValue({
+      data: {
+        ...mockSuggestionDirect,
+        suggestions: [
+          {
+            ...mockSuggestionDirect.suggestions[0],
+            target_match: 'unresolved',
+            resolved_target_resource_id: null,
+            resolved_target_type: '',
+          },
+        ],
+      },
+    } as never);
+
+    render(<ChangeTimelineView />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText('rotate db password')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('rotate db password'));
+
+    await waitFor(() => expect(screen.getByText('无可执行目标')).toBeInTheDocument());
+    const btn = screen.getByRole('button', { name: /发起/ });
+    expect(btn).toBeDisabled();
+
+    await userEvent.click(btn);
+    expect(postRecoveryExecute).not.toHaveBeenCalled();
   });
 });

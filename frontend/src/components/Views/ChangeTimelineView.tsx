@@ -1,24 +1,29 @@
 import { useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import {
+  Button,
   Card,
   Drawer,
   Empty,
   Input,
+  message,
   Radio,
   Space,
   Spin,
   Tag,
   Timeline,
+  Tooltip,
   Typography,
   Tree,
   Descriptions,
   Checkbox,
 } from 'antd';
-import { FieldTimeOutlined } from '@ant-design/icons';
+import { FieldTimeOutlined, RocketOutlined } from '@ant-design/icons';
 import {
   fetchChangeEventTimeline,
   fetchChangeEventImpact,
+  fetchChangeEventRecoverySuggestion,
+  postRecoveryExecute,
 } from '../../api/client';
 import type {
   ChangeEvent,
@@ -266,6 +271,128 @@ function DetailPanel({ event }: { event: ChangeEvent }) {
           />
         )}
       </Card>
+
+      <RecoverySuggestionCard event={event} />
     </Space>
+  );
+}
+
+// ============================================================
+// 推荐恢复动作 — PRD-002 Phase 2 集成 PRD-001
+// 从变更事件一键调起 recovery execute(direct/propagated 可执行,unresolved 只读)
+// ============================================================
+
+const matchLabel: Record<string, string> = {
+  direct: '直接目标',
+  propagated: '沿依赖解析',
+  unresolved: '无可执行目标',
+};
+
+function RecoverySuggestionCard({ event }: { event: ChangeEvent }) {
+  const { data: sug, isLoading } = useQuery({
+    queryKey: ['change-recovery-suggestion', event.change_event_id],
+    queryFn: () =>
+      fetchChangeEventRecoverySuggestion(event.change_event_id).then((r) => r.data),
+  });
+
+  const executeMutation = useMutation({
+    mutationFn: postRecoveryExecute,
+    onSuccess: (resp) => {
+      const exec = resp.data;
+      if (exec.status === 'succeeded') {
+        message.success(`恢复动作已执行 (${exec.execution_id.slice(0, 8)})`);
+      } else if (exec.status === 'awaiting_approval') {
+        message.success(
+          `已提交审批,请到「审批中心」操作 (approval ${exec.approval_id?.slice(0, 8) ?? ''})`,
+        );
+      } else if (exec.status === 'failed') {
+        message.error(`执行失败: ${JSON.stringify(exec.result?.error || exec.result)}`);
+      } else {
+        message.info(`状态: ${exec.status}`);
+      }
+    },
+    onError: (err: { response?: { data?: { detail?: string } }; message: string }) => {
+      message.error(`执行被拒: ${err.response?.data?.detail || err.message}`);
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <Card size="small" title="🚀 推荐恢复动作">
+        <Spin size="small" />
+      </Card>
+    );
+  }
+  if (!sug || sug.suggestions.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card size="small" title="🚀 推荐恢复动作(从此变更直接调起)">
+      <Space direction="vertical" style={{ width: '100%' }} size="small">
+        {sug.suggestions.map((s) => {
+          const executable = s.target_match !== 'unresolved' && !!s.resolved_target_resource_id;
+          return (
+            <div
+              key={s.action_id}
+              style={{
+                border: '1px solid #f0f0f0',
+                borderRadius: 4,
+                padding: 8,
+              }}
+            >
+              <Space size={6} wrap>
+                <Text strong>{s.action_name}</Text>
+                <Tag color={s.risk_level === 'high' ? 'red' : s.risk_level === 'medium' ? 'gold' : 'green'}>
+                  {s.risk_level ?? '-'}
+                </Tag>
+                <Tag>{matchLabel[s.target_match] ?? s.target_match}</Tag>
+                {s.requires_approval && <Tag color="orange">需审批</Tag>}
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  置信度 {Math.round(s.confidence * 100)}%
+                </Text>
+              </Space>
+              <div style={{ fontSize: 12, color: '#888', margin: '4px 0' }}>{s.rationale}</div>
+              {executable ? (
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  目标: {s.resolved_target_resource_id}
+                </Text>
+              ) : (
+                <Text type="warning" style={{ fontSize: 11 }}>
+                  未在依赖链中解析到 {s.target_type || '匹配'} 目标,需手动指定
+                </Text>
+              )}
+              <div style={{ marginTop: 6 }}>
+                <Tooltip
+                  title={
+                    executable
+                      ? undefined
+                      : '无可执行目标,无法一键发起'
+                  }
+                >
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<RocketOutlined />}
+                    disabled={!executable}
+                    loading={executeMutation.isPending}
+                    onClick={() =>
+                      executeMutation.mutate({
+                        action_id: s.action_id,
+                        target_resource_id: s.resolved_target_resource_id!,
+                        initiated_by: 'change-timeline',
+                        request_reason: `由变更事件 ${event.change_event_id} (${event.change_type}) 触发`,
+                      })
+                    }
+                  >
+                    发起{s.requires_approval ? '(送审)' : '执行'}
+                  </Button>
+                </Tooltip>
+              </div>
+            </div>
+          );
+        })}
+      </Space>
+    </Card>
   );
 }

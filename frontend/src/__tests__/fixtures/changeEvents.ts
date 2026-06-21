@@ -9,6 +9,7 @@ import type {
   ChangeEventListResponse,
   ChangeEventTimelineResponse,
   ChangeEventImpactResponse,
+  ChangeRecoverySuggestionResponse,
 } from '../../api/client';
 
 export const mockEventLow: ChangeEvent = {
@@ -106,4 +107,51 @@ export const mockEmptyTimelineResponse: ChangeEventTimelineResponse = {
   events: [],
   total: 0,
   by_type: {},
+};
+
+// PRD-002 Phase 2 — 变更 → 恢复动作推荐(集成 PRD-001)
+// 镜像后端 event_service.get_recovery_suggestion() 返回结构
+
+export const mockSuggestionDirect: ChangeRecoverySuggestionResponse = {
+  change_event_id: 'ce-ccc77788899',
+  change_type: 'deployment_rolled',
+  target_resource_id: 'deploy:order:order-api',
+  target_resource_type: 'Deployment',
+  suggestions: [
+    {
+      action_id: 'rollback_deployment',
+      action_name: '回滚 Deployment',
+      rationale: '新版本异常 → 回滚到上一 revision',
+      confidence: 0.9,
+      risk_level: 'high',
+      requires_approval: true,
+      target_type: 'Deployment',
+      resolved_target_resource_id: 'deploy:order:order-api',
+      resolved_target_type: 'Deployment',
+      target_match: 'direct',
+    },
+  ],
+  total: 1,
+};
+
+export const mockSuggestionUnresolved: ChangeRecoverySuggestionResponse = {
+  change_event_id: 'ce-ccc77788899',
+  change_type: 'image_pushed',
+  target_resource_id: 'img:order:1.2.4',
+  target_resource_type: 'ContainerImage',
+  suggestions: [
+    {
+      action_id: 'rollback_deployment',
+      action_name: '回滚 Deployment',
+      rationale: '高危镜像 → 回滚到合规版本',
+      confidence: 0.75,
+      risk_level: 'high',
+      requires_approval: true,
+      target_type: 'Deployment',
+      resolved_target_resource_id: null,
+      resolved_target_type: '',
+      target_match: 'unresolved',
+    },
+  ],
+  total: 1,
 };
