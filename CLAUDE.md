@@ -18,6 +18,7 @@ L4 Inspection Results → InspectionRun/Rule/Finding
 + Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback
 + Change Event Tracking (PRD-002) → ChangeEvent + correlated query + propagation BFS
 + Real-data Connectors (PRD-004) → K8s / Prometheus / Jaeger / flagd / K8s-events
++ Self-Inspection Report (PRD-003) → Jinja2 Markdown 报告 + 5 模块 + 异步生成
 ```
 
 ## Tech Stack
@@ -46,7 +47,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 295 tests + Frontend 48 tests
+make test           # Backend 316 tests + Frontend 56 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -329,3 +330,63 @@ CSV bulk import: `scripts/import_change_events.py` reads `scripts/output/change_
 - Frontend: `frontend/src/components/Graph/ChangeTimelineSection.tsx`, `frontend/src/components/Views/ChangeTimelineView.tsx` (含 `RecoverySuggestionCard`), `frontend/src/components/Views/ConfigImpactView.tsx`, `frontend/src/components/Graph/NodeDetailPanel.tsx`, `frontend/src/api/client.ts`
 - Tests: `backend/tests/test_change_events.py` (47 tests incl. 3 Neo4j persistence + 7 recovery-suggestion) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (10 tests)
 - Mock generator: `scripts/generate_change_events.py` (~150 events across 7 days); bulk import: `scripts/import_change_events.py`
+
+## Self-Inspection Report — PRD-003 Sprint 1
+
+一键生成应用级自检报告(Markdown)。Sprint 1 范围:`application_health` 模板 + Markdown 输出(Jinja2),异步生成 + 状态轮询 + 下载。**PDF / matplotlib 图表 / 另两模板 / 邮件订阅 延后**(决策:报告主读者是工程团队,Markdown 够用)。
+
+### 数据源适配(重要)
+
+PRD §3.4 假设复用 `inspection_service` / `alert_service` —— **这两个不存在**。`services/` 只有 `graph_service`(Neo4j 记录格式化器)+ `metrics_service`。View routers 是纯 Neo4j、测试态 mock 返空。→ **报告 5 大模块全部从 DSS store 采集**。`InspectionFinding`/`AlertEvent` 在 DSS 无对应模型,Health Score 公式从「节点 health_status + 活跃故障」适配(Phase 2 接真实巡检 finding 切回 PRD 原公式)。
+
+### Health Score 适配公式
+
+PRD 原公式(critical Finding -10 / warning -3 / fault Pod -2)→ DSS 适配:
+- `critical = red-health 节点数 + 活跃 fault 目标数` ×10
+- `warning = yellow-health 节点数` ×3
+- `fault_pod = 活跃 fault 中 Pod 类目标数` ×2
+- `score = max(0, 100 - critical*10 - warning*3 - fault_pod*2)`
+- rating:`≥80 健康 / 60-79 健康警告 / 40-59 风险中 / <40 风险高`
+
+### 5 大模块(全 DSS 采集)
+
+| 模块 | 采集内容 |
+|---|---|
+| health_score | 调 `compute_health_score`(应用子树 = `find_descendants` 正向 BFS) |
+| seven_views | 拓扑统计(组件/Deployment/Pod 计数 + 就绪)+ 健康分布 + 活跃故障 + 变更统计 + 恢复统计 |
+| risk_list | red/yellow 节点 + 活跃故障 + high-severity ChangeEvent,按严重度分组 |
+| recommended_actions | fault_type→动作映射 + high-severity 变更调 `suggest_for_change`(复用 PRD-002 Phase 2),去重 |
+| historical_trends | 近 N 天按天聚合 ChangeEvent/RecoveryExecution 计数(文本表格,无图表) |
+
+### 异步生成
+
+- `generate_report(report_id)` 同步函数:按 task.modules 顺序采集(每步更新 progress/current_step)→ Jinja2 渲染 → 落盘 `backend/reports/{id}.md` → status=completed;异常 → failed + error_message
+- `run_generation_background(report_id)` 包 `threading.Thread`(daemon)。**测试直接调同步 `generate_report` 避免线程 flaky**
+- `report_store` 单例(对标 DSS `store`)hold 所有 ReportTask;uvicorn 重启任务丢失(产物在磁盘),Sprint 2 做持久化索引
+
+### 端点(`/api/v1/reports`)
+
+- `POST /generate` → 202 + `{report_id, status:"pending", estimated_completion_seconds}`(校验 template_id ∈ {application_health}、format ∈ {markdown})
+- `GET /{id}/status` → `{status, progress, current_step, error_message}`
+- `GET /{id}/download?format=markdown` → FileResponse(.md),非 completed → 409
+- `GET /` → 列表(过滤 template_id / application_id)
+
+### 前端
+
+- `/reports` 页(`ReportsView`)—— Table(状态/进度/下载)+「生成新报告」Modal(模板/应用/时间范围 1d/7d/30d/模块多选),generating 行 3s 自动刷新
+- `NodeDetailPanel` 仅 Application 节点显示「📄 自检报告」Card,一键生成
+- 下载:`utils/download.ts` `downloadBlob`(全项目首个 blob 下载 —— createObjectURL + `<a download>` + revoke)
+
+### Key Design Decisions
+
+1. **Markdown-only Sprint 1** —— 不上 weasyprint(PDF 延后)、不上 matplotlib(趋势用文本表格)。原生库已就绪,Phase 2 可平滑切 PDF。
+2. **DSS 为唯一数据源** —— view routers 纯 Neo4j 测试态返空,报告必须可测,故全走 DSS。Health Score 适配公式是这一选择的直接后果。
+3. **threading + 内存任务表** —— 不引入 Celery;`report_store` 单例对标 DSS。后台线程测试里用同步调用替代。
+4. **模块按需启用** —— `modules` 字段控制采集 + 模板 `{% if modules.x %}` 双重过滤,部分模块报告省略对应 section。
+5. **产物落盘 + gitignore** —— `backend/reports/{id}.md`,`.gitignore` 加 `backend/reports/`。
+
+### File Map
+
+- 后端:`backend/app/reports/{store,health_score,modules,generator}.py` + `templates/application_health.md`;`backend/app/routers/report.py`;注册于 `backend/app/main.py`
+- 前端:`frontend/src/components/Views/ReportsView.tsx`,`frontend/src/components/Graph/NodeDetailPanel.tsx`,`frontend/src/utils/download.ts`,`frontend/src/api/client.ts`
+- 测试:`backend/tests/test_reports.py`(21 tests)+ `frontend/src/__tests__/{ReportsView,NodeDetailPanelReport}.test.tsx`(8 tests)

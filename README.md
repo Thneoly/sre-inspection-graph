@@ -71,6 +71,7 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
 | 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
 | 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 (PRD-002) |
+| 报告中心 | `/reports` | 自检报告生成 + 下载 (PRD-003) |
 
 ## 恢复动作引擎(PRD-001)
 
@@ -199,7 +200,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 48 vitest
+│       └── __tests__/      # 56 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -208,6 +209,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 295 + frontend 48 = 343 tests
+make test          # backend 316 + frontend 56 = 372 tests
 make test-cov      # backend coverage
 ```
