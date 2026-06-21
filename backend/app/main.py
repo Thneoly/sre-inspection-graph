@@ -25,6 +25,9 @@ from app.datasource.connectors.sync_orchestrator import (
     start_all_connectors,
     stop_all_connectors,
 )
+# PRD-003 Sprint 2 — 报告订阅调度器 + Neo4j hydrate
+from app.reports.persistence import load_subscriptions_from_neo4j
+from app.reports.scheduler import report_scheduler
 
 app = FastAPI(
     title="SRE Inspection Graph API",
@@ -69,6 +72,15 @@ async def startup():
         await start_all_connectors()
     except Exception as e:
         print(f"connectors startup warning: {e}")
+    # PRD-003 Sprint 2 — 报告订阅:hydrate + 启动调度器
+    try:
+        loaded = load_subscriptions_from_neo4j()
+        if loaded:
+            print(f"report subscriptions hydrated: {loaded}")
+        report_scheduler.start()
+        report_scheduler.reload_all()
+    except Exception as e:
+        print(f"report scheduler startup warning: {e}")
 
 
 @app.on_event("shutdown")
@@ -77,6 +89,10 @@ async def shutdown():
         await stop_all_connectors()
     except Exception as e:
         print(f"connectors shutdown warning: {e}")
+    try:
+        report_scheduler.stop()
+    except Exception as e:
+        print(f"report scheduler shutdown warning: {e}")
 
 
 @app.get("/")
