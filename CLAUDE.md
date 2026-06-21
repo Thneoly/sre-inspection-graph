@@ -46,7 +46,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 285 tests + Frontend 38 tests
+make test           # Backend 288 tests + Frontend 46 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -285,13 +285,38 @@ cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints,
 
 `bash scripts/otel_demo_e2e.sh` checks 5 connectors registered → forces sync on each → checks DSS for nodes/edges/metrics/CALLS/ChangeEvents → lists 8 OTel demo scenarios. Requires port-forwards to Prometheus (19090), Jaeger (16686), flagd (8013) and API started with `KUBECONFIGS / PROMETHEUS_URL / JAEGER_URL / FLAGD_URL` env vars.
 
-## Change Event Tracking — PRD-002 Sprint 1
+## Change Event Tracking — PRD-002 Sprint 1 + Sprint 2
 
-ChangeEvent is a typed event recording **what was changed by whom on which resource at what time**. Sprint 1 ships backend-only (model + correlated query + propagation BFS); Sprint 2 will ship frontend timeline.
+ChangeEvent is a typed event recording **what was changed by whom on which resource at what time**. Sprint 1 shipped backend (model + correlated query + propagation BFS); Sprint 2 adds **Neo4j dual-write** (audit survives uvicorn restart) + **frontend timeline** (3 integration points).
 
 - 4 change types: `configmap_updated` / `secret_rotated` / `deployment_rolled` / `image_pushed`
 - Sources: `k8s_api` / `argo_cd` / `gitops` / `manual` / `unknown` / `flagd` (added by PRD-004 Sprint 3)
 - Propagation: `derive_propagation(target_id)` does reverse BFS on PROPAGATION_EDGES (USES, CONTAINS, DEPLOYED_AS, BELONGS_TO, RUNS, SCHEDULED_ON, EXPOSES, ROUTES_TO), capped at depth 4
 - `severity_estimate`: `len(propagated) >= 10` → high, ≥ 5 → medium, else low
 - Endpoints (`/api/v1/change-events`): POST create / GET list with filters / GET `/correlated?target_resource_id=X&window=300` / GET `/{id}/impact` / GET `/timeline?application_id=Y`
-- DSS-only (no Neo4j double-write yet); 25 unit tests + mock generator (`scripts/generate_change_events.py`, ~150 events across 7 days)
+
+### Sprint 2 — Neo4j Dual-Write
+
+`record_change()` writes DSS (主存储) then best-effort dual-writes Neo4j, mirroring the recovery `_persist_execution()` pattern. Neo4j failure → `logger.warning` only, never blocks the API.
+
+- Node: `MERGE (:ChangeEvent:ResourceInstance {node_id: $eid})` (dual-label, keyed by `change_event_id`)
+  - `diff_summary` stored as `diff` (JSON-serialized string, `json.dumps(..., ensure_ascii=False, sort_keys=True)`)
+  - `propagated_to` stored natively as a Neo4j list property + `pc` count for fast indexing
+- Edge: `MERGE (e)-[:RELATES_TO {edge_id:'change_target_'+$eid}]->(t)` with `relationship_type='CHANGED'`. Target matched via `MATCH (t:ResourceInstance {node_id:$tid})` — if absent the edge is skipped (no stub node), only the edge is lost.
+- **No PROPAGATES_TO fan-out edges** (decision): `propagated_to` as a list property is queryable without write amplification on high-severity events.
+
+CSV bulk import: `scripts/import_change_events.py` reads `scripts/output/change_events.csv` (`generate_change_events.py --csv`, ~150 events) and UNWIND-MERGEs nodes + main edges in batches of 200. Run via `cd backend && uv run python ../scripts/import_change_events.py` (needs the uv env for the neo4j driver).
+
+### Sprint 2 — Frontend Timeline (3 integration points)
+
+1. **NodeDetailPanel** — `ChangeTimelineSection` Card after the recovery section: antd `<Timeline>` of the resource's last 50 changes, severity-colored dots (low=green / medium=gold / high=red) + Chinese change-type labels. Drawer widened 380→460.
+2. **`/change-timeline` page** (`ChangeTimelineView`) — application-level timeline with range presets (1h/6h/24h/7d), type checkboxes, `by_type` Tag aggregation, and a detail Drawer rendering the `/{id}/impact` tree via antd `Tree`. Menu entry `变更时间线` (`FieldTimeOutlined`), 5s refetch.
+3. **ConfigImpactView** — right-side `近 24h 变更资源` Card (280px, flex): aggregates 24h changes onto visible graph nodes, top 20 by count, click selects the node.
+
+### File Map
+
+- Backend: `backend/app/changes/event_service.py` (`record_change` + `_persist_change_event`)
+- API: `backend/app/routers/change_event.py`
+- Frontend: `frontend/src/components/Graph/ChangeTimelineSection.tsx`, `frontend/src/components/Views/ChangeTimelineView.tsx`, `frontend/src/components/Views/ConfigImpactView.tsx`, `frontend/src/components/Graph/NodeDetailPanel.tsx`, `frontend/src/api/client.ts`
+- Tests: `backend/tests/test_change_events.py` (40 tests incl. 3 Neo4j persistence) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (8 tests)
+- Mock generator: `scripts/generate_change_events.py` (~150 events across 7 days); bulk import: `scripts/import_change_events.py`

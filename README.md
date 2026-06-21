@@ -11,7 +11,7 @@ L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent + ChangeEvent
 L4 巡检结果层    →  InspectionRun/Rule/Finding
 +  故障模拟引擎   →  FaultScenario + 时间线推进 + 数据维度注入
 +  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001)
-+  变更事件追踪   →  ChangeEvent + 故障关联查询 (PRD-002)
++  变更事件追踪   →  ChangeEvent + 故障关联查询 + 前端时间线 + Neo4j 双写 (PRD-002)
 +  实数据 connector → K8s + Prometheus + Jaeger + flagd + K8s events (PRD-004)
 ```
 
@@ -70,6 +70,7 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 告警归并 | `/alert-aggregation` | 多告警按应用归并 |
 | 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
 | 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
+| 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 (PRD-002) |
 
 ## 恢复动作引擎(PRD-001)
 
@@ -198,7 +199,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 38 vitest
+│       └── __tests__/      # 46 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -207,6 +208,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 285 + frontend 38 = 323 tests
+make test          # backend 288 + frontend 46 = 334 tests
 make test-cov      # backend coverage
 ```
