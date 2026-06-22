@@ -140,15 +140,44 @@ def _state_differs(old: dict, new: dict) -> bool:
 
 
 def _try_record(target_id: str, flag_name: str, old: Any, new: Any, description: str):
-    """包一层 try — record_change 在 target 不在 DSS 时仍能写,但其他异常吞掉避免 connector 挂掉。"""
+    """包一层 try — record_change 在 target 不在 DSS 时仍能写,但其他异常吞掉避免 connector 挂掉。
+
+    PRD-004 Phase 2:查 scenario_for_flag,若该 flag 是 OTel demo 故障 flag,
+    把 recommended_action / target_component 塞进 diff_summary,贯通 flag→finding→recovery 链。
+    """
     try:
+        diff_summary: dict[str, Any] = {flag_name: {"old": old, "new": new}}
+        enriched_desc = description
+        scenario = _lookup_scenario(flag_name)
+        if scenario is not None:
+            diff_summary["scenario"] = {
+                "name": scenario.name,
+                "target_component": scenario.target_component,
+                "recommended_action": scenario.recommended_action,
+                "finding_severity": scenario.finding_severity,
+                "expected_metric": scenario.expected_metric,
+            }
+            enriched_desc = (
+                f"{description} [scenario={scenario.name} "
+                f"推荐动作={scenario.recommended_action} "
+                f"目标组件={scenario.target_component}]"
+            )
         record_change(
             change_type="configmap_updated",
             target_resource_id=target_id,
             changed_by="flagd",
             source="flagd",
-            description=description,
-            diff_summary={flag_name: {"old": old, "new": new}},
+            description=enriched_desc,
+            diff_summary=diff_summary,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("record_change failed for flag %s: %s", flag_name, e)
+
+
+def _lookup_scenario(flag_name: str):
+    """查 OTel demo scenario 映射;非故障 flag 返 None。延迟 import 避免循环依赖。"""
+    try:
+        from app.recovery.scenarios.otel_demo_scenarios import scenario_for_flag
+        return scenario_for_flag(flag_name)
+    except Exception:  # noqa: BLE001
+        return None
