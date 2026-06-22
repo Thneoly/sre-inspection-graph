@@ -96,7 +96,7 @@ make dev-frontend   # 终端3: 前端 (HMR)
 - `approver_team` 从 `target.owner_team` 派生,沿 `BELONGS_TO` 上溯到 Component / Application(软记录,不强制 RBAC)
 - 审批 24h TTL,**读时检查**(无后台 cron)
 - 一键回滚:`POST /executions/{id}/rollback` 直接走反向 handler,**不再二次审批**(原动作已审批,反向是"撤销")
-- handler 当前是 mock(改 DSS 状态),Phase 2 接入真实 client-go / pymysql / redis-py
+- handler 双模式:`RECOVERY_HANDLER_MODE=mock`(默认,改 DSS 孪生)/ `real`(调真实 K8s/MySQL/Redis API,成功后才更新 DSS,Phase 2)
 
 **端到端验证**:
 ```bash
@@ -189,7 +189,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
 │   │   ├── models/    # Pydantic 模型
 │   │   └── services/  # 业务逻辑
-│   └── tests/         # 362 pytest (含 104 个 recovery + 67 个 reports 测试)
+│   └── tests/         # 377 pytest (含 104 mock + 15 real recovery + 67 reports 测试)
 ├── frontend/
 │   └── src/
 │       ├── components/
@@ -210,6 +210,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 362 + frontend 62 = 424 tests
+make test          # backend 377 + frontend 62 = 439 tests
 make test-cov      # backend coverage
 ```

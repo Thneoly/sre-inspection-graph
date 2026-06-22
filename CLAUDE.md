@@ -15,7 +15,7 @@ L3 Dynamic Observability → MetricQuery + MetricSnapshot + AlertEvent + ChangeE
 L4 Inspection Results → InspectionRun/Rule/Finding
 
 + Data Source Service (DSS) → in-memory cache layer, decouples fault injection from Neo4j
-+ Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback
++ Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback / 真实 K8s+MySQL+Redis handler (Phase 2)
 + Change Event Tracking (PRD-002) → ChangeEvent + correlated query + propagation BFS
 + Real-data Connectors (PRD-004) → K8s / Prometheus / Jaeger / flagd / K8s-events
 + Self-Inspection Report (PRD-003) → Jinja2 Markdown 报告 + 3 模板 + 12 模块 + 邮件订阅
@@ -47,7 +47,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 362 tests + Frontend 62 tests
+make test           # Backend 377 tests + Frontend 62 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -225,7 +225,35 @@ cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints,
 5. **24h TTL is read-time** — every list / get approval call sweeps `pending` requests with `expiry_at < now` and marks them `expired`. No background cron.
 6. **Rollback idempotency** — only `succeeded` executions rollback once; `rolled_back` final.
 7. **`ApprovalRequest` not in Neo4j** (runtime-only). `RecoveryExecution` continues dual-write to DSS + Neo4j.
-8. **Mock handlers** — Sprint 3 handlers update DSS node properties to simulate the action (e.g. `restart_count++`, `current_revision--`, `cordoned=True`). Phase 2 swaps in client-go / pymysql / redis-py.
+8. **Mock handlers** — Sprint 3 handlers update DSS node properties to simulate the action (e.g. `restart_count++`, `current_revision--`, `cordoned=True`)。
+9. **Phase 2 真实 handler**(见下)— `RECOVERY_HANDLER_MODE=real` 切真实 K8s/MySQL/Redis API,默认 `mock`(测试安全)。
+
+### Phase 2 — 真实 K8s / MySQL / Redis handler
+
+`RECOVERY_HANDLER_MODE` env(`mock` | `real`,默认 `mock`)切换。`mock` = 仅改 DSS 孪生(测试);`real` = 先调真实 API,**成功后**才更新 DSS 孪生(内存图与集群一致),异常 → `success=False` 不动 DSS(避免孪生失真)。dry-run(`cascade.py`)是纯 DSS 图读,两模式都安全。
+
+**统一 handler 模式**:`execute()` 内 `if settings.recovery_handler_mode == "real": return _execute_real(...)` else `_execute_mock(...)`(原逻辑)。`_execute_real` 严格"先 API 后 DSS"。
+
+| Handler | 真实 API | 降级 / 备注 |
+|---|---|---|
+| `scale_deployment` | `AppsV1Api.patch_namespaced_deployment_scale` | — |
+| `restart_pod` | `CoreV1Api.delete_namespaced_pod`(控制器拉新) | — |
+| `restart_service` | `CoreV1Api.delete_namespaced_endpoints`(controller 重建) | — |
+| `refresh_secret` | `CoreV1Api.patch_namespaced_secret` | **不自动 rollout**(影响面大),仅标 Pod `pending_restart` |
+| `rollback_deployment` | `AppsV1Api.patch_namespaced_deployment`(annotation 触发 rollout) | kubernetes_asyncio 无通用 rollback API,patch annotation 兜底 |
+| `drain_node` | `CoreV1Api.patch_node`(cordon `unschedulable=True`) | **不真删 Pod**(误删生产风险),仅标 `eviction_pending`;真 evict + PDB 留 Phase 3 |
+| `kill_query` | `MySQLClient.kill(conn_id)`(`KILL <id>`,pymysql) | 连接信息优先 DSS 节点 `host`/`port`,缺失走 `MYSQL_*` env |
+| `clear_cache` | `RedisClient.flush_all/flush_db/delete_pattern`(redis-py,SCAN 不用 KEYS) | 同上 `REDIS_*` env |
+
+### Phase 2 关键设计
+
+1. **K8s client factory**(`backend/app/datasource/connectors/k8s_client.py`)— recovery handler 专用,**不复用给 connector**(connector 多集群实例级 `_k8s_loaded`,handler 单集群模块级 `_loaded_cluster = active_cluster`,语义不同)。`ensure_kube_loaded` 抽 k8s_connector 认证逻辑;`get_k8s_apps_api`/`get_k8s_core_api` 返回 `(ApiClient, XApi)` 短生命周期;`run_k8s(coro)` 用 `asyncio.run` 同步包装(handler sync def,recovery router 全 sync,FastAPI threadpool 无 running loop);`k8s_ref(target_id)` 从 DSS 节点 properties 读 `(namespace, name)`(mapper 已写入)。
+2. **async/sync 桥** — handler 是 sync `def`,K8s lib 是 async。`run_k8s` 检 `get_running_loop()`:无 loop → `asyncio.run`(正常路径);有 loop → 新线程兜底(recovery 不该走到这)。
+3. **MySQL/Redis 同步客户端** — pymysql / redis-py 原生 sync,无 async 问题。`from_node(node)` 优先 DSS 节点 properties,缺失走 settings 全局默认,都缺 → `ValueError` → handler 返 `success=False`。
+4. **DSS 孪生只在成功后更新** — 真实 API 失败时 DSS 不动,避免内存图与集群失真。这是 real 模式的核心不变量。
+5. **单集群限定** — Phase 2 用 `settings.active_cluster`,多集群 handler dispatch(target cluster_id 路由)留 Phase 3。
+6. **测试隔离** — 现有 104 个 recovery 测试默认 mock 模式零改动;`test_recovery_real_handlers.py` 用 `monkeypatch.setattr(settings, "recovery_handler_mode", "real")` + mock K8s/MySQL/Redis client(handler 模块引用级 patch,`run_k8s` 自然 asyncio.run)。
+
 
 ### File Map
 
@@ -233,10 +261,12 @@ cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints,
 - Dry-run cascade BFS: `backend/app/recovery/cascade.py`
 - Lifecycle orchestration: `backend/app/recovery/execution.py` — `execute()`, `_continue_after_approval()`, `rollback()`, `_run_handler_and_persist()`
 - Approval flow: `backend/app/recovery/approval.py` — `request_approval()`, `approve()`, `reject()`, `_derive_approver_team()`, `_is_expired()`
-- Mock handlers: `backend/app/recovery/handlers/{scale_deployment, kill_query, restart_service, restart_pod, rollback_deployment, refresh_secret, drain_node, clear_cache}.py`
+- Mock handlers: `backend/app/recovery/handlers/{scale_deployment, kill_query, restart_service, restart_pod, rollback_deployment, refresh_secret, drain_node, clear_cache}.py`(每含 `_execute_mock` + `_execute_real` 双分支)
+- Phase 2 K8s client factory: `backend/app/datasource/connectors/k8s_client.py` — `ensure_kube_loaded` / `get_k8s_apps_api` / `get_k8s_core_api` / `run_k8s` / `k8s_ref`
+- Phase 2 MySQL/Redis clients: `backend/app/recovery/clients/{mysql_client,redis_client}.py` — `from_node(node)` + 同步 API
 - API endpoints: `backend/app/routers/recovery.py` — actions / dry-run / execute / executions / **approvals/{id}/{approve|reject}** / **executions/{id}/rollback**
 - Frontend components: `frontend/src/components/Recovery/{RecoveryActionsSection, DryRunModal, ExecutionsView, ApprovalsView}.tsx`
-- Tests: 104 recovery tests in `backend/tests/test_recovery*.py` + 16 frontend tests in `frontend/src/__tests__/{RecoveryActionsSection, DryRunModal, ExecutionsView, ApprovalsView}.test.tsx`
+- Tests: 104 recovery tests(mock 模式)in `backend/tests/test_recovery*.py` + **15 real handler tests** in `test_recovery_real_handlers.py`(real 模式 + mock client)+ 16 frontend tests
 
 ### E2E
 
