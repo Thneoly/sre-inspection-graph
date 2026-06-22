@@ -20,6 +20,7 @@ from app.datasource.connectors.flagd_connector import FlagdConnector
 from app.datasource.connectors.jaeger_connector import JaegerConnector
 from app.datasource.connectors.k8s_connector import K8sConnector
 from app.datasource.connectors.k8s_event_connector import K8sEventConnector
+from app.datasource.connectors.k8s_watch_connector import K8sWatchConnector
 from app.datasource.connectors.prometheus_connector import PrometheusConnector
 
 
@@ -72,6 +73,8 @@ def init_connectors():
     registry.register(JaegerConnector())
     registry.register(FlagdConnector())
     registry.register(K8sEventConnector())
+    # PRD-002 Phase 2 — K8s watch(gate k8s_watch_enabled,默认关)
+    registry.register(K8sWatchConnector())
 
     logger.info(
         "registered connectors: %s (cluster=%s, namespace=%s)",

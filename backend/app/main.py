@@ -16,6 +16,7 @@ from app.routers import (
     change_event,
     connectors,
     report,
+    webhook,
 )
 
 # Auto-init DSS on startup
@@ -58,6 +59,7 @@ app.include_router(recovery.router)
 app.include_router(change_event.router)
 app.include_router(connectors.router)
 app.include_router(report.router)
+app.include_router(webhook.router)
 
 
 @app.on_event("startup")

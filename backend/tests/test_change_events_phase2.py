@@ -234,3 +234,147 @@ class TestFrequencyAlert:
         cm = next(f for f in frequent if f["target_resource_id"] == "cm:order-config")
         assert cm["count"] == 6
         assert len(cm["event_ids"]) == 6
+
+
+# ============================================================
+# K8s WatchConnector — 纯事件处理逻辑(不真起 watch)
+# ============================================================
+
+class TestK8sWatchConnector:
+    def _make_connector(self):
+        from app.config import settings
+        from app.datasource.connectors.k8s_watch_connector import K8sWatchConnector
+        c = K8sWatchConnector(cluster_id="test-cluster", namespace="order")
+        # 关闭 gate 限制:status 走 watch 分支
+        return c
+
+    def test_modified_event_produces_change_with_yaml_diff(self):
+        c = self._make_connector()
+        # 首轮(first_sync=True)ADDED 建快照,不发
+        baseline = {
+            "metadata": {"name": "order-config", "resourceVersion": "100",
+                         "uid": "x", "managedFields": []},
+            "data": {"max_pool": "20"},
+        }
+        c._handle_watch_event("ConfigMap", {"type": "ADDED", "object": baseline})
+        assert len(store.change_events) == 0  # 首轮 ADDED 只建快照
+        # bootstrap 完成,翻 first_sync
+        c._first_sync["ConfigMap"] = False
+
+        # MODIFIED 业务字段变了
+        modified = {
+            "metadata": {"name": "order-config", "resourceVersion": "101",
+                         "uid": "x", "managedFields": [], "creationTimestamp": "t"},
+            "data": {"max_pool": "50"},
+        }
+        c._handle_watch_event("ConfigMap", {"type": "MODIFIED", "object": modified})
+        events = store.list_change_events(target_resource_id="configmap:test-cluster:order:order-config")
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.change_type == "configmap_updated"
+        assert ev.source == "k8s_api"
+        assert ev.cluster_id == "test-cluster"
+        assert "max_pool" in ev.yaml_diff
+        assert "20" in ev.yaml_diff and "50" in ev.yaml_diff
+
+    def test_first_sync_added_does_not_emit(self):
+        """首轮 ADDED 只建快照,不发 ChangeEvent(防启动炸历史)。"""
+        c = self._make_connector()
+        assert c._first_sync["ConfigMap"] is True
+        obj = {"metadata": {"name": "cm1", "resourceVersion": "1"}, "data": {"k": "v"}}
+        c._handle_watch_event("ConfigMap", {"type": "ADDED", "object": obj})
+        assert len(store.change_events) == 0
+        assert "cm1" in c._snapshots["ConfigMap"]
+
+    def test_deleted_event_does_not_emit(self):
+        c = self._make_connector()
+        # 首轮建快照
+        obj = {"metadata": {"name": "order-config", "resourceVersion": "1"}, "data": {"k": "v"}}
+        c._handle_watch_event("ConfigMap", {"type": "ADDED", "object": obj})
+        c._first_sync["ConfigMap"] = False
+        c._handle_watch_event("ConfigMap", {"type": "DELETED", "object": obj})
+        assert len(store.change_events) == 0  # DELETED 不发
+        assert "order-config" not in c._snapshots["ConfigMap"]
+
+    def test_noise_only_modified_does_not_emit(self):
+        """只有 resourceVersion 等噪声字段变 → 不发事件。"""
+        c = self._make_connector()
+        old = {"metadata": {"name": "cm1", "resourceVersion": "1", "uid": "u"},
+               "data": {"k": "v"}}
+        c._handle_watch_event("ConfigMap", {"type": "ADDED", "object": old})
+        c._first_sync["ConfigMap"] = False
+        new = {"metadata": {"name": "cm1", "resourceVersion": "999", "uid": "u"},  # 只 rv 变
+               "data": {"k": "v"}}
+        c._handle_watch_event("ConfigMap", {"type": "MODIFIED", "object": new})
+        assert len(store.change_events) == 0
+
+
+# ============================================================
+# Webhook router
+# ============================================================
+
+class TestWebhooks:
+    def test_argocd_webhook_creates_deployment_rolled(self, monkeypatch):
+        from app.config import settings
+        from app.main import app
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(settings, "webhook_token", "")  # 跳过校验
+        client = TestClient(app)
+
+        payload = {
+            "application": {
+                "metadata": {"name": "order-api"},
+                "spec": {"source": {"repoURL": "https://github.com/acme/order-api"}},
+            },
+            "revision": "abc123def456789",
+            "images": ["order-api:1.2.4"],
+        }
+        resp = client.post("/api/v1/webhooks/argocd", json=payload)
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["change_type"] == "deployment_rolled"
+        assert body["source"] == "argo_cd"
+        assert body["commit_sha"] == "abc123def456789"
+        assert body["git_repo"] == "https://github.com/acme/order-api"
+        # target 命中 DSS 节点(deploy:order-api name=order-api)
+        assert body["target_resource_id"] == "deploy:order-api"
+
+    def test_harbor_webhook_creates_image_pushed(self, monkeypatch):
+        from app.config import settings
+        from app.main import app
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(settings, "webhook_token", "")
+        client = TestClient(app)
+
+        payload = {
+            "type": "PUSH_ARTIFACT",
+            "event_data": {
+                "repository": {"repo_full_name": "acme/order-api"},
+                "resources": [
+                    {"resource": {"digest": "sha256:abcdef1234567890", "tag": "1.2.4"}},
+                ],
+            },
+        }
+        resp = client.post("/api/v1/webhooks/harbor", json=payload)
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["total"] == 1
+        ev = body["events"][0]
+        assert ev["change_type"] == "image_pushed"
+        assert ev["source"] == "gitops"
+        assert ev["diff_summary"]["tag"] == "1.2.4"
+        assert "acme/order-api" in ev["diff_summary"]["repository"]
+
+    def test_webhook_token_rejected_when_mismatch(self, monkeypatch):
+        from app.config import settings
+        from app.main import app
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(settings, "webhook_token", "secret")
+        client = TestClient(app)
+        resp = client.post("/api/v1/webhooks/argocd",
+                           json={"application": {"metadata": {"name": "x"}}},
+                           headers={"X-Webhook-Token": "wrong"})
+        assert resp.status_code == 401

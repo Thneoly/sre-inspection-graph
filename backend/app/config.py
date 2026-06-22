@@ -38,6 +38,13 @@ class Settings:
     # 启动时是否自动启动 connectors(测试场景设为 0)
     connectors_autostart: bool = os.getenv("CONNECTORS_AUTOSTART", "1") == "1"
 
+    # PRD-002 Phase 2 — K8s watch connector(长连接实时监听 CM/Secret/Deployment)
+    # 默认 0:watch 长连接不适合测试/CI;vm 集群才开
+    k8s_watch_enabled: bool = os.getenv("K8S_WATCH_ENABLED", "0") == "1"
+
+    # PRD-002 Phase 2 — webhook 接收 token(空则跳过校验,PoC 简化;生产必开)
+    webhook_token: str = os.getenv("WEBHOOK_TOKEN", "")
+
     # ─── Prometheus ───
     prometheus_url: str = os.getenv("PROMETHEUS_URL", "http://localhost:19090")
     prometheus_sync_interval_seconds: int = int(os.getenv("PROMETHEUS_SYNC_INTERVAL", "30"))
