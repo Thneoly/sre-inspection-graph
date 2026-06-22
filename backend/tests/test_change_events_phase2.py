@@ -378,3 +378,155 @@ class TestWebhooks:
                            json={"application": {"metadata": {"name": "x"}}},
                            headers={"X-Webhook-Token": "wrong"})
         assert resp.status_code == 401
+
+
+# ============================================================
+# ChangeEvent ↔ AlertEvent CORRELATED_WITH
+# ============================================================
+
+class TestAlertCorrelation:
+    def _fake_alert_record(self, aid, resource_ref, fired_at, severity="critical"):
+        """造一个像 Neo4j Record 的对象(有 .get())。"""
+        from unittest.mock import MagicMock
+        data = {
+            "aid": aid,
+            "name": f"alert-{aid}",
+            "severity": severity,
+            "fired_at": fired_at,
+            "resource_ref": resource_ref,
+            "summary": f"{aid} on {resource_ref}",
+        }
+        rec = MagicMock()
+        rec.get.side_effect = lambda k, default=None: data.get(k, default)
+        return rec
+
+    def _fake_driver_with_alerts(self, records):
+        from unittest.mock import MagicMock
+        session = MagicMock()
+        session.run.return_value = list(records)
+        driver = MagicMock()
+        driver.session.return_value.__enter__.return_value = session
+        return driver, session
+
+    def test_correlate_alerts_matches_resource_in_propagated_to(self):
+        """AlertEvent.resource_ref 落在变更 propagated_to → 命中。"""
+        from app.changes.event_service import record_change
+        from app.changes.alert_correlation import correlate_alerts
+        from app.db import neo4j_client as n4j
+        from unittest.mock import patch
+
+        # cm:order-config 变更 → propagated_to 含 pod:order-api-1 / pod:order-api-2
+        event = record_change(
+            change_type="configmap_updated",
+            target_resource_id="cm:order-config",
+            source="k8s_api",
+        )
+        assert "pod:order-api-1" in event.propagated_to
+
+        alert_rec = self._fake_alert_record(
+            "fault_alert_1", "pod:order-api-1", event.changed_at.replace("Z", ""),
+        )
+        driver, session = self._fake_driver_with_alerts([alert_rec])
+
+        with patch.object(n4j, "get_driver", return_value=driver):
+            result = correlate_alerts(event.change_event_id, window_seconds=600)
+        assert result["total"] == 1
+        assert result["alerts"][0]["alert_event_id"] == "fault_alert_1"
+        assert result["neo4j_available"] is True
+        # persist_correlation 被调(CORRELATED_WITH 边)—— session.run 至少调 2 次(list + MERGE)
+        # 这里只验 correlate;persist 单独测
+
+    def test_correlate_alerts_no_match_when_resource_outside_impact(self):
+        from app.changes.event_service import record_change
+        from app.changes.alert_correlation import correlate_alerts
+        from app.db import neo4j_client as n4j
+        from unittest.mock import patch
+
+        event = record_change(
+            change_type="configmap_updated",
+            target_resource_id="cm:order-config",
+            source="k8s_api",
+        )
+        # resource_ref 是个无关资源
+        alert_rec = self._fake_alert_record(
+            "alert_x", "pod:unrelated-9", event.changed_at.replace("Z", ""),
+        )
+        driver, _ = self._fake_driver_with_alerts([alert_rec])
+        with patch.object(n4j, "get_driver", return_value=driver):
+            result = correlate_alerts(event.change_event_id, window_seconds=600)
+        assert result["total"] == 0
+
+    def test_correlate_alerts_neo4j_offline_returns_empty(self):
+        """Neo4j 离线(get_driver=None)→ alerts 空,neo4j_available=False,不抛。"""
+        from app.changes.event_service import record_change
+        from app.changes.alert_correlation import correlate_alerts
+        from app.db import neo4j_client as n4j
+        from unittest.mock import patch
+
+        event = record_change(
+            change_type="configmap_updated",
+            target_resource_id="cm:order-config",
+            source="k8s_api",
+        )
+        with patch.object(n4j, "get_driver", return_value=None):
+            result = correlate_alerts(event.change_event_id)
+        assert result["total"] == 0
+        assert result["neo4j_available"] is False
+
+    def test_persist_correlation_writes_edge(self):
+        from app.changes.alert_correlation import persist_correlation
+        from app.db import neo4j_client as n4j
+        from unittest.mock import patch
+
+        session = MagicMock()
+        driver = MagicMock()
+        driver.session.return_value.__enter__.return_value = session
+        with patch.object(n4j, "get_driver", return_value=driver):
+            ok = persist_correlation("ce-1", "fault_alert_1")
+        assert ok is True
+        # 调了一次 MERGE CORRELATED_WITH
+        assert session.run.call_count == 1
+        cypher = session.run.call_args.args[0]
+        assert "CORRELATED_WITH" in cypher
+
+    def test_alerts_endpoint_returns_empty_when_neo4j_offline(self, monkeypatch):
+        from app.changes.event_service import record_change
+        from app.db import neo4j_client as n4j
+        from app.main import app
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch
+
+        event = record_change(
+            change_type="configmap_updated",
+            target_resource_id="cm:order-config",
+            source="k8s_api",
+        )
+        with patch.object(n4j, "get_driver", return_value=None):
+            client = TestClient(app)
+            resp = client.get(f"/api/v1/change-events/{event.change_event_id}/alerts")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 0
+        assert body["neo4j_available"] is False
+
+    def test_frequent_endpoint(self, monkeypatch):
+        from app.changes.event_service import record_change
+        from app.main import app
+        from fastapi.testclient import TestClient
+
+        for _ in range(6):
+            record_change(
+                change_type="configmap_updated",
+                target_resource_id="cm:order-config",
+                source="k8s_api",
+            )
+        client = TestClient(app)
+        resp = client.get("/api/v1/change-events/frequent?window=3600&threshold=5")
+        assert resp.status_code == 200
+        body = resp.json()
+        targets = [f["target_resource_id"] for f in body["frequent"]]
+        assert "cm:order-config" in targets
+
+
+# 导入 MagicMock(上面类用到)
+from unittest.mock import MagicMock  # noqa: E402

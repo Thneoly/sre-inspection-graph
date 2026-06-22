@@ -310,8 +310,10 @@ class TestNeo4jPersistence:
                 description="rollout v1.2.4",
             )
 
-        # 应该调了 2 次 s.run — (a) MERGE 节点 + (b) RELATES_TO 边
-        assert recording_session.run.call_count == 2
+        # 至少 2 次 s.run — (a) MERGE 节点 + (b) RELATES_TO 边
+        # Phase 2 起 record_change 还会 best-effort 查关联 AlertEvent(多 1 次 MATCH),
+        # 故只断言前两次是 node + edge,不强求精确计数
+        assert recording_session.run.call_count >= 2
 
         # 第一调:节点 MERGE
         node_call = recording_session.run.call_args_list[0]

@@ -136,6 +136,23 @@ def timeline(
         raise HTTPException(status_code=e.code, detail=str(e))
 
 
+@router.get("/frequent")
+def frequent_changes(
+    window: int = Query(3600, ge=60, le=86400, description="时间窗口秒数"),
+    threshold: int = Query(5, ge=1, le=100, description="变更次数阈值"),
+):
+    """PRD-002 Phase 2 — 过频变更告警列表。
+
+    扫所有 ChangeEvent,按 target 分桶,窗口内变更次数 > threshold 的资源列出。
+    """
+    from app.changes.frequency import detect_frequent_changes
+    return {
+        "frequent": detect_frequent_changes(window_seconds=window, threshold=threshold),
+        "window_seconds": window,
+        "threshold": threshold,
+    }
+
+
 @router.get("/{change_event_id}")
 def get_change_event(change_event_id: str):
     event = store.get_change_event(change_event_id)
@@ -161,5 +178,22 @@ def event_recovery_suggestion(change_event_id: str):
     """
     try:
         return get_recovery_suggestion(change_event_id)
+    except ChangeEventError as e:
+        raise HTTPException(status_code=e.code, detail=str(e))
+
+
+@router.get("/{change_event_id}/alerts")
+def event_alerts(
+    change_event_id: str,
+    window: int = Query(600, ge=1, le=86400, description="时间窗口秒数(变更前后)"),
+):
+    """PRD-002 Phase 2 — 变更事件关联的告警(CORRELATED_WITH)。
+
+    找变更时间窗内 resource_ref 落在变更影响面(propagated_to ∪ target)的 AlertEvent。
+    Neo4j 离线 → alerts 为空,neo4j_available=false。
+    """
+    from app.changes.alert_correlation import correlate_alerts
+    try:
+        return correlate_alerts(change_event_id, window_seconds=window)
     except ChangeEventError as e:
         raise HTTPException(status_code=e.code, detail=str(e))

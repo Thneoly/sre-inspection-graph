@@ -136,6 +136,15 @@ def record_change(
             "ChangeEvent Neo4j persist failed for %s: %s: %s",
             event.change_event_id, type(e).__name__, e,
         )
+    # Phase 2 — best-effort 关联窗口内 AlertEvent + 写 CORRELATED_WITH 边
+    try:
+        from app.changes.alert_correlation import correlate_and_persist
+        correlate_and_persist(event.change_event_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "alert correlation failed for %s: %s: %s",
+            event.change_event_id, type(e).__name__, e,
+        )
     return event
 
 
