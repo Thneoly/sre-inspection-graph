@@ -11,7 +11,7 @@ L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent + ChangeEvent
 L4 巡检结果层    →  InspectionRun/Rule/Finding
 +  故障模拟引擎   →  FaultScenario + 时间线推进 + 数据维度注入
 +  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001)
-+  变更事件追踪   →  ChangeEvent + 故障关联查询 + 前端时间线 + Neo4j 双写 (PRD-002)
++  变更事件追踪   →  ChangeEvent + 故障关联查询 + 前端时间线 + Neo4j 双写 + K8s watcher + webhook + 频率告警 + CORRELATED_WITH (PRD-002)
 +  实数据 connector → K8s + Prometheus + Jaeger + flagd + K8s events (PRD-004)
 +  自检报告引擎   →  Jinja2 Markdown + 3 模板 + 邮件订阅 + APScheduler (PRD-003)
 ```
@@ -71,7 +71,7 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 告警归并 | `/alert-aggregation` | 多告警按应用归并 |
 | 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
 | 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
-| 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 (PRD-002) |
+| 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 + Git/CI + YAML diff + 关联告警 (PRD-002) |
 | 报告中心 | `/reports` | 自检报告生成 + 下载 + 邮件订阅 (PRD-003) |
 
 ## 恢复动作引擎(PRD-001)
@@ -154,6 +154,19 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 - **推进机制**: 每次点击「推进下一阶段」固定前进 1 个阶段，阶段进度可见（如 2/6）
 - **数据持久化**: 故障场景持久化到 Neo4j，uvicorn 重启后自动恢复活跃故障
 
+## 变更事件追踪(PRD-002)
+
+记录"什么时间什么资源被谁怎么改了",并提供故障关联查询 + 影响范围预演 + 从变更一键调起恢复。
+
+**Phase 2 能力**:
+
+- **K8s watcher**: 真 `watch.Watch().stream()` 长连接实时监听 ConfigMap/Secret/Deployment 变更 → ChangeEvent(含结构化 YAML diff)。`K8S_WATCH_ENABLED=1` 开启(默认关)
+- **Webhook 接收**: `POST /api/v1/webhooks/argocd` → deployment_rolled(带 commit_sha/git_repo);`POST /api/v1/webhooks/harbor` → image_pushed
+- **Git/CI 关联**: ChangeEvent 带 commit_sha / pipeline_url / git_repo / cluster_id,前端抽屉展示 commit short + 仓库/pipeline 链接
+- **YAML diff**: unified diff 文本(剔除 K8s 噪声字段),前端 `<pre>` 渲染
+- **变更频率告警**: 同资源 1h 内变更 > 5 次 → severity 提升到 medium + 标记;`GET /api/v1/change-events/frequent`
+- **ChangeEvent ↔ AlertEvent CORRELATED_WITH**: 变更时间窗内 resource_ref 落在影响面的告警自动关联 + Neo4j 写边;`GET /api/v1/change-events/{id}/alerts`
+
 ## 图层面板
 
 每个视图工具栏右侧有图层标签：
@@ -189,7 +202,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
 │   │   ├── models/    # Pydantic 模型
 │   │   └── services/  # 业务逻辑
-│   └── tests/         # 377 pytest (含 104 mock + 15 real recovery + 67 reports 测试)
+│   └── tests/         # 398 pytest (含 104 mock + 15 real recovery + 67 reports + 21 phase2 变更测试)
 ├── frontend/
 │   └── src/
 │       ├── components/
@@ -201,7 +214,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 62 vitest
+│       └── __tests__/      # 64 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -210,6 +223,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 377 + frontend 62 = 439 tests
+make test          # backend 398 + frontend 64 = 462 tests
 make test-cov      # backend coverage
 ```

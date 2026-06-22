@@ -47,7 +47,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 377 tests + Frontend 62 tests
+make test           # Backend 398 tests + Frontend 64 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -360,6 +360,39 @@ CSV bulk import: `scripts/import_change_events.py` reads `scripts/output/change_
 - Frontend: `frontend/src/components/Graph/ChangeTimelineSection.tsx`, `frontend/src/components/Views/ChangeTimelineView.tsx` (含 `RecoverySuggestionCard`), `frontend/src/components/Views/ConfigImpactView.tsx`, `frontend/src/components/Graph/NodeDetailPanel.tsx`, `frontend/src/api/client.ts`
 - Tests: `backend/tests/test_change_events.py` (47 tests incl. 3 Neo4j persistence + 7 recovery-suggestion) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (10 tests)
 - Mock generator: `scripts/generate_change_events.py` (~150 events across 7 days); bulk import: `scripts/import_change_events.py`
+
+### Phase 2 — 实时变更接入 + 深度关联
+
+补齐 PRD §9 列的 6 项延后能力(跨集群聚合 + 变更审批工作流仍留 Phase 3):
+
+1. **K8s watcher**(`k8s_watch_connector.py`)—— 真 `watch.Watch().stream()` 长连接监听 ConfigMap/Secret/Deployment,**不是** K8sEventConnector 的 30s 轮询。list-then-watch 模式:首次 list bootstrap 建快照 + resource_version,再起 watch 续传。MODIFIED → `compute_yaml_diff` → ChangeEvent(含 `yaml_diff` + `cluster_id`);ADDED 首轮只建快照不发;DELETED 不发;断线 5s 退避重连 + rv 续传,rv Gone → 重建快照。gate `K8S_WATCH_ENABLED`(默认 0,vm 集群才开)。
+2. **Webhook 接收**(`routers/webhook.py`,prefix `/api/v1/webhooks`)—— `POST /argocd` 解析 app_name/revision/images → `deployment_rolled`(commit_sha + git_repo);`POST /harbor` → `image_pushed`。可选 `WEBHOOK_TOKEN` header 校验(空则跳过,PoC 简化,生产必开)。
+3. **Git/CI 关联** —— ChangeEvent 加 `commit_sha`/`pipeline_url`/`git_repo`/`cluster_id`/`yaml_diff` 5 字段。`commit_sha` 是规范字段,优先于 `related_commit`(回退兼容)。
+4. **YAML diff**(`changes/yaml_diff.py`)—— 纯标准库 `yaml`+`difflib` 产 unified diff;默认剔除 K8s 噪声字段(managedFields/resourceVersion/uid/creationTimestamp/generation/annotations),避免元数据变更误报。`summarize_diff` 给 diff_summary 用。
+5. **变更频率告警**(`changes/frequency.py`)—— `check_target_frequency` 单资源窗口计数,`detect_frequent_changes` 全量分桶。`record_change` 写入后调,命中(>阈值,默认 5/1h)→ severity 至少 medium + description 追加「[过频变更:N次/3600s]」。端点 `GET /frequent`。
+6. **ChangeEvent↔AlertEvent CORRELATED_WITH**(`changes/alert_correlation.py`)—— PRD §6 验收里唯一未勾的项。`correlate_alerts`:窗口内 AlertEvent.resource_ref 落在变更影响面(propagated_to ∪ target)→ 命中。`persist_correlation`:best-effort 写 `(ce)-[:CORRELATED_WITH]->(ae)` 边。`record_change` 末尾自动触发 `correlate_and_persist`(Neo4j 离线→0,不阻塞)。端点 `GET /{id}/alerts`。
+
+### Phase 2 关键设计
+
+1. **watch 重写 BaseConnector 生命周期** —— watch 是长连接阻塞,不能按 sync_interval 轮询。`start()`/`_run_loop` 重写为 `_run_watch`,三类资源各起一个 watch task 并发。`sync_once()` 保留作 /sync-now 兜底(走 list)。
+2. **list-then-watch 是 K8s 标准模式** —— 首次无 resource_version 时先 list 建快照 + 拿 rv + 翻 first_sync=False,再起 watch。这样 watch 只收真实后续变更,启动不炸历史 ADDED。
+3. **AlertEvent 在 DSS 无模型** —— `correlate_alerts` 只能走 Neo4j 读 `:AlertEvent`(由 `simulation.py` 写入,resource_ref 属性指向被告警资源)。Neo4j 离线 → alerts 空 + `neo4j_available=false`,不阻塞 API。
+4. **CORRELATED_WITH 单向边** —— `(ChangeEvent)-[:CORRELATED_WITH]->(AlertEvent)`,语义"变更可能是告警诱因"。不做双向,避免写放大。
+5. **频率告警 O(n) 扫** —— `record_change` 每次调 `check_target_frequency` 扫该 target 的所有事件。事件量级 <10k 可接受,Phase 3 上滑动窗口索引。
+6. **_estimate_severity 只升不降** —— propagated + frequent 共同定级。频率命中把 low→medium,但不降 high。现有 47 测试零回归(新字段全可选默认空)。
+
+### Phase 2 File Map
+
+- K8s watcher: `backend/app/datasource/connectors/k8s_watch_connector.py` — `K8sWatchConnector` / `_handle_watch_event`(纯函数可单测)/ `_bootstrap_list` / `_watch_kind`(断线重连)
+- Webhook: `backend/app/routers/webhook.py` — `/argocd` + `/harbor` + `_check_token`
+- YAML diff: `backend/app/changes/yaml_diff.py` — `compute_yaml_diff` + `summarize_diff`
+- 频率告警: `backend/app/changes/frequency.py` — `check_target_frequency` + `detect_frequent_changes`
+- Alert 关联: `backend/app/changes/alert_correlation.py` — `correlate_alerts` + `correlate_changes_for_alert` + `persist_correlation` + `correlate_and_persist`
+- 模型扩展: `backend/app/datasource/models.py` ChangeEvent +5 字段;`backend/app/changes/event_service.py` `record_change` 加 kwargs + `_apply_frequency_check` + 自动 `correlate_and_persist`
+- 端点: `backend/app/routers/change_event.py` 加 `GET /{id}/alerts` + `GET /frequent`
+- Config: `backend/app/config.py` 加 `k8s_watch_enabled` + `webhook_token`
+- 前端: `frontend/src/components/Views/ChangeTimelineView.tsx`(`ChangeAlertsCard` + Git/CI Card + YAML Diff Card + 频率告警横幅),`frontend/src/api/client.ts`(+5 字段 + `fetchChangeEventAlerts`/`fetchFrequentChanges`)
+- Tests: `backend/tests/test_change_events_phase2.py`(21 tests:YAML diff 3 + 新字段 2 + 频率告警 3 + watcher 4 + webhook 3 + Alert 关联 6)+ `frontend/src/__tests__/ChangeTimelineView.test.tsx`(+2)+ fixtures 更新
 
 ## Self-Inspection Report — PRD-003 Sprint 1 + Sprint 2
 

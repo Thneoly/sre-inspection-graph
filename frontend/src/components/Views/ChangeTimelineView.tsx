@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
+  Alert,
   Button,
   Card,
   Drawer,
@@ -18,11 +19,13 @@ import {
   Descriptions,
   Checkbox,
 } from 'antd';
-import { FieldTimeOutlined, RocketOutlined } from '@ant-design/icons';
+import { FieldTimeOutlined, RocketOutlined, WarningOutlined } from '@ant-design/icons';
 import {
   fetchChangeEventTimeline,
   fetchChangeEventImpact,
   fetchChangeEventRecoverySuggestion,
+  fetchChangeEventAlerts,
+  fetchFrequentChanges,
   postRecoveryExecute,
 } from '../../api/client';
 import type {
@@ -112,6 +115,19 @@ export default function ChangeTimelineView() {
     return filtered.slice(0, 200); // 渲染上限
   }, [data, enabledTypes]);
 
+  // PRD-002 Phase 2 — 过频变更告警横幅(全局扫描,过滤出本应用相关)
+  const { data: frequentData } = useQuery({
+    queryKey: ['change-frequent', since],
+    queryFn: () => fetchFrequentChanges(3600, 5).then((r) => r.data),
+    refetchInterval: 30000,
+  });
+  const appFrequent = useMemo(() => {
+    if (!frequentData || !data) return [];
+    // 应用子树资源集合 = timeline 可见资源
+    const scope = new Set(data.events.map((e) => e.target_resource_id));
+    return frequentData.frequent.filter((f) => scope.has(f.target_resource_id));
+  }, [frequentData, data]);
+
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
       <Title level={4} style={{ marginBottom: 16 }}>
@@ -165,6 +181,26 @@ export default function ChangeTimelineView() {
             ))}
           </Space>
         </Card>
+      )}
+
+      {/* PRD-002 Phase 2 — 过频变更告警横幅 */}
+      {appFrequent.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<WarningOutlined />}
+          style={{ marginBottom: 12 }}
+          message={`本应用检测到 ${appFrequent.length} 个过频变更资源(1h 内 > 5 次)`}
+          description={
+            <Space wrap>
+              {appFrequent.map((f) => (
+                <Tag key={f.target_resource_id} color="orange">
+                  {f.target_resource_id}: {f.count} 次
+                </Tag>
+              ))}
+            </Space>
+          }
+        />
       )}
 
       {/* 主时间线 */}
@@ -248,6 +284,58 @@ function DetailPanel({ event }: { event: ChangeEvent }) {
         )}
       </Descriptions>
 
+      {/* PRD-002 Phase 2 — Git/CI 关联 */}
+      {(event.commit_sha || event.git_repo || event.pipeline_url || event.cluster_id) && (
+        <Card size="small" title="🔗 Git / CI">
+          <Descriptions column={1} size="small">
+            {event.commit_sha && (
+              <Descriptions.Item label="Commit">
+                <Text code copyable={{ text: event.commit_sha }}>
+                  {event.commit_sha.slice(0, 12)}
+                </Text>
+              </Descriptions.Item>
+            )}
+            {event.git_repo && (
+              <Descriptions.Item label="仓库">
+                <a href={event.git_repo} target="_blank" rel="noreferrer">
+                  {event.git_repo}
+                </a>
+              </Descriptions.Item>
+            )}
+            {event.pipeline_url && (
+              <Descriptions.Item label="Pipeline">
+                <a href={event.pipeline_url} target="_blank" rel="noreferrer">
+                  查看运行
+                </a>
+              </Descriptions.Item>
+            )}
+            {event.cluster_id && (
+              <Descriptions.Item label="集群">{event.cluster_id}</Descriptions.Item>
+            )}
+          </Descriptions>
+        </Card>
+      )}
+
+      {/* PRD-002 Phase 2 — 结构化 YAML diff */}
+      {event.yaml_diff && (
+        <Card size="small" title="📝 YAML Diff">
+          <pre
+            style={{
+              margin: 0,
+              fontSize: 11,
+              lineHeight: 1.5,
+              maxHeight: 360,
+              overflow: 'auto',
+              background: '#fafafa',
+              padding: 8,
+              borderRadius: 4,
+            }}
+          >
+            {event.yaml_diff}
+          </pre>
+        </Card>
+      )}
+
       <Card size="small" title={`影响范围${impact ? ` (${impact.affected_count})` : ''}`}>
         {impactLoading ? (
           <Spin size="small" />
@@ -272,8 +360,59 @@ function DetailPanel({ event }: { event: ChangeEvent }) {
         )}
       </Card>
 
+      {/* PRD-002 Phase 2 — 关联告警(CORRELATED_WITH) */}
+      <ChangeAlertsCard event={event} />
+
       <RecoverySuggestionCard event={event} />
     </Space>
+  );
+}
+
+// ============================================================
+// 关联告警卡片 — 变更时间窗内的 AlertEvent(CORRELATED_WITH)
+// ============================================================
+
+const alertSeverityColor: Record<string, string> = {
+  critical: 'red',
+  warning: 'gold',
+  info: 'blue',
+};
+
+function ChangeAlertsCard({ event }: { event: ChangeEvent }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['change-alerts', event.change_event_id],
+    queryFn: () => fetchChangeEventAlerts(event.change_event_id).then((r) => r.data),
+  });
+
+  return (
+    <Card size="small" title={`🚨 关联告警${data ? ` (${data.total})` : ''}`}>
+      {isLoading ? (
+        <Spin size="small" />
+      ) : !data || data.alerts.length === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={data && !data.neo4j_available ? 'Neo4j 未连接,无法查询告警' : '时间窗内无关联告警'}
+        />
+      ) : (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          {data.alerts.map((a) => (
+            <div key={a.alert_event_id} style={{ fontSize: 12 }}>
+              <Tag color={alertSeverityColor[a.severity] || 'default'}>
+                {a.severity || 'unknown'}
+              </Tag>
+              <Text strong>{a.alert_name}</Text>
+              <Text type="secondary" style={{ marginLeft: 8 }}>
+                {a.fired_at}
+              </Text>
+              <div style={{ color: '#888', marginTop: 2 }}>{a.summary}</div>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                资源: {a.resource_ref}
+              </Text>
+            </div>
+          ))}
+        </Space>
+      )}
+    </Card>
   );
 }
 

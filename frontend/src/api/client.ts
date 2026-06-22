@@ -344,6 +344,12 @@ export interface ChangeEvent {
   severity_estimate: ChangeSeverity;
   propagated_to: string[];
   propagated_count: number;
+  // PRD-002 Phase 2 — Git/CI 关联 + 集群来源 + 结构化 YAML diff
+  commit_sha: string;
+  pipeline_url: string;
+  git_repo: string;
+  cluster_id: string;
+  yaml_diff: string;
 }
 
 export interface CorrelatedChange extends ChangeEvent {
@@ -470,6 +476,57 @@ export interface ChangeRecoverySuggestionResponse {
 export function fetchChangeEventRecoverySuggestion(changeEventId: string) {
   return api.get<ChangeRecoverySuggestionResponse>(
     `/change-events/${encodeURIComponent(changeEventId)}/recovery-suggestion`,
+  );
+}
+
+// PRD-002 Phase 2 — 变更关联告警 + 过频变更告警
+
+export interface ChangeAlertItem {
+  alert_event_id: string;
+  alert_name: string;
+  severity: string;
+  fired_at: string;
+  resource_ref: string;
+  summary: string;
+}
+
+export interface ChangeEventAlertsResponse {
+  change_event_id: string;
+  changed_at: string;
+  window_start: string;
+  window_end: string;
+  affected_resource_ids: string[];
+  alerts: ChangeAlertItem[];
+  total: number;
+  neo4j_available: boolean;
+}
+
+export interface FrequentChangeItem {
+  target_resource_id: string;
+  count: number;
+  window_start: string;
+  window_end: string;
+  threshold: number;
+  event_ids: string[];
+}
+
+export interface FrequentChangesResponse {
+  frequent: FrequentChangeItem[];
+  window_seconds: number;
+  threshold: number;
+}
+
+export function fetchChangeEventAlerts(changeEventId: string, window = 600) {
+  return api.get<ChangeEventAlertsResponse>(
+    `/change-events/${encodeURIComponent(changeEventId)}/alerts`,
+    { params: { window } },
+  );
+}
+
+export function fetchFrequentChanges(window = 3600, threshold = 5) {
+  return api.get<FrequentChangesResponse>(
+    '/change-events/frequent',
+    { params: { window, threshold } },
   );
 }
 

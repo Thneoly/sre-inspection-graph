@@ -27,6 +27,11 @@ export const mockEventLow: ChangeEvent = {
   severity_estimate: 'low',
   propagated_to: [],
   propagated_count: 0,
+  commit_sha: '',
+  pipeline_url: '',
+  git_repo: '',
+  cluster_id: '',
+  yaml_diff: '',
 };
 
 export const mockEventMedium: ChangeEvent = {
@@ -44,6 +49,11 @@ export const mockEventMedium: ChangeEvent = {
   severity_estimate: 'medium',
   propagated_to: ['pod:order:order-api-1', 'pod:order:order-api-2', 'pod:order:order-api-3', 'pod:order:order-api-4', 'pod:order:order-api-5'],
   propagated_count: 5,
+  commit_sha: 'abc123def456',
+  pipeline_url: '',
+  git_repo: 'https://github.com/acme/order-api',
+  cluster_id: '',
+  yaml_diff: '',
 };
 
 export const mockEventHigh: ChangeEvent = {
@@ -61,6 +71,11 @@ export const mockEventHigh: ChangeEvent = {
   severity_estimate: 'high',
   propagated_to: Array.from({ length: 12 }, (_, i) => `pod:order:p-${i}`),
   propagated_count: 12,
+  commit_sha: 'def456789abc',
+  pipeline_url: 'https://ci.example.com/run/42',
+  git_repo: 'https://github.com/acme/order-api',
+  cluster_id: 'vm-cluster',
+  yaml_diff: '--- order-api.old\n+++ order-api.new\n@@ -1 +1 @@\n-image: order-api:1.2.3\n+image: order-api:1.2.4',
 };
 
 export const mockEventListResponse: ChangeEventListResponse = {

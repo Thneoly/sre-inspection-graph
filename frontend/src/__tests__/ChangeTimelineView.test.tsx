@@ -17,6 +17,8 @@ vi.mock('../api/client', async () => {
     fetchChangeEventTimeline: vi.fn(),
     fetchChangeEventImpact: vi.fn(),
     fetchChangeEventRecoverySuggestion: vi.fn(),
+    fetchChangeEventAlerts: vi.fn(),
+    fetchFrequentChanges: vi.fn(),
     postRecoveryExecute: vi.fn(),
   };
 });
@@ -25,6 +27,8 @@ import {
   fetchChangeEventTimeline,
   fetchChangeEventImpact,
   fetchChangeEventRecoverySuggestion,
+  fetchChangeEventAlerts,
+  fetchFrequentChanges,
   postRecoveryExecute,
 } from '../api/client';
 
@@ -34,6 +38,22 @@ describe('ChangeTimelineView', () => {
     // 默认:抽屉里的恢复建议返回 direct 可执行;各测试可覆盖
     vi.mocked(fetchChangeEventRecoverySuggestion).mockResolvedValue({
       data: mockSuggestionDirect,
+    } as never);
+    // PRD-002 Phase 2 — 默认无关联告警 + 无过频变更
+    vi.mocked(fetchChangeEventAlerts).mockResolvedValue({
+      data: {
+        change_event_id: '',
+        changed_at: '',
+        window_start: '',
+        window_end: '',
+        affected_resource_ids: [],
+        alerts: [],
+        total: 0,
+        neo4j_available: false,
+      },
+    } as never);
+    vi.mocked(fetchFrequentChanges).mockResolvedValue({
+      data: { frequent: [], window_seconds: 3600, threshold: 5 },
     } as never);
     vi.mocked(postRecoveryExecute).mockResolvedValue({
       data: {
@@ -129,6 +149,69 @@ describe('ChangeTimelineView', () => {
     // 影响 2 个 Pod
     await waitFor(() => expect(screen.getByText('order-api-1')).toBeInTheDocument());
     expect(screen.getByText('order-api-2')).toBeInTheDocument();
+  });
+
+  it('drawer shows Git/CI card + YAML diff for event with phase2 fields', async () => {
+    vi.mocked(fetchChangeEventTimeline).mockResolvedValue({
+      data: mockTimelineResponse,
+    } as never);
+    vi.mocked(fetchChangeEventImpact).mockResolvedValue({
+      data: mockImpactResponse,
+    } as never);
+
+    render(<ChangeTimelineView />, { wrapper: makeWrapper() });
+    // 点 deployment_rolled 事件(rollout v1.2.4,fixture 含 commit_sha/yaml_diff)
+    await waitFor(() => expect(screen.getByText('rollout v1.2.4')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('rollout v1.2.4'));
+
+    // Git/CI 卡片:commit short + git_repo 链接
+    await waitFor(() => expect(screen.getByText(/Git \/ CI/)).toBeInTheDocument());
+    expect(screen.getByText('def456789abc')).toBeInTheDocument();
+    expect(screen.getByText('https://github.com/acme/order-api').closest('a')).toHaveAttribute(
+      'href', 'https://github.com/acme/order-api',
+    );
+
+    // YAML Diff 卡片渲染 unified diff 文本
+    await waitFor(() => expect(screen.getByText(/YAML Diff/)).toBeInTheDocument());
+    expect(screen.getAllByText(/order-api:1\.2\.4/).length).toBeGreaterThan(0);
+  });
+
+  it('drawer shows correlated alerts when change has matching AlertEvent', async () => {
+    vi.mocked(fetchChangeEventTimeline).mockResolvedValue({
+      data: mockTimelineResponse,
+    } as never);
+    vi.mocked(fetchChangeEventImpact).mockResolvedValue({
+      data: mockImpactResponse,
+    } as never);
+    vi.mocked(fetchChangeEventAlerts).mockResolvedValue({
+      data: {
+        change_event_id: 'ce-ccc77788899',
+        changed_at: '2026-06-19T01:00:00Z',
+        window_start: '2026-06-19T00:50:00Z',
+        window_end: '2026-06-19T01:10:00Z',
+        affected_resource_ids: ['deploy:order:order-api'],
+        alerts: [
+          {
+            alert_event_id: 'fault_alert_1',
+            alert_name: 'PodCrashLoop',
+            severity: 'critical',
+            fired_at: '2026-06-19T01:02:00Z',
+            resource_ref: 'deploy:order:order-api',
+            summary: 'order-api crashloop',
+          },
+        ],
+        total: 1,
+        neo4j_available: true,
+      },
+    } as never);
+
+    render(<ChangeTimelineView />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(screen.getByText('rollout v1.2.4')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('rollout v1.2.4'));
+
+    await waitFor(() => expect(screen.getByText(/关联告警 \(1\)/)).toBeInTheDocument());
+    expect(screen.getByText('PodCrashLoop')).toBeInTheDocument();
+    expect(screen.getByText('order-api crashloop')).toBeInTheDocument();
   });
 
   it('filters events by change_type checkbox', async () => {
