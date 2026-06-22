@@ -258,6 +258,119 @@ class TestDrainNodeReal:
 
 
 # ============================================================
+# kill_query (MySQL)
+# ============================================================
+
+class TestKillQueryReal:
+    def test_real_calls_mysql_kill(self, real_mode):
+        from app.recovery.handlers import kill_query
+        from app.recovery.clients import mysql_client
+
+        mock_client = MagicMock()
+        mock_client.connect = MagicMock()
+        mock_client.kill = MagicMock()
+        mock_client.close = MagicMock()
+        mock_client.host = "mysql.vm-cluster"
+
+        with patch.object(mysql_client, "MySQLClient") as MC:
+            MC.from_node.return_value = mock_client
+            result = kill_query.execute(
+                "mysql:vm-cluster:order-db",
+                {"query_id": 42}, {"execution_id": "exec-mq"},
+            )
+        assert result["success"] is True
+        mock_client.kill.assert_called_once_with(42)
+        # DSS killed_queries 历史追加
+        node = store.get_node("mysql:vm-cluster:order-db")
+        assert node.properties["killed_queries"][-1]["query_id"] == 42
+
+    def test_real_mysql_failure_returns_failed(self, real_mode):
+        from app.recovery.handlers import kill_query
+        from app.recovery.clients import mysql_client
+
+        mock_client = MagicMock()
+        mock_client.connect = MagicMock()
+        mock_client.kill = MagicMock(side_effect=RuntimeError("connection refused"))
+        mock_client.close = MagicMock()
+
+        with patch.object(mysql_client, "MySQLClient") as MC:
+            MC.from_node.return_value = mock_client
+            result = kill_query.execute(
+                "mysql:vm-cluster:order-db",
+                {"query_id": 99}, {"execution_id": "exec-mq2"},
+            )
+        assert result["success"] is False
+        assert "connection refused" in result["error"]
+        # DSS 不动
+        assert store.get_node("mysql:vm-cluster:order-db").properties.get("killed_queries", []) == []
+
+
+# ============================================================
+# clear_cache (Redis)
+# ============================================================
+
+class TestClearCacheReal:
+    def test_real_calls_redis_flush_all(self, real_mode):
+        from app.recovery.handlers import clear_cache
+        from app.recovery.clients import redis_client
+
+        mock_client = MagicMock()
+        mock_client.connect = MagicMock()
+        mock_client.flush_all = MagicMock(return_value=1)
+        mock_client.flush_db = MagicMock(return_value=1)
+        mock_client.delete_pattern = MagicMock(return_value=5)
+        mock_client.close = MagicMock()
+        mock_client.host = "redis.vm-cluster"
+
+        with patch.object(redis_client, "RedisClient") as RC:
+            RC.from_node.return_value = mock_client
+            result = clear_cache.execute(
+                "redis:vm-cluster:order-cache",
+                {"scope": "all"}, {"execution_id": "exec-rc"},
+            )
+        assert result["success"] is True
+        mock_client.flush_all.assert_called_once()
+        assert store.get_node("redis:vm-cluster:order-cache").properties["flush_count"] == 1
+
+    def test_real_redis_pattern_delete(self, real_mode):
+        from app.recovery.handlers import clear_cache
+        from app.recovery.clients import redis_client
+
+        mock_client = MagicMock()
+        mock_client.connect = MagicMock()
+        mock_client.delete_pattern = MagicMock(return_value=7)
+        mock_client.close = MagicMock()
+
+        with patch.object(redis_client, "RedisClient") as RC:
+            RC.from_node.return_value = mock_client
+            result = clear_cache.execute(
+                "redis:vm-cluster:order-cache",
+                {"scope": "pattern", "key_pattern": "session:*"}, {"execution_id": "exec-rc2"},
+            )
+        assert result["success"] is True
+        mock_client.delete_pattern.assert_called_once_with("session:*")
+        assert result["deleted"] == 7
+
+    def test_real_redis_failure_returns_failed(self, real_mode):
+        from app.recovery.handlers import clear_cache
+        from app.recovery.clients import redis_client
+
+        mock_client = MagicMock()
+        mock_client.connect = MagicMock(side_effect=RuntimeError("auth failed"))
+        mock_client.close = MagicMock()
+
+        with patch.object(redis_client, "RedisClient") as RC:
+            RC.from_node.return_value = mock_client
+            result = clear_cache.execute(
+                "redis:vm-cluster:order-cache",
+                {"scope": "all"}, {"execution_id": "exec-rc3"},
+            )
+        assert result["success"] is False
+        assert "auth failed" in result["error"]
+        assert store.get_node("redis:vm-cluster:order-cache").properties.get("flush_count", 0) == 0
+
+
+# ============================================================
 # mode 切换回归保护
 # ============================================================
 
@@ -277,3 +390,27 @@ class TestModeToggle:
         assert result["success"] is True
         assert "mock" in result["note"]
         apps.patch_namespaced_deployment_scale.assert_not_called()
+
+    def test_mock_mode_does_not_call_mysql_or_redis(self, monkeypatch):
+        """mock 模式下 kill_query / clear_cache 不调真实客户端。"""
+        monkeypatch.setattr(settings, "recovery_handler_mode", "mock")
+        from app.recovery.handlers import clear_cache, kill_query
+        from app.recovery.clients import mysql_client, redis_client
+
+        with patch.object(mysql_client, "MySQLClient") as MC, \
+             patch.object(redis_client, "RedisClient") as RC:
+            MC.from_node.return_value = MagicMock()
+            RC.from_node.return_value = MagicMock()
+
+            r1 = kill_query.execute(
+                "mysql:vm-cluster:order-db",
+                {"query_id": 1}, {"execution_id": "x"},
+            )
+            r2 = clear_cache.execute(
+                "redis:vm-cluster:order-cache",
+                {"scope": "all"}, {"execution_id": "y"},
+            )
+        assert r1["success"] is True and "mock" in r1["note"]
+        assert r2["success"] is True and "mock" in r2["note"]
+        MC.from_node.assert_not_called()
+        RC.from_node.assert_not_called()

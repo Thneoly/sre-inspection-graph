@@ -1,13 +1,12 @@
-"""kill_query 执行器 — Sprint 2 mock 实现。
+"""kill_query 执行器 — Phase 2 真实 MySQL + mock 双模式。
 
-真实环境会调:
-    MySQL: KILL QUERY <query_id>
-    或通过 PyMySQL / SQLAlchemy 连接发送
-
-Sprint 2 mock:仅记录在 DSS MySQL 节点的 properties.killed_queries 列表里。
+real:`MySQLClient.kill(conn_id)` 发 `KILL <conn_id>`。成功后追加 DSS killed_queries 历史。
+mock(默认):仅记 DSS。
 """
 
 from datetime import datetime, timezone
+
+from app.config import settings
 from app.datasource.store import store
 
 
@@ -24,9 +23,14 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
         return {"success": False, "error": f"target is {target.type}, not MySQL"}
 
     min_duration = params.get("min_duration_seconds", 30)
-    now = datetime.now(timezone.utc).isoformat()
 
-    # 维护一个 killed queries 历史(最近 50 条)
+    if settings.recovery_handler_mode == "real":
+        return _execute_real(target_id, target, query_id, min_duration, context)
+    return _execute_mock(target_id, target, query_id, min_duration, context)
+
+
+def _append_history(target_id, target, query_id, min_duration, context):
+    now = datetime.now(timezone.utc).isoformat()
     killed = list(target.properties.get("killed_queries", []))
     killed.append({
         "query_id": query_id,
@@ -36,14 +40,42 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
     })
     if len(killed) > 50:
         killed = killed[-50:]
+    store.update_node_props(target_id, killed_queries=killed, last_kill_at=now)
+    return now
 
-    store.update_node_props(target_id,
-                            killed_queries=killed,
-                            last_kill_at=now)
 
+def _execute_mock(target_id, target, query_id, min_duration, context) -> dict:
+    now = _append_history(target_id, target, query_id, min_duration, context)
     return {
         "success": True,
         "query_id": query_id,
         "completed_at": now,
         "note": f"Query {query_id} terminated on {target.name} (mock execution)",
+    }
+
+
+def _execute_real(target_id, target, query_id, min_duration, context) -> dict:
+    from app.recovery.clients.mysql_client import MySQLClient
+
+    try:
+        client = MySQLClient.from_node(target)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+    try:
+        client.connect()
+        # query_id 即 MySQL connection/process Id
+        client.kill(int(query_id))
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"mysql kill failed: {type(e).__name__}: {e}"}
+    finally:
+        client.close()
+
+    now = _append_history(target_id, target, query_id, min_duration, context)
+    return {
+        "success": True,
+        "query_id": query_id,
+        "completed_at": now,
+        "host": client.host,
+        "note": f"Query {query_id} terminated on {target.name} (real mysql execution)",
     }

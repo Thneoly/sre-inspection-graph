@@ -1,15 +1,12 @@
-"""clear_cache 执行器 — Sprint 3 mock 实现。
+"""clear_cache 执行器 — Phase 2 真实 Redis + mock 双模式。
 
-真实环境会调:
-    redis-cli FLUSHALL                  # scope=all
-    redis-cli -n <db> FLUSHDB           # scope=db
-    redis-cli --scan --pattern P | xargs redis-cli DEL  # scope=pattern
-
-Sprint 3 mock:更新 Redis.flush_count + cleared_at;
-pattern 模式下要求 key_pattern 必填。
+real:`RedisClient.flush_all / flush_db / delete_pattern`。成功后更新 DSS flush_count。
+mock(默认):仅记 DSS。
 """
 
 from datetime import datetime, timezone
+
+from app.config import settings
 from app.datasource.store import store
 
 
@@ -33,10 +30,18 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
     if scope == "pattern" and not key_pattern:
         return {"success": False, "error": "key_pattern required when scope=pattern"}
 
-    now = datetime.now(timezone.utc).isoformat()
     old_flush_count = int(target.properties.get("flush_count", 0))
     new_flush_count = old_flush_count + 1
 
+    if settings.recovery_handler_mode == "real":
+        return _execute_real(target_id, target, scope, db_index, key_pattern,
+                             new_flush_count, context)
+    return _execute_mock(target_id, target, scope, db_index, key_pattern,
+                         new_flush_count, context)
+
+
+def _apply_dss(target_id, scope, new_flush_count, context):
+    now = datetime.now(timezone.utc).isoformat()
     store.update_node_props(
         target_id,
         flush_count=new_flush_count,
@@ -44,14 +49,19 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
         cleared_by_execution=context.get("execution_id", ""),
         last_clear_scope=scope,
     )
+    return now
 
+
+def _note(target, scope, db_index, key_pattern, mode):
     if scope == "all":
-        note = f"Redis {target.name} FLUSHALL executed (mock)"
-    elif scope == "db":
-        note = f"Redis {target.name} FLUSHDB on db={db_index} (mock)"
-    else:  # pattern
-        note = f"Redis {target.name} keys matching '{key_pattern}' deleted (mock)"
+        return f"Redis {target.name} FLUSHALL executed ({mode})"
+    if scope == "db":
+        return f"Redis {target.name} FLUSHDB on db={db_index} ({mode})"
+    return f"Redis {target.name} keys matching '{key_pattern}' deleted ({mode})"
 
+
+def _execute_mock(target_id, target, scope, db_index, key_pattern, new_flush_count, context) -> dict:
+    now = _apply_dss(target_id, scope, new_flush_count, context)
     return {
         "success": True,
         "completed_at": now,
@@ -59,5 +69,41 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
         "db_index": db_index,
         "key_pattern": key_pattern,
         "flush_count": new_flush_count,
-        "note": note,
+        "note": _note(target, scope, db_index, key_pattern, "mock"),
+    }
+
+
+def _execute_real(target_id, target, scope, db_index, key_pattern, new_flush_count, context) -> dict:
+    from app.recovery.clients.redis_client import RedisClient
+
+    try:
+        client = RedisClient.from_node(target)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+    deleted: int | None = None
+    try:
+        client.connect()
+        if scope == "all":
+            deleted = client.flush_all()
+        elif scope == "db":
+            deleted = client.flush_db(db_index)
+        else:
+            deleted = client.delete_pattern(key_pattern)
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"redis clear failed: {type(e).__name__}: {e}"}
+    finally:
+        client.close()
+
+    now = _apply_dss(target_id, scope, new_flush_count, context)
+    return {
+        "success": True,
+        "completed_at": now,
+        "scope": scope,
+        "db_index": db_index,
+        "key_pattern": key_pattern,
+        "flush_count": new_flush_count,
+        "deleted": deleted,
+        "host": client.host,
+        "note": _note(target, scope, db_index, key_pattern, "real redis"),
     }
