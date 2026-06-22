@@ -40,12 +40,18 @@ class ChangeEventCreate(BaseModel):
     change_type: str = Field(..., description="configmap_updated / secret_rotated / deployment_rolled / image_pushed")
     target_resource_id: str = Field(..., description="被变更资源的 DSS node_id")
     changed_by: str = Field("", description="用户 / 服务账号(可空)")
-    source: str = Field("manual", description="k8s_api / argo_cd / gitops / manual / unknown")
+    source: str = Field("manual", description="k8s_api / argo_cd / gitops / manual / unknown / flagd")
     description: str = Field("", description="人读描述")
     diff_summary: dict = Field(default_factory=dict, description="简化 diff,例如 {key: {old, new}}")
     related_commit: str = Field("", description="Git commit hash")
     related_pr: str = Field("", description="PR URL")
     changed_at: Optional[str] = Field(None, description="ISO8601;省略则用当前时刻")
+    # Phase 2 — Git/CI 关联 + 集群来源 + 结构化 YAML diff
+    commit_sha: str = Field("", description="Git commit hash(规范字段,优先于 related_commit)")
+    pipeline_url: str = Field("", description="CI pipeline 运行链接")
+    git_repo: str = Field("", description="仓库 URL")
+    cluster_id: str = Field("", description="来源集群(watcher / webhook 填)")
+    yaml_diff: str = Field("", description="unified diff 文本")
 
 
 # ============================================================
@@ -65,6 +71,11 @@ def create_change_event(req: ChangeEventCreate):
             related_commit=req.related_commit,
             related_pr=req.related_pr,
             changed_at=req.changed_at,
+            commit_sha=req.commit_sha,
+            pipeline_url=req.pipeline_url,
+            git_repo=req.git_repo,
+            cluster_id=req.cluster_id,
+            yaml_diff=req.yaml_diff,
         )
     except ChangeEventError as e:
         raise HTTPException(status_code=e.code, detail=str(e))

@@ -68,12 +68,19 @@ def record_change(
     related_commit: str = "",
     related_pr: str = "",
     changed_at: Optional[str] = None,
+    # Phase 2 — Git/CI 关联 + 集群来源 + 结构化 YAML diff
+    commit_sha: str = "",
+    pipeline_url: str = "",
+    git_repo: str = "",
+    cluster_id: str = "",
+    yaml_diff: str = "",
 ) -> ChangeEvent:
     """创建并入库一个 ChangeEvent。
 
     - target 不在 DSS 仍记录(propagated_to=[]),不抛错 —— Phase 2 真实 watcher 可能
       在节点同步前就推送变更
-    - severity_estimate 由 propagated_to 大小三档分级
+    - severity_estimate 由 propagated_to 大小 + 变更频率共同分级(频率命中至少 medium)
+    - Phase 2 新字段全部可选,旧调用零改动
     """
     if change_type not in VALID_CHANGE_TYPES:
         raise ChangeEventError(
@@ -89,7 +96,11 @@ def record_change(
     target_type_str = target_node.type if target_node else ""
 
     propagated = derive_propagation(target_resource_id) if target_node else []
+    # Phase 2 — 先按 propagated 算基础 severity,再叠频率告警
     severity = _estimate_severity(len(propagated))
+
+    # commit_sha 优先于 related_commit(规范字段),但不覆盖显式传入的 related_commit
+    effective_commit = related_commit or commit_sha
 
     event = ChangeEvent(
         change_event_id=f"ce-{uuid.uuid4().hex[:12]}",
@@ -101,12 +112,22 @@ def record_change(
         source=source,
         description=description,
         diff_summary=diff_summary or {},
-        related_commit=related_commit,
+        related_commit=effective_commit,
         related_pr=related_pr,
         severity_estimate=severity,
         propagated_to=propagated,
+        commit_sha=commit_sha,
+        pipeline_url=pipeline_url,
+        git_repo=git_repo,
+        cluster_id=cluster_id,
+        yaml_diff=yaml_diff,
     )
     store.add_change_event(event)
+
+    # Phase 2 — 频率告警:写入后检查该资源近窗变更次数,命中则提升 severity
+    # 必须在 add_change_event 之后调(新事件要进计数)
+    _apply_frequency_check(event)
+
     # Sprint 2 — best-effort dual-write 到 Neo4j。失败只 warning,不影响 API
     try:
         _persist_change_event(event)
@@ -116,6 +137,26 @@ def record_change(
             event.change_event_id, type(e).__name__, e,
         )
     return event
+
+
+def _apply_frequency_check(event: ChangeEvent) -> None:
+    """过频变更检测 —— 命中则把 severity 至少提到 medium,description 追加标记。
+
+    幂等:只升不降,已 high 不动。失败不抛(频率检查是增强,不是必经路径)。
+    """
+    try:
+        from app.changes.frequency import check_target_frequency
+        result = check_target_frequency(event.target_resource_id)
+        if result["is_frequent"]:
+            if event.severity_estimate == "low":
+                event.severity_estimate = "medium"
+            if "[过频变更]" not in event.description:
+                event.description = (
+                    f"{event.description} [过频变更:{result['count']}次/"
+                    f"{result['window_seconds']}s]".strip()
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("frequency check failed for %s: %s", event.change_event_id, e)
 
 
 # ============================================================
@@ -347,6 +388,12 @@ def _serialize_event(event: ChangeEvent) -> dict[str, Any]:
         "severity_estimate": event.severity_estimate,
         "propagated_to": event.propagated_to,
         "propagated_count": len(event.propagated_to),
+        # Phase 2
+        "commit_sha": event.commit_sha,
+        "pipeline_url": event.pipeline_url,
+        "git_repo": event.git_repo,
+        "cluster_id": event.cluster_id,
+        "yaml_diff": event.yaml_diff,
     }
 
 
@@ -354,10 +401,11 @@ def _serialize_event(event: ChangeEvent) -> dict[str, Any]:
 # Helpers
 # ============================================================
 
-def _estimate_severity(propagated_count: int) -> str:
+def _estimate_severity(propagated_count: int, frequent: bool = False) -> str:
+    """传播面 + 频率共同定级。频率命中至少 medium(不降 high)。"""
     if propagated_count >= 10:
         return "high"
-    if propagated_count >= 5:
+    if propagated_count >= 5 or frequent:
         return "medium"
     return "low"
 
@@ -419,6 +467,11 @@ def _persist_change_event(event: ChangeEvent) -> None:
                 e.severity_estimate = $sev,
                 e.propagated_to = $propagated,
                 e.propagated_count = $pc,
+                e.commit_sha = $commit_sha,
+                e.pipeline_url = $pipeline_url,
+                e.git_repo = $git_repo,
+                e.cluster_id = $cluster_id,
+                e.yaml_diff = $yaml_diff,
                 e.label = 'ChangeEvent',
                 e.name = $ctype,
                 e.health_status = 'green',
@@ -439,6 +492,11 @@ def _persist_change_event(event: ChangeEvent) -> None:
             sev=event.severity_estimate,
             propagated=event.propagated_to,
             pc=len(event.propagated_to),
+            commit_sha=event.commit_sha,
+            pipeline_url=event.pipeline_url,
+            git_repo=event.git_repo,
+            cluster_id=event.cluster_id,
+            yaml_diff=event.yaml_diff,
         )
 
         # (b) RELATES_TO 主边 → target(不存在则不建,避免 stub)

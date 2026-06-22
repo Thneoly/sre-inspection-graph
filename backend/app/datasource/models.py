@@ -133,12 +133,19 @@ class ChangeEvent:
     changed_at: str                                   # ISO8601
     changed_by: str = ""
     source: str = "manual"                            # k8s_api | argo_cd | gitops | manual | unknown
+                                                       # | flagd
     description: str = ""
     diff_summary: dict[str, Any] = field(default_factory=dict)
     related_commit: str = ""
     related_pr: str = ""
     severity_estimate: str = "low"                    # low | medium | high
     propagated_to: list[str] = field(default_factory=list)
+    # Phase 2 — Git/CI 关联 + 集群来源 + 结构化 YAML diff
+    commit_sha: str = ""                              # Git commit hash(规范字段,优先于 related_commit)
+    pipeline_url: str = ""                            # CI pipeline 运行链接
+    git_repo: str = ""                                # 仓库 URL
+    cluster_id: str = ""                              # 来源集群(watcher / webhook 填)
+    yaml_diff: str = ""                               # unified diff 文本(yaml_diff.compute_yaml_diff 产出)
 
 
 @dataclass
