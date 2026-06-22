@@ -54,5 +54,24 @@ class Settings:
     flagd_url: str = os.getenv("FLAGD_URL", "http://localhost:8013")
     flagd_sync_interval_seconds: int = int(os.getenv("FLAGD_SYNC_INTERVAL", "20"))
 
+    # ============================================================
+    # PRD-001 Phase 2 — 真实 handler 开关 + MySQL/Redis 连接
+    # ============================================================
+    # mock = 仅改 DSS 孪生(默认,测试安全);real = 调真实 K8s/MySQL/Redis API
+    recovery_handler_mode: str = os.getenv("RECOVERY_HANDLER_MODE", "mock")
+
+    # ─── MySQL(kill_query)─── 优先用 DSS 节点 properties 里的连接信息,缺失走全局默认
+    mysql_host: str = os.getenv("MYSQL_HOST", "")
+    mysql_port: int = int(os.getenv("MYSQL_PORT", "3306"))
+    mysql_user: str = os.getenv("MYSQL_USER", "")
+    mysql_password: str = os.getenv("MYSQL_PASSWORD", "")
+    mysql_database: str = os.getenv("MYSQL_DATABASE", "")
+
+    # ─── Redis(clear_cache)───
+    redis_host: str = os.getenv("REDIS_HOST", "")
+    redis_port: int = int(os.getenv("REDIS_PORT", "6379"))
+    redis_password: str = os.getenv("REDIS_PASSWORD", "")
+    redis_db: int = int(os.getenv("REDIS_DB", "0"))
+
 
 settings = Settings()

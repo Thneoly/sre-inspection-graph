@@ -1,14 +1,13 @@
-"""scale_deployment 执行器 — Sprint 2 mock 实现。
+"""scale_deployment 执行器 — Phase 2 真实 K8s + mock 双模式。
 
-真实环境会调:
-    kubectl scale deployment <name> --replicas=<n>
-    或 client-go: AppsV1Api.patch_namespaced_deployment_scale()
-
-Sprint 2 mock:在 DSS deploy 节点的 properties.replicas / available_replicas
-字段上加 delta,代表扩缩容生效。
+real 模式:`AppsV1Api.patch_namespaced_deployment_scale` 调真实集群,成功后更新 DSS 孪生。
+mock 模式(默认):仅改 DSS properties,测试安全。
 """
 
 from datetime import datetime, timezone
+
+from app.config import settings
+from app.datasource.connectors.k8s_client import get_k8s_apps_api, k8s_ref, run_k8s
 from app.datasource.store import store
 
 
@@ -16,12 +15,9 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
     """执行扩缩容。
 
     Args:
-        target_id: deploy:cce-prod-01:order:order-api
+        target_id: deploy:vm-cluster:otel-demo:cart
         params: {"replicas_delta": 2}
         context: {"execution_id": "...", "initiated_by": "..."}
-
-    Returns:
-        result dict — 写入 RecoveryExecution.result
     """
     delta = params.get("replicas_delta", 0)
     if delta == 0:
@@ -33,7 +29,6 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
     if target.type != "Deployment":
         return {"success": False, "error": f"target is {target.type}, not Deployment"}
 
-    # 读当前副本数(默认 3)
     old_replicas = int(target.properties.get("desired_replicas", 3))
     new_replicas = old_replicas + delta
 
@@ -42,19 +37,67 @@ def execute(target_id: str, params: dict, context: dict) -> dict:
     if new_replicas > 100:
         return {"success": False, "error": f"new replicas exceeds limit ({new_replicas} > 100)"}
 
-    # 更新 DSS 状态
+    if settings.recovery_handler_mode == "real":
+        return _execute_real(target_id, old_replicas, new_replicas, delta, context)
+    return _execute_mock(target_id, old_replicas, new_replicas, delta)
+
+
+def _execute_mock(target_id, old, new, delta) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     store.update_node_props(target_id,
-                            desired_replicas=new_replicas,
-                            available_replicas=new_replicas,
+                            desired_replicas=new,
+                            available_replicas=new,
                             scaled_at=now,
-                            scaled_by_execution=context.get("execution_id", ""))
-
+                            scaled_by_execution="")
     return {
         "success": True,
-        "old_replicas": old_replicas,
-        "new_replicas": new_replicas,
+        "old_replicas": old,
+        "new_replicas": new,
         "delta_applied": delta,
         "completed_at": now,
-        "note": f"Deployment scaled from {old_replicas} to {new_replicas} replicas (mock execution)",
+        "note": f"Deployment scaled from {old} to {new} replicas (mock execution)",
+    }
+
+
+def _execute_real(target_id, old, new, delta, context) -> dict:
+    """先调 K8s API,成功后再更新 DSS 孪生。失败不动 DSS。"""
+    try:
+        namespace, name = k8s_ref(target_id)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+    async def _call():
+        api, apps = await get_k8s_apps_api()
+        try:
+            # patch_namespaced_deployment_scale:body 用 V1Scale { spec: { replicas: new } }
+            from kubernetes_asyncio.client import V1Scale, V1ScaleSpec
+            body = V1Scale(spec=V1ScaleSpec(replicas=new))
+            await apps.patch_namespaced_deployment_scale(
+                name=name, namespace=namespace, body=body,
+            )
+        finally:
+            await api.close()
+
+    try:
+        run_k8s(_call())
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": f"k8s patch scale failed: {type(e).__name__}: {e}",
+                "old_replicas": old, "new_replicas": new}
+
+    # API 成功 → 更新 DSS 孪生
+    now = datetime.now(timezone.utc).isoformat()
+    store.update_node_props(target_id,
+                            desired_replicas=new,
+                            available_replicas=new,
+                            scaled_at=now,
+                            scaled_by_execution=context.get("execution_id", ""))
+    return {
+        "success": True,
+        "old_replicas": old,
+        "new_replicas": new,
+        "delta_applied": delta,
+        "completed_at": now,
+        "namespace": namespace,
+        "name": name,
+        "note": f"Deployment scaled from {old} to {new} replicas (real k8s execution)",
     }
