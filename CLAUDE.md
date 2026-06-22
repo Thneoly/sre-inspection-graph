@@ -47,7 +47,7 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 398 tests + Frontend 64 tests
+make test           # Backend 418 tests + Frontend 68 tests
 make test-cov       # Backend coverage report
 
 # Single test
@@ -315,6 +315,39 @@ cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints,
 ### E2E
 
 `bash scripts/otel_demo_e2e.sh` checks 5 connectors registered → forces sync on each → checks DSS for nodes/edges/metrics/CALLS/ChangeEvents → lists 8 OTel demo scenarios. Requires port-forwards to Prometheus (19090), Jaeger (16686), flagd (8013) and API started with `KUBECONFIGS / PROMETHEUS_URL / JAEGER_URL / FLAGD_URL` env vars.
+
+### Phase 2 — 闭环三件:AlertEvent + scenario 接入 + Connector UI
+
+补齐 PRD §6 验收「connector 检测 critical breach 产 AlertEvent」+ PRD §11 后续项「前端 Connector 健康检查页面」,并贯通 flag→recovery 链。
+
+1. **AlertEvent DSS 模型**(`models.py`)— 镜像 ChangeEvent 模式。`AlertRule`(从 QueryDef 阈值生成,3 query × 2 sev = 6 rule)+ `AlertEvent`(firing/resolved,resource_ref 指向被告警资源)。`store` 加 `alert_rules`/`alert_events` 存储 + 增查改方法。
+2. **AlertRule 生成**(`health_rules.generate_alert_rules` + `sync_alert_rules_to_store`)— 启动时从 QUERIES 的 warning/critical 阈值生成规则,幂等 upsert 到 DSS。`GET /api/v1/alerts/rules` 懒加载。
+3. **connector → AlertEvent**(`prometheus_connector._emit_alerts_if_breached`)— sync_once 推导 health 时,若 snapshot 超 critical 阈值 → `record_alert(critical)`,超 warning → `record_alert(warning)`(critical 优先,不重复产 warning)。去重:同 resource + rule 的 firing 告警不重复。
+4. **alert_service**(`backend/app/alerts/alert_service.py`)— `record_alert`(去重 + Neo4j dual-write,`:AlertEvent:ResourceInstance` + FIRED_ON 边,镜像 simulation.py 结构使 view6 告警归并同时看到 connector 产的告警)+ `resolve_alert`。
+5. **贯通 ChangeEvent**(`alert_correlation._fetch_alerts_in_window`)— 优先从 DSS 读 AlertEvent,Neo4j 兜底,合并去重。PRD-002 的 `correlate_alerts` 现可从 DSS 读,`record_change` 后自动 `correlate_and_persist` 写 CORRELATED_WITH 边。形成 connector critical → AlertEvent ↔ ChangeEvent 双向可查链。
+6. **flagd 接入 scenario_for_flag**(`flagd_connector._try_record` + `_lookup_scenario`)— flag 翻转产 ChangeEvent 时查 OTel demo scenario 映射,若是故障 flag 把 `recommended_action`/`target_component`/`finding_severity`/`expected_metric` 塞进 `diff_summary.scenario` + description 标注。贯通 flag 翻转 → ChangeEvent → PRD-002 recovery-suggestion → PRD-001 恢复动作链。
+7. **前端 Connector 健康检查页面**(`ConnectorsView.tsx`)— 状态表(name/运行/最近同步/同步次数/24h错误/最近产出/最近错误)+ 立即同步按钮(watch 模式 disabled)+ 展开行 notes + watch 快照大小;5s 刷新。菜单「Connector 状态」。
+
+### Phase 2 关键设计
+
+1. **AlertEvent 镜像 ChangeEvent 而非写死 Neo4j** — DSS 主存储 + best-effort dual-write。使 correlate_alerts 可从 DSS 读(不再只依赖 Neo4j),且 AlertEvent 有查询/序列化/端点,与 ChangeEvent 对称。
+2. **critical 优先不重复产 warning** — `_emit_alerts_if_breached` 对单个 snapshot 只产一条(critical 命中就不产 warning),避免告警风暴。
+3. **firing 去重** — 同 resource_ref + rule_id 的 firing 告警不重复产出(connector 30s 轮询不会每次都刷一条)。resolve 后才能再发。
+4. **FIRED_ON 边镜像 simulation.py** — 让 legacy view6 告警归并查询(Cypher `MATCH (alert)-[:FIRED_ON]->(resource)`)同时看到 connector 产的告警,不破坏现有视图。
+5. **scenario 接入是富化不是触发** — flagd_connector 只把 scenario 元信息塞进 ChangeEvent,不主动执行 recovery(那是 PRD-002 recovery-suggestion 的前端一键发起职责)。非故障 flag 不富化(business toggle 不带 scenario 字段)。
+6. **conftest 修复** — `client` fixture 同时 patch `health.check_connection` 本地引用(health.py 用 `from ... import check_connection` 本地绑定,app 被裸导入后 patch n4j.check_connection 失效)。修复 PRD-002 Phase 2 遗留的全套件 health 端点测试污染。
+
+### Phase 2 File Map
+
+- 模型: `backend/app/datasource/models.py` AlertRule + AlertEvent;`backend/app/datasource/store.py` alert_rules/alert_events 存储
+- AlertRule 生成: `backend/app/datasource/connectors/health_rules.py` `generate_alert_rules` + `sync_alert_rules_to_store`
+- AlertEvent 服务: `backend/app/alerts/alert_service.py` `record_alert` + `resolve_alert` + `_persist_alert_event`
+- connector→AlertEvent: `backend/app/datasource/connectors/prometheus_connector.py` `_emit_alerts_if_breached`
+- flagd→scenario: `backend/app/datasource/connectors/flagd_connector.py` `_try_record` + `_lookup_scenario`
+- Alert 关联增强: `backend/app/changes/alert_correlation.py` `_fetch_alerts_in_window`(DSS 优先 + Neo4j 兜底)
+- 端点: `backend/app/routers/alert.py`(POST / GET / GET /rules / GET /{id} / POST /{id}/resolve),注册于 main.py(startup sync rules + 挂 router)
+- 前端: `frontend/src/components/Views/ConnectorsView.tsx`,`frontend/src/api/client.ts`(+connector 类型/函数),`MainLayout.tsx`(+菜单),`App.tsx`(+路由)
+- 测试: `backend/tests/test_alerts_phase2.py`(16:规则 3 + record 5 + resolve 2 + prometheus 3 + 端点 2 + 贯通 1)+ `test_flagd_scenario_phase2.py`(4)+ `frontend/src/__tests__/ConnectorsView.test.tsx`(4)
 
 ## Change Event Tracking — PRD-002 Sprint 1 + Sprint 2
 

@@ -73,6 +73,7 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
 | 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 + Git/CI + YAML diff + 关联告警 (PRD-002) |
 | 报告中心 | `/reports` | 自检报告生成 + 下载 + 邮件订阅 (PRD-003) |
+| Connector 状态 | `/connectors` | 5 个数据源 connector 健康检查 + 手动同步 (PRD-004) |
 
 ## 恢复动作引擎(PRD-001)
 
@@ -121,6 +122,13 @@ bash scripts/sprint3_e2e_test.sh  # 终端 2 — 8 步检查 high_risk 审批流
 - `POST /{name}/sync-now` — 手动触发一次 sync,返回 SyncResult
 
 **8 个 OTel demo fault scenarios**(`backend/app/recovery/scenarios/otel_demo_scenarios.py`):flag 名 → 目标 component → 推荐 PRD-001 action。涵盖 productCatalogFailure / cartFailure / paymentServiceFailure / kafkaQueueProblems 等。
+
+**Phase 2 能力**:
+
+- **AlertEvent DSS 模型 + AlertRule 生成**:从 Prometheus QueryDef 阈值生成 AlertRule(3 query × 2 sev = 6 rule),connector 检测 critical/warning breach 自动产 AlertEvent(DSS 主存 + Neo4j dual-write)。`GET /api/v1/alerts` / `GET /api/v1/alerts/rules`
+- **connector → AlertEvent ↔ ChangeEvent 贯通**:AlertEvent 落地后,PRD-002 的 record_change 自动关联窗口内变更(CORRELATED_WITH 边),形成"指标越线 → 告警 ↔ 变更"双向可查链
+- **flagd 接入 scenario_for_flag**:flag 翻转产 ChangeEvent 时富化 recommended_action / target_component,贯通 flag→变更→恢复动作链
+- **前端 Connector 健康检查页面**(`/connectors`):5 个 connector 运行状态 / 最近同步产出 / 24h 错误计数 / 手动 sync-now(watch 模式只读)
 
 **部署 + 验证**:
 ```bash
@@ -202,7 +210,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
 │   │   ├── models/    # Pydantic 模型
 │   │   └── services/  # 业务逻辑
-│   └── tests/         # 398 pytest (含 104 mock + 15 real recovery + 67 reports + 21 phase2 变更测试)
+│   └── tests/         # 418 pytest (含 104 mock + 15 real recovery + 67 reports + 21 phase2 变更 + 20 alert/flagd 测试)
 ├── frontend/
 │   └── src/
 │       ├── components/
@@ -214,7 +222,7 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 64 vitest
+│       └── __tests__/      # 68 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -223,6 +231,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 398 + frontend 64 = 462 tests
+make test          # backend 418 + frontend 68 = 486 tests
 make test-cov      # backend coverage
 ```
