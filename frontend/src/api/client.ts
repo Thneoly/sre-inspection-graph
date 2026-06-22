@@ -711,4 +711,70 @@ export function postTriggerSubscription(id: string) {
 }
 
 
+// ============================================================
+// PRD-004 Phase 2 — Connectors 健康检查
+// ============================================================
+
+export interface ConnectorStatus {
+  name: string;
+  running: boolean;
+  sync_interval_seconds: number;
+  last_sync_at: string | null;
+  last_result: {
+    nodes_added: number;
+    nodes_updated: number;
+    nodes_removed: number;
+    edges_added: number;
+    edges_updated: number;
+    edges_removed: number;
+    metrics_added: number;
+    events_added: number;
+    duration_ms: number;
+    notes: string[];
+  } | null;
+  last_error_message: string;
+  error_count_24h: number;
+  sync_count: number;
+  // k8s_watch 额外字段(可选)
+  mode?: string;
+  cluster_id?: string;
+  namespace?: string;
+  watched_kinds?: string[];
+  snapshot_sizes?: Record<string, number>;
+}
+
+export interface ConnectorsStatusResponse {
+  connectors: ConnectorStatus[];
+  total: number;
+}
+
+export interface ConnectorSyncResult {
+  connector: string;
+  result: {
+    nodes_added: number;
+    nodes_updated: number;
+    nodes_removed: number;
+    edges_added: number;
+    edges_updated: number;
+    edges_removed: number;
+    metrics_added: number;
+    events_added: number;
+    duration_ms: number;
+    notes: string[];
+  };
+}
+
+export function fetchConnectors() {
+  return api.get<ConnectorsStatusResponse>('/connectors/status');
+}
+
+export function fetchConnector(name: string) {
+  return api.get<ConnectorStatus>(`/connectors/${encodeURIComponent(name)}`);
+}
+
+export function syncConnectorNow(name: string) {
+  return api.post<ConnectorSyncResult>(`/connectors/${encodeURIComponent(name)}/sync-now`);
+}
+
+
 export default api;

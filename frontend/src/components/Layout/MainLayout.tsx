@@ -13,6 +13,7 @@ import {
   AuditOutlined,
   FieldTimeOutlined,
   FileTextOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 
 const { Sider, Content, Header: AntHeader } = Layout;
@@ -29,6 +30,7 @@ const menuItems: MenuProps['items'] = [
   { key: '/recovery/approvals', icon: <AuditOutlined />,      label: '审批中心' },
   { key: '/recovery/history',  icon: <HistoryOutlined />,     label: '恢复历史' },
   { key: '/reports',           icon: <FileTextOutlined />,    label: '报告中心' },
+  { key: '/connectors',        icon: <ApiOutlined />,         label: 'Connector 状态' },
 ];
 
 export default function MainLayout() {
