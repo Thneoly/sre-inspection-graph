@@ -110,10 +110,58 @@ class PrometheusConnector(BaseConnector):
                 node.properties["health"] = health
                 result.nodes_updated += 1
 
+            # PRD-004 Phase 2 — critical / warning breach 产出 AlertEvent
+            # (connector → AlertEvent → PRD-002 CORRELATED_WITH 自动关联变更)
+            result.events_added += self._emit_alerts_if_breached(nid, recent)
+
         result.notes.append(
             f"queries={len(QUERIES)} samples={result.metrics_added} affected={len(affected_node_ids)}"
         )
         return result
+
+    def _emit_alerts_if_breached(self, node_id: str, snapshots: list) -> int:
+        """检测 critical / warning breach → record_alert。返回产出数。
+
+        去重由 alert_service.record_alert(dedupe=True) 保证:同一 resource + rule
+        的 firing 告警不重复。node_id 不在 DSS 时跳过(resource_ref 需指向真实节点)。
+        """
+        from app.alerts.alert_service import record_alert
+        from app.datasource.connectors.health_rules import _QUERY_BY_NAME
+
+        node = store.get_node(node_id)
+        if node is None:
+            return 0
+        count = 0
+        for snap in snapshots:
+            q = _QUERY_BY_NAME.get(snap.metric_name)
+            if q is None:
+                continue
+            # critical 优先:critical breach 只产 critical 告警,不重复产 warning
+            if snap.current_value >= q.critical:
+                ev = record_alert(
+                    alert_name=f"{snap.metric_name} critical",
+                    resource_ref=node_id,
+                    severity="critical",
+                    rule_id=f"alert_rule:{snap.metric_name}:critical",
+                    metric_name=snap.metric_name,
+                    metric_value=snap.current_value,
+                    cluster_id=self.cluster_id,
+                )
+                if ev is not None:
+                    count += 1
+            elif snap.current_value >= q.warning:
+                ev = record_alert(
+                    alert_name=f"{snap.metric_name} warning",
+                    resource_ref=node_id,
+                    severity="warning",
+                    rule_id=f"alert_rule:{snap.metric_name}:warning",
+                    metric_name=snap.metric_name,
+                    metric_value=snap.current_value,
+                    cluster_id=self.cluster_id,
+                )
+                if ev is not None:
+                    count += 1
+        return count
 
     # ============================================================
     # 内部

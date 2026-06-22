@@ -2,6 +2,7 @@
 from app.datasource.models import (
     DataNode, DataEdge, MetricSnapshot, FaultInjection,
     RecoveryExecution, ApprovalRequest, ChangeEvent,
+    AlertRule, AlertEvent,
 )
 
 
@@ -16,6 +17,8 @@ class DataSourceStore:
         self.executions: dict[str, RecoveryExecution] = {}      # execution_id → execution
         self.approvals: dict[str, ApprovalRequest] = {}         # approval_id → approval
         self.change_events: dict[str, ChangeEvent] = {}         # change_event_id → event
+        self.alert_rules: dict[str, AlertRule] = {}             # rule_id → rule
+        self.alert_events: dict[str, AlertEvent] = {}           # alert_event_id → event
         self._initialized = False
 
     # ── Nodes ──
@@ -143,6 +146,49 @@ class DataSourceStore:
 
     def clear_change_events(self):
         self.change_events.clear()
+
+    # ── Alert Rules + Alert Events (PRD-004 Phase 2) ──
+    def upsert_alert_rule(self, rule: AlertRule):
+        self.alert_rules[rule.rule_id] = rule
+
+    def get_alert_rule(self, rule_id: str) -> AlertRule | None:
+        return self.alert_rules.get(rule_id)
+
+    def list_alert_rules(self, enabled: bool | None = None) -> list[AlertRule]:
+        rules = list(self.alert_rules.values())
+        if enabled is not None:
+            rules = [r for r in rules if r.enabled == enabled]
+        return rules
+
+    def add_alert_event(self, event: AlertEvent):
+        self.alert_events[event.alert_event_id] = event
+
+    def get_alert_event(self, alert_id: str) -> AlertEvent | None:
+        return self.alert_events.get(alert_id)
+
+    def list_alert_events(
+        self,
+        resource_ref: str | None = None,
+        severity: str | None = None,
+        status: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[AlertEvent]:
+        events = list(self.alert_events.values())
+        if resource_ref:
+            events = [e for e in events if e.resource_ref == resource_ref]
+        if severity:
+            events = [e for e in events if e.severity == severity]
+        if status:
+            events = [e for e in events if e.status == status]
+        if since:
+            events = [e for e in events if e.fired_at >= since]
+        if until:
+            events = [e for e in events if e.fired_at <= until]
+        return events
+
+    def clear_alert_events(self):
+        self.alert_events.clear()
 
     # ── Reset ──
     def reset(self):

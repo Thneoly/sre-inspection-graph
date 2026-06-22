@@ -63,3 +63,43 @@ def evaluate_breach(metric_name: str, value: float) -> tuple[bool, bool]:
     if q is None:
         return False, False
     return value >= q.warning, value >= q.critical
+
+
+# ============================================================
+# PRD-004 Phase 2 — AlertRule 生成(从 QueryDef 阈值)
+# ============================================================
+
+def generate_alert_rules() -> list:
+    """从 QUERIES 的 warning / critical 阈值生成 AlertRule 列表。
+
+    每个 QueryDef 产出 2 条 rule(warning + critical),request_rate 这种
+    阈值设成天文数字(1e9)的实际不告警但仍生成 rule(enabled=True,只是永不触发)。
+    """
+    from app.datasource.models import AlertRule
+
+    rules: list[AlertRule] = []
+    for q in QUERIES:
+        for sev, threshold in (("critical", q.critical), ("warning", q.warning)):
+            rules.append(AlertRule(
+                rule_id=f"alert_rule:{q.name}:{sev}",
+                metric_name=q.name,
+                severity=sev,
+                threshold=float(threshold),
+                direction=q.direction,
+                unit=q.unit,
+                description=f"{q.name} {sev} breach (>= {threshold} {q.unit})",
+                enabled=True,
+            ))
+    return rules
+
+
+def sync_alert_rules_to_store() -> int:
+    """把 generate_alert_rules() 的结果 upsert 到 DSS store。返回规则数。
+
+    幂等:rule_id 固定,重复调用覆盖。启动时调一次。
+    """
+    from app.datasource.store import store
+    rules = generate_alert_rules()
+    for r in rules:
+        store.upsert_alert_rule(r)
+    return len(rules)

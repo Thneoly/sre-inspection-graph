@@ -51,42 +51,69 @@ def _parse_iso_local(iso: str) -> Optional[datetime]:
 
 
 def _fetch_alerts_in_window(win_start: str, win_end: str) -> list[dict[str, Any]]:
-    """从 Neo4j 读窗口内 AlertEvent。Neo4j 离线 → 返 []。"""
+    """读窗口内 AlertEvent。
+
+    PRD-004 Phase 2 起 AlertEvent 有 DSS 模型(alert_service.record_alert 写入),
+    优先从 DSS 读;DSS 为空时回退 Neo4j(legacy simulation.py 写的告警)。
+    两源合并去重(alert_event_id)。
+    """
+    # (a) DSS —— PRD-004 Phase 2 起 connector 产的告警在这
+    from app.datasource.store import store as _store
+    dss_alerts: list[dict[str, Any]] = []
+    for ev in _store.list_alert_events(since=win_start, until=win_end):
+        dss_alerts.append({
+            "alert_event_id": ev.alert_event_id,
+            "alert_name": ev.alert_name,
+            "severity": ev.severity,
+            "fired_at": ev.fired_at,
+            "resource_ref": ev.resource_ref,
+            "summary": ev.summary,
+        })
+
+    # (b) Neo4j —— legacy simulation.py 写的告警 + dual-write 的 DSS 告警
+    neo4j_alerts: list[dict[str, Any]] = []
     driver = n4j.get_driver()
-    if driver is None:
-        return []
-    try:
-        with driver.session() as s:
-            records = s.run(
-                """
-                MATCH (ae:AlertEvent)
-                WHERE ae.fired_at IS NOT NULL
-                  AND ae.fired_at >= datetime($win_start)
-                  AND ae.fired_at <= datetime($win_end)
-                RETURN ae.alert_event_id AS aid,
-                       ae.alert_name AS name,
-                       ae.severity AS severity,
-                       ae.fired_at AS fired_at,
-                       ae.resource_ref AS resource_ref,
-                       ae.summary AS summary
-                """,
-                win_start=win_start,
-                win_end=win_end,
-            )
-            return [
-                {
-                    "alert_event_id": r.get("aid") or "",
-                    "alert_name": r.get("name") or "",
-                    "severity": r.get("severity") or "",
-                    "fired_at": str(r.get("fired_at") or ""),
-                    "resource_ref": r.get("resource_ref") or "",
-                    "summary": r.get("summary") or "",
-                }
-                for r in records
-            ]
-    except Exception as e:  # noqa: BLE001
-        logger.warning("fetch alerts in window failed: %s: %s", type(e).__name__, e)
-        return []
+    if driver is not None:
+        try:
+            with driver.session() as s:
+                records = s.run(
+                    """
+                    MATCH (ae:AlertEvent)
+                    WHERE ae.fired_at IS NOT NULL
+                      AND ae.fired_at >= datetime($win_start)
+                      AND ae.fired_at <= datetime($win_end)
+                    RETURN ae.alert_event_id AS aid,
+                           ae.alert_name AS name,
+                           ae.severity AS severity,
+                           ae.fired_at AS fired_at,
+                           ae.resource_ref AS resource_ref,
+                           ae.summary AS summary
+                    """,
+                    win_start=win_start,
+                    win_end=win_end,
+                )
+                neo4j_alerts = [
+                    {
+                        "alert_event_id": r.get("aid") or "",
+                        "alert_name": r.get("name") or "",
+                        "severity": r.get("severity") or "",
+                        "fired_at": str(r.get("fired_at") or ""),
+                        "resource_ref": r.get("resource_ref") or "",
+                        "summary": r.get("summary") or "",
+                    }
+                    for r in records
+                ]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch alerts in window (neo4j) failed: %s: %s", type(e).__name__, e)
+
+    # 合并去重(alert_event_id)
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for a in dss_alerts + neo4j_alerts:
+        if a["alert_event_id"] and a["alert_event_id"] not in seen:
+            seen.add(a["alert_event_id"])
+            merged.append(a)
+    return merged
 
 
 def correlate_alerts(

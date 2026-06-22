@@ -88,9 +88,14 @@ def client():
     """带 mock Neo4j 的 FastAPI TestClient"""
     # 先 import，让 neo4j_client 模块挂到 sys.modules 上
     import app.db.neo4j_client as n4j
+    # health.py 用 `from app.db.neo4j_client import check_connection` 本地绑定,
+    # 若 app 已被别的测试裸导入,patch n4j.check_connection 无法改 health 本地引用。
+    # 故同时 patch health 模块的本地引用,保证 check_connection 恒返 True。
+    from app.routers import health as health_mod
 
     with patch.object(n4j, "get_driver", return_value=MagicMock()), \
          patch.object(n4j, "run_query", return_value=[]) as mock_run_query, \
-         patch.object(n4j, "check_connection", return_value=True):
+         patch.object(n4j, "check_connection", return_value=True), \
+         patch.object(health_mod, "check_connection", return_value=True):
         from app.main import app
         yield TestClient(app), mock_run_query

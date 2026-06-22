@@ -149,6 +149,52 @@ class ChangeEvent:
 
 
 @dataclass
+class AlertRule:
+    """告警规则 — PRD-004 Phase 2。
+
+    从 health_rules 的 QueryDef 阈值生成。一条 rule 描述"某指标超某阈值就告警"。
+    connector 检测到 critical breach 时,按 rule 产出 AlertEvent。
+
+    与 legacy simulation.py 的 FAULT_TYPES alert_rule 字符串不同 —— 这是结构化的、
+    可查询的规则对象,挂在 DSS store。
+    """
+    rule_id: str                                      # 形如 alert_rule:span_p99_ms:critical
+    metric_name: str                                  # 对应 QueryDef.name
+    severity: str = "critical"                        # warning | critical
+    threshold: float = 0.0                            # 触发阈值(>=)
+    direction: str = "high"                           # high | low — 哪个方向算差
+    unit: str = ""                                    # 指标单位
+    description: str = ""                             # 人读描述
+    enabled: bool = True
+
+
+@dataclass
+class AlertEvent:
+    """告警事件 — PRD-004 Phase 2。
+
+    connector(目前 prometheus)检测到 critical breach 时产出。镜像 ChangeEvent 的
+    DSS 主存储 + Neo4j dual-write 模式,使 PRD-002 Phase 2 的 correlate_alerts 可
+    从 DSS 读(不再只依赖 Neo4j)。
+
+    AlertEvent 落地后,record_change 会自动 correlate_and_persist 关联窗口内变更
+    (CORRELATED_WITH 边),形成 "变更 → 告警" 的双向可查链路。
+    """
+    alert_event_id: str
+    alert_name: str                                   # 规则名 / 告警名
+    severity: str = "critical"                        # warning | critical
+    status: str = "firing"                            # firing | resolved
+    fired_at: str = ""                                # ISO8601(record_alert 填)
+    resource_ref: str = ""                            # 被告警资源 DSS node_id
+    rule_id: str = ""                                 # 触发的 AlertRule
+    metric_name: str = ""                             # 触发指标
+    metric_value: float = 0.0                         # 触发时的值
+    summary: str = ""
+    description: str = ""
+    cluster_id: str = ""
+    resolved_at: str = ""
+
+
+@dataclass
 class ApprovalRequest:
     """审批请求 — 事件对象,只在 high_risk / requires_approval 动作下创建。
 

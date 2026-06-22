@@ -17,6 +17,7 @@ from app.routers import (
     connectors,
     report,
     webhook,
+    alert,
 )
 
 # Auto-init DSS on startup
@@ -60,6 +61,7 @@ app.include_router(change_event.router)
 app.include_router(connectors.router)
 app.include_router(report.router)
 app.include_router(webhook.router)
+app.include_router(alert.router)
 
 
 @app.on_event("startup")
@@ -74,6 +76,13 @@ async def startup():
         await start_all_connectors()
     except Exception as e:
         print(f"connectors startup warning: {e}")
+    # PRD-004 Phase 2 — 从 health_rules 阈值生成 AlertRule 到 DSS
+    try:
+        from app.datasource.connectors.health_rules import sync_alert_rules_to_store
+        n = sync_alert_rules_to_store()
+        print(f"alert rules synced: {n}")
+    except Exception as e:
+        print(f"alert rules sync warning: {e}")
     # PRD-003 Sprint 2 — 报告订阅:hydrate + 启动调度器
     try:
         loaded = load_subscriptions_from_neo4j()
