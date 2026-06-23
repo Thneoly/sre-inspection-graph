@@ -15,5 +15,10 @@ tracing     = { workspace = true }
 anyhow      = { workspace = true }
 toml        = { workspace = true }
 
+# Phase 2:host 侧 Component Model 加载 + WASIp2 capability 注入
+wasmtime          = { workspace = true }
+wasmtime-wasi     = { workspace = true }
+tokio             = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }

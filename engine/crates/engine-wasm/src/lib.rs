@@ -1,11 +1,15 @@
 //! engine-wasm
 //!
 //! wasmtime runtime + capability injection — host side of WASM connector / rule
-//! / handler 加载。Phase 1 占位;wasmtime 依赖延迟到 Step 4 第一个真实 connector
-//! 接入时引入(可显著加快 cargo check)。
+//! / handler 加载。Phase 2 起接入真实 wasmtime Component Model 加载。
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+
+/// Phase 2 runtime —— 真实 wasmtime Component 加载 + capability 注入。
+pub mod runtime;
+
+pub use runtime::{SyncOutcome, WasmConnector};
 
 /// 模块声明使用的 WASI ABI 版本。
 ///

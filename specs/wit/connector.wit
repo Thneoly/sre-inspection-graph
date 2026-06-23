@@ -77,8 +77,11 @@ interface connector {
     }
 
     record sync-result {
-        facts-emitted: u64,
+        /// 本轮采集的全部 Fact。host 收到后写入 Arrow canonical store。
+        facts: list<fact>,
+        /// guest 内部产生的 non-fatal 错误(整轮算 success)
         errors: list<string>,
+        /// guest 端实际耗时
         duration-ms: u64,
     }
 
