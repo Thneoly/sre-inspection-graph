@@ -62,13 +62,13 @@ def _execute_mock(target_id, target, old, new, graceful, grace_period, context) 
 
 def _execute_real(target_id, target, old, new, graceful, grace_period, context) -> dict:
     try:
-        namespace, name = k8s_ref(target_id)
+        cluster_id, namespace, name = k8s_ref(target_id)
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
     async def _call():
         from kubernetes_asyncio.client import V1DeleteOptions
-        api, core = await get_k8s_core_api()
+        api, core = await get_k8s_core_api(cluster_id)
         try:
             opts = V1DeleteOptions(grace_period_seconds=grace_period)
             await core.delete_namespaced_pod(name=name, namespace=namespace, body=opts)
@@ -88,7 +88,8 @@ def _execute_real(target_id, target, old, new, graceful, grace_period, context) 
         "new_restart_count": new,
         "graceful": graceful,
         "grace_period_seconds": grace_period,
+        "cluster_id": cluster_id,
         "namespace": namespace,
         "name": name,
-        "note": f"Pod {target.name} restarted (real k8s execution, count={new})",
+        "note": f"Pod {target.name} restarted (real k8s execution, cluster={cluster_id}, count={new})",
     }

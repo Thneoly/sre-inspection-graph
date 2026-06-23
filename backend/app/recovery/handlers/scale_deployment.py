@@ -62,12 +62,12 @@ def _execute_mock(target_id, old, new, delta) -> dict:
 def _execute_real(target_id, old, new, delta, context) -> dict:
     """先调 K8s API,成功后再更新 DSS 孪生。失败不动 DSS。"""
     try:
-        namespace, name = k8s_ref(target_id)
+        cluster_id, namespace, name = k8s_ref(target_id)
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
     async def _call():
-        api, apps = await get_k8s_apps_api()
+        api, apps = await get_k8s_apps_api(cluster_id)
         try:
             # patch_namespaced_deployment_scale:body 用 V1Scale { spec: { replicas: new } }
             from kubernetes_asyncio.client import V1Scale, V1ScaleSpec
@@ -97,7 +97,8 @@ def _execute_real(target_id, old, new, delta, context) -> dict:
         "new_replicas": new,
         "delta_applied": delta,
         "completed_at": now,
+        "cluster_id": cluster_id,
         "namespace": namespace,
         "name": name,
-        "note": f"Deployment scaled from {old} to {new} replicas (real k8s execution)",
+        "note": f"Deployment scaled from {old} to {new} replicas (real k8s execution, cluster={cluster_id})",
     }

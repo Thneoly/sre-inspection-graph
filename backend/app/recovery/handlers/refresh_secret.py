@@ -65,7 +65,7 @@ def _execute_mock(target_id, target, old_version, new_version, trigger_pod_resta
 
 def _execute_real(target_id, target, old_version, new_version, trigger_pod_restart, context) -> dict:
     try:
-        namespace, name = k8s_ref(target_id)
+        cluster_id, namespace, name = k8s_ref(target_id)
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
@@ -73,7 +73,7 @@ def _execute_real(target_id, target, old_version, new_version, trigger_pod_resta
     new_data = params_data(target)
 
     async def _call():
-        api, core = await get_k8s_core_api()
+        api, core = await get_k8s_core_api(cluster_id)
         try:
             # patch secret 的 data(空 dict 也让 resourceVersion 自增,代表"已轮转")
             await core.patch_namespaced_secret(name=name, namespace=namespace, body={"data": new_data})
@@ -93,8 +93,9 @@ def _execute_real(target_id, target, old_version, new_version, trigger_pod_resta
         refreshed_by_execution=context.get("execution_id", ""),
     )
     affected = _mark_affected_pods(target_id, now) if trigger_pod_restart else []
-    return _result(target, old_version, new_version, trigger_pod_restart, affected, now, "real k8s",
-                   namespace=namespace, name=name)
+    return _result(target, old_version, new_version, trigger_pod_restart, affected, now,
+                   f"real k8s (cluster={cluster_id})",
+                   cluster_id=cluster_id, namespace=namespace, name=name)
 
 
 def params_data(target):
@@ -104,7 +105,7 @@ def params_data(target):
 
 
 def _result(target, old_version, new_version, trigger_pod_restart, affected, now, mode,
-            namespace=None, name=None) -> dict:
+            cluster_id=None, namespace=None, name=None) -> dict:
     out = {
         "success": True,
         "completed_at": now,
@@ -116,6 +117,8 @@ def _result(target, old_version, new_version, trigger_pod_restart, affected, now
         "note": f"Secret {target.name} refreshed v{old_version}→v{new_version} ({mode})"
                 + (f", {len(affected)} pod(s) marked for restart" if affected else ""),
     }
+    if cluster_id:
+        out["cluster_id"] = cluster_id
     if namespace:
         out["namespace"] = namespace
         out["name"] = name

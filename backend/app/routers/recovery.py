@@ -252,6 +252,13 @@ def _serialize_execution(execution: RecoveryExecution) -> dict:
         "approval_id": execution.approval_id,
         "rollback_execution_id": execution.rollback_execution_id,
         "reverses_execution_id": execution.reverses_execution_id,
+        # Phase 2 余项
+        "cluster_id": execution.cluster_id,
+        "verify_status": execution.verify_status,
+        "verify_result": execution.verify_result,
+        "verified_at": execution.verified_at,
+        "chain_id": execution.chain_id,
+        "chain_step_index": execution.chain_step_index,
         # dry_run_result 只在详情接口返回(列表太占空间)
         "dry_run_summary": {
             "affected_count": execution.dry_run_result.get("affected_count", 0),

@@ -113,6 +113,13 @@ class RecoveryExecution:
     result: dict[str, Any] = field(default_factory=dict)
     rollback_execution_id: Optional[str] = None
     reverses_execution_id: Optional[str] = None  # 若本 execution 是回滚动作,指向被回滚的原 execution
+    # Phase 2 余项 — 跨集群恢复编排 / 自动验证 / 动作链
+    cluster_id: str = ""                  # 目标所属集群(从 target.cluster_id 或 target_id 第二段解析)
+    verify_status: str = ""               # "" | passed | failed | skipped | not_supported | timeout
+    verify_result: dict[str, Any] = field(default_factory=dict)
+    verified_at: str = ""
+    chain_id: str = ""                    # 若属于某 RecoveryChain
+    chain_step_index: int = -1            # 在 chain 中的步骤索引,-1 = 非链步骤
 
 
 @dataclass

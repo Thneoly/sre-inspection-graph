@@ -47,12 +47,12 @@ def _execute_mock(target_id, target, refresh_count, context) -> dict:
 
 def _execute_real(target_id, target, refresh_count, context) -> dict:
     try:
-        namespace, name = k8s_ref(target_id)
+        cluster_id, namespace, name = k8s_ref(target_id)
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
     async def _call():
-        api, core = await get_k8s_core_api()
+        api, core = await get_k8s_core_api(cluster_id)
         try:
             # 删 Endpoints,kube-controller-manager 会重建(同 kubectl delete endpoints)
             await core.delete_namespaced_endpoints(name=name, namespace=namespace)
@@ -69,7 +69,8 @@ def _execute_real(target_id, target, refresh_count, context) -> dict:
         "success": True,
         "completed_at": now,
         "endpoints_refresh_count": refresh_count,
+        "cluster_id": cluster_id,
         "namespace": namespace,
         "name": name,
-        "note": f"Service {target.name} endpoints refreshed (real k8s execution, count={refresh_count})",
+        "note": f"Service {target.name} endpoints refreshed (real k8s execution, cluster={cluster_id}, count={refresh_count})",
     }

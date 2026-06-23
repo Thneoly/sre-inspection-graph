@@ -68,12 +68,12 @@ def _execute_mock(target_id, target, old_revision, new_revision) -> dict:
 
 def _execute_real(target_id, target, old_revision, new_revision, target_revision, context) -> dict:
     try:
-        namespace, name = k8s_ref(target_id)
+        cluster_id, namespace, name = k8s_ref(target_id)
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
     async def _call():
-        api, apps = await get_k8s_apps_api()
+        api, apps = await get_k8s_apps_api(cluster_id)
         try:
             # kubectl rollout undo 等价:create_namespaced_deployment_rollback
             # kubernetes_asyncio 的 rollback API 在 extensions/apps 各版本里;
@@ -105,7 +105,8 @@ def _execute_real(target_id, target, old_revision, new_revision, target_revision
         "completed_at": now,
         "old_revision": old_revision,
         "new_revision": new_revision,
+        "cluster_id": cluster_id,
         "namespace": namespace,
         "name": name,
-        "note": f"Deployment {target.name} rolled back rev {old_revision}→{new_revision} (real k8s)",
+        "note": f"Deployment {target.name} rolled back rev {old_revision}→{new_revision} (real k8s, cluster={cluster_id})",
     }

@@ -70,13 +70,13 @@ def _execute_mock(target_id, target, pods_on_node,
 def _execute_real(target_id, target, pods_on_node,
                   ignore_daemonsets, delete_local_data, force, context) -> dict:
     try:
-        # Node 的 (namespace, name) — Node 是集群级资源,namespace 为空,name 从 properties 读
-        namespace, name = k8s_ref(target_id)
+        # Node 的 (cluster_id, namespace, name) — Node 是集群级资源,namespace 用兜底
+        cluster_id, namespace, name = k8s_ref(target_id)
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
     async def _call():
-        api, core = await get_k8s_core_api()
+        api, core = await get_k8s_core_api(cluster_id)
         try:
             # cordon:patch node spec.unschedulable=True
             await core.patch_node(name=name, body={"spec": {"unschedulable": True}})
@@ -91,11 +91,12 @@ def _execute_real(target_id, target, pods_on_node,
 
     now = _apply_dss(target_id, pods_on_node, context)
     return _result(target, pods_on_node, ignore_daemonsets, delete_local_data, force, now,
-                   "real k8s (cordon only, evict deferred)", name=name)
+                   f"real k8s (cluster={cluster_id}, cordon only, evict deferred)",
+                   cluster_id=cluster_id, name=name)
 
 
 def _result(target, pods_on_node, ignore_daemonsets, delete_local_data, force, now, mode,
-            name=None) -> dict:
+            cluster_id=None, name=None) -> dict:
     out = {
         "success": True,
         "completed_at": now,
@@ -107,6 +108,8 @@ def _result(target, pods_on_node, ignore_daemonsets, delete_local_data, force, n
         "drained_pods": pods_on_node,
         "note": f"Node {target.name} cordoned, {len(pods_on_node)} pod(s) marked for eviction ({mode})",
     }
+    if cluster_id:
+        out["cluster_id"] = cluster_id
     if name:
         out["name"] = name
     return out

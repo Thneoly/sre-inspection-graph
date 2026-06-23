@@ -97,6 +97,7 @@ def execute(action_id: str, target_resource_id: str,
         request_reason=request_reason,
         initiated_at=now_iso,
         executed_at="" if needs_approval else now_iso,
+        cluster_id=_derive_cluster_id(target_resource_id, target_node),
     )
     store.add_execution(execution)
 
@@ -201,6 +202,7 @@ def rollback(execution_id: str,
         initiated_at=now_iso,
         executed_at=now_iso,
         reverses_execution_id=execution_id,
+        cluster_id=original.cluster_id,
     )
     store.add_execution(rb_execution)
 
@@ -233,6 +235,23 @@ def _derive_rollback_params(original: RecoveryExecution) -> dict:
         delta = original.input_params.get("replicas_delta", 0)
         return {"replicas_delta": -delta}
     return dict(original.input_params)
+
+
+def _derive_cluster_id(target_id: str, target_node) -> str:
+    """从 target 派生 cluster_id。
+
+    优先 target.properties["cluster_id"],次回 target_id 第二段(`<type>:<cluster>:...`),
+    都缺 → 空串(MySQL/Redis 无集群概念,非 K8s 资源用空串)。
+    """
+    if target_node is not None:
+        cid = (target_node.properties or {}).get("cluster_id")
+        if cid:
+            return cid
+    parts = target_id.split(":")
+    if len(parts) >= 2 and parts[1]:
+        # 第二段通常是 cluster_id(K8s 资源);MySQL/Redis 可能也跟这个约定但非强制
+        return parts[1]
+    return ""
 
 
 # ============================================================
@@ -320,6 +339,7 @@ def _persist_execution(execution: RecoveryExecution):
                 e.request_reason = $reason,
                 e.result_json = $rjson,
                 e.reverses_execution_id = $reverses,
+                e.cluster_id = $cluster,
                 e.label = 'RecoveryExecution',
                 e.name = $name,
                 e.health_status = $health,
@@ -339,6 +359,7 @@ def _persist_execution(execution: RecoveryExecution):
               reason=execution.request_reason,
               rjson=str(execution.result),
               reverses=execution.reverses_execution_id or "",
+              cluster=execution.cluster_id or "",
               name=f"{execution.action_id} on {execution.target_resource_id}",
               health="normal" if execution.status == "succeeded" else "critical",
               )
