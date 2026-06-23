@@ -1,0 +1,98 @@
+// SRE Inspection Graph — connector module WIT interface
+// 版本:0.1.0(见 specs/version.toml)
+//
+// 此接口是 WASM connector(guest)与 host 引擎之间的契约。
+// host 端 binding 由 `engine-bindings` crate 用 wasmtime::component::bindgen!
+// 宏从本文件生成;guest 端在 `modules/sdk` 用 wit-bindgen 生成。
+//
+// 详细 schema 设计见 doc/15-data-contract-spec.md §1。
+
+package sre:inspection@0.1.0;
+
+interface logging {
+    enum level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// 由 host 提供给 guest 的日志接口。
+    log: func(level: level, message: string);
+}
+
+interface clock {
+    /// 当前 Unix 时间戳(秒)。
+    now-seconds: func() -> u64;
+}
+
+interface http-client {
+    /// 简化的 HTTP GET 请求 — guest 通过 capability 申明能力,
+    /// host 负责 DNS / TLS / 网络栈,guest 拿到的是 bytes。
+    record response {
+        status: u16,
+        body: list<u8>,
+    }
+
+    variant error {
+        unauthorized,
+        not-found,
+        network(string),
+        timeout,
+    }
+
+    get: func(url: string, headers: list<tuple<string, string>>) -> result<response, error>;
+}
+
+interface connector {
+    use logging.{level};
+
+    /// Fact 是统一事实记录,host 收到后写入 Arrow canonical store。
+    /// 字段映射到 specs/arrow/topology_fact.rs 中的 Schema。
+    record fact {
+        /// 全局唯一 ID(模块负责生成,host 不校验)
+        id: string,
+        /// 事实类型:topology-node / topology-edge / metric / change / alert
+        kind: string,
+        /// 数据源 — 模块名,例如 "k8s-connector"
+        source: string,
+        /// 资源 ID — 与 reference 的 resource_id 兼容
+        resource-id: string,
+        /// 资源类型 — L1 14 类型之一(Phase 2 列全)
+        resource-type: string,
+        /// 时间戳(Unix 秒)
+        timestamp: u64,
+        /// 属性 — JSON 编码字符串(Phase 2 起切 Arrow Map)
+        attributes-json: string,
+    }
+
+    record sync-result {
+        facts-emitted: u64,
+        errors: list<string>,
+        duration-ms: u64,
+    }
+
+    variant sync-error {
+        config(string),
+        runtime(string),
+        timeout,
+        capability-denied(string),
+    }
+
+    /// 一次性同步入口 — host 按 `manifest.toml` 中的 sync_interval_seconds
+    /// 调用此函数,guest 返回这批 Fact 列表。
+    sync: func(config-json: string) -> result<sync-result, sync-error>;
+
+    /// 健康检查 — host 监控用,可选(默认 OK)。
+    health-check: func() -> bool;
+}
+
+world connector-world {
+    /// host → guest:guest 引入的功能。
+    import logging;
+    import clock;
+    import http-client;
+
+    /// guest → host:guest 必须导出的接口。
+    export connector;
+}

@@ -1,0 +1,19 @@
+# 契约版本登记
+# 详见 doc/15-data-contract-spec.md §8
+
+[wit]
+# WIT 接口版本(SemVer)— 变更 connector.wit / rule.wit / handler.wit 必同步
+abi = "0.1.0"
+# 改 wit 后必须重建 engine-bindings + modules/sdk
+
+[arrow]
+# Arrow schema 版本 — Fact / TopologyFact / ChangeFact / AlertFact 任一字段变更
+fact_schema = "0.1.0"
+
+[tauri]
+# Tauri commands TS 类型生成器版本 — 与 tauri-specta 协调
+api = "0.1.0"
+
+[rest]
+# headless 模式 REST OpenAPI 版本(engine-cli)— Phase 4 起填
+openapi = "0.1.0-pre"

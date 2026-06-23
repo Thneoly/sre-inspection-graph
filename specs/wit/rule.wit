@@ -1,0 +1,49 @@
+// SRE Inspection Graph — rule module WIT interface
+// 版本:0.1.0(见 specs/version.toml)
+//
+// rule 模块在 Fact 流上做匹配 / 阈值检查 / SLO 评估,产出 finding。
+// Phase 1 仅定义骨架,具体字段 Phase 4 PRD-003 复刻时锁定。
+
+package sre:inspection-rule@0.1.0;
+
+interface rule {
+    record finding {
+        id: string,
+        rule-id: string,
+        target-resource-id: string,
+        severity: severity,
+        message: string,
+        timestamp: u64,
+        attributes-json: string,
+    }
+
+    enum severity {
+        info,
+        warning,
+        critical,
+    }
+
+    variant rule-error {
+        bad-input(string),
+        runtime(string),
+    }
+
+    /// 单条 Fact 输入,返回零或多条 finding。
+    evaluate: func(fact-json: string) -> result<list<finding>, rule-error>;
+
+    /// 规则元信息 — host 启动时读。
+    record meta {
+        name: string,
+        version: string,
+        targets: list<string>,
+    }
+
+    describe: func() -> meta;
+}
+
+world rule-world {
+    import sre:inspection/logging@0.1.0;
+    import sre:inspection/clock@0.1.0;
+
+    export rule;
+}

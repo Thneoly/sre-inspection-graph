@@ -1,0 +1,46 @@
+// SRE Inspection Graph — handler module WIT interface
+// 版本:0.1.0(见 specs/version.toml)
+//
+// handler 模块执行恢复动作(PRD-001 8 action + 用户自定义)。
+// Phase 3 起 8 个 reference handler 复刻为 WASM 模块。
+
+package sre:inspection-handler@0.1.0;
+
+interface handler {
+    record execution-context {
+        action-id: string,
+        target-resource-id: string,
+        params-json: string,
+        initiated-by: string,
+    }
+
+    record execution-result {
+        success: bool,
+        message: string,
+        attributes-json: string,
+    }
+
+    variant execution-error {
+        precondition-failed(string),
+        capability-denied(string),
+        upstream-api(string),
+        timeout,
+    }
+
+    /// dry-run:不执行,返回会受影响的资源列表(级联用)。
+    dry-run: func(ctx: execution-context) -> result<list<string>, execution-error>;
+
+    /// 真实执行。host 已检查过审批 / 权限,handler 只负责 API 调用。
+    execute: func(ctx: execution-context) -> result<execution-result, execution-error>;
+
+    /// 验证 — execute 之后查 predicate,确认动作真生效。
+    verify: func(ctx: execution-context, result: execution-result) -> result<bool, execution-error>;
+}
+
+world handler-world {
+    import sre:inspection/logging@0.1.0;
+    import sre:inspection/clock@0.1.0;
+    import sre:inspection/http-client@0.1.0;
+
+    export handler;
+}
