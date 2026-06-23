@@ -3,14 +3,12 @@
 //! Phase 1 仅提供 Fact / SyncResult / SyncError 等数据结构(与 WIT 接口
 //! 字段对齐),以便 connector / rule / handler 在 host 端 dev build 跑测试。
 //! 真实 WIT bindings 生成留 Step 4 后续 PR 接入 wit-bindgen 宏。
+//!
+//! 注:不用 no_std。`wasm32-wasip2` 是 Tier 2 stable rustc target,带完整
+//! libstd,no_std 只在 wasm32-unknown-unknown 那种纯 core 环境下才需要。
 
-#![cfg_attr(not(test), no_std)]
 #![allow(missing_docs)]
 
-extern crate alloc;
-
-use alloc::string::String;
-use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 /// 与 specs/wit/connector.wit 的 `fact` record 对齐。
@@ -46,9 +44,6 @@ pub enum SyncError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    extern crate std;
-    use std::string::ToString;
 
     #[test]
     fn fact_round_trips_json() {

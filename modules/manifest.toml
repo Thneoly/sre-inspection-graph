@@ -2,6 +2,9 @@
 #
 # 引擎启动时读取的模块清单。每个 [[modules]] 条目对应一个 WASM 模块。
 # 字段语义见 engine-wasm crate ModuleManifest 结构体。
+#
+# wasm_path 是**相对 modules/ 目录**的路径。Cargo workspace 共享一个
+# target/(在 modules/target/),不是 per-crate target/。
 
 schema_version = "1"
 
@@ -9,7 +12,7 @@ schema_version = "1"
 [[modules]]
 name = "hello-world"
 type = "connector"
-wasm_path = "connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm"
+wasm_path = "target/wasm32-wasip2/release/hello_world.wasm"
 version = "0.1.0"
 capabilities = []
 sync_interval_seconds = 60

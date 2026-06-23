@@ -12,8 +12,9 @@ authors = ["SRE Graph Team"]
 
 [workspace.dependencies]
 wit-bindgen = "0.58"
-serde       = { version = "1", default-features = false, features = ["derive", "alloc"] }
-serde_json  = { version = "1", default-features = false, features = ["alloc"] }
+# wasm32-wasip2 有完整 libstd,不需要 no_std + alloc。Phase 1 直接吃标准 serde。
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
 module-sdk  = { path = "sdk" }
 
 [profile.release]

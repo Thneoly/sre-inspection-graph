@@ -1,20 +1,17 @@
 //! hello-world — 占位 WASM connector,每次 sync 产一条假 Fact。
 //!
 //! 目的:
-//! 1. 验证 modules/ workspace 编译链路
+//! 1. 验证 modules/ workspace 编译链路(含 wasm32-wasip2 真实产物)
 //! 2. 作为 engine-wasm 加载真实 .wasm 的最小例子(Step 4 后续 PR 接入)
 //! 3. 给后续 5 个 real connector(k8s/prom/jaeger/flagd/k8s_events)做模板
 //!
 //! Phase 1 此实现是 host-target 友好的纯 Rust 函数,Step 4 后续 PR 会用
-//! wit-bindgen 宏改造为真正的 wasm32-wasip2 guest 模块。
+//! wit-bindgen 宏改造为真正的 wasm32-wasip2 Component Model guest。
+//!
+//! 注:`wasm32-wasip2` 有完整 libstd,这里直接用 std,不需要 no_std。
 
-#![cfg_attr(target_family = "wasm", no_std)]
 #![allow(missing_docs)]
 
-extern crate alloc;
-
-use alloc::string::ToString;
-use alloc::vec::Vec;
 use module_sdk::{Fact, SyncError, SyncResult};
 
 /// 一次 sync 调用 — 返回固定一条 demo Fact。
@@ -34,14 +31,12 @@ pub fn sync_once(now_seconds: u64) -> Result<(SyncResult, Vec<Fact>), SyncError>
         errors: Vec::new(),
         duration_ms: 0,
     };
-    Ok((result, alloc::vec![fact]))
+    Ok((result, vec![fact]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    extern crate std;
 
     #[test]
     fn sync_once_emits_one_fact() {

@@ -137,13 +137,13 @@ jobs:
 
       - name: Verify wasm artifact exists
         run: |
-          ls -lh connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm
+          ls -lh target/wasm32-wasip2/release/hello_world.wasm
 
       - name: Upload wasm artifact
         uses: actions/upload-artifact@v4
         with:
           name: hello_world-wasip2
-          path: modules/connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm
+          path: modules/target/wasm32-wasip2/release/hello_world.wasm
           retention-days: 7
 
   # =====================================================================

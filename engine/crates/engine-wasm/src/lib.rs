@@ -93,8 +93,7 @@ mod tests {
         let m = ModuleManifest {
             name: "hello-world".into(),
             kind: "connector".into(),
-            wasm_path: "connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm"
-                .into(),
+            wasm_path: "target/wasm32-wasip2/release/hello_world.wasm".into(),
             version: "0.1.0".into(),
             capabilities: vec![],
             wasi_version: WasiVersion::P2,
