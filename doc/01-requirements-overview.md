@@ -50,6 +50,31 @@ L4 巡检结果层 Inspection Graph
 形成可观察、可排障、可影响分析的巡检图谱 (L4)
 ```
 
+### 3.1 横切层(规划中,PRD-005 引入)
+
+四层模型刻画的是**数据的内容分层**;PRD-005 在数据**采集与合并**这一维引入横切层,所有 L2 / L3 / L4 数据通过它流入 DSS:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ N 个 Connector (K8s / Cloud API / Trace / 代码仓 / GitOps...) │
+└────────────────────────────┬─────────────────────────────────┘
+                             ▼
+                  ┌──────────────────────┐
+                  │  Fact 总线 + Identity │  ← PRD-005 新增
+                  │  Resolver(横切层)    │
+                  └──────────┬───────────┘
+                             ▼
+                  ┌──────────────────────┐
+                  │  Canonical Graph     │
+                  │  (DSS + Neo4j)       │
+                  └──────────────────────┘
+                  ↑       ↑       ↑     ↑
+                  L1     L2      L3    L4
+                  类型   实例    观测  巡检
+```
+
+PRD-006(代码仓数据源)是这一横切层的具体消费者,贡献节点元数据(`CodeRepo`)、构建映射(`BUILDS`)、PR/MR 事件(扩 `ChangeEvent`)、业务规则(自动抽取 `InspectionRule`)。详见 `doc/11-PRD-005-...` 和 `doc/12-PRD-006-...`。
+
 ## 4. 技术选型
 
 | 组件 | 技术 | 理由 |
@@ -102,13 +127,36 @@ L4 巡检结果层 Inspection Graph
 
 ## 9. 与上游数据源的对接规划
 
-当前版本使用静态 CSV 模拟数据。后续正式版本的数据对接路径：
+数据对接经历了三个阶段:
 
-| 数据来源 | 采集方式 | 目标层 |
-|----------|----------|--------|
-| Kubernetes API | client-go / k8s-watcher → Python ETL | L2 实例图 |
-| Prometheus | HTTP API 查询 → MetricSnapshot 同步 | L3 指标快照 |
-| AlertManager | Webhook → AlertEvent 写入 | L3 告警事件 |
-| 镜像扫描平台 (Harbor/Trivy) | API → ContainerImage 漏洞属性 | L2 镜像节点 |
-| 巡检引擎 | 定时执行规则 → InspectionFinding 写入 | L4 巡检结果 |
-| CMDB / 服务目录 | API 同步 → Application/Component 节点 | L2 业务节点 |
+### 9.1 v0 — 静态 CSV(已完成)
+仅用 mock CSV 验证 L1/L2/L3/L4 全链路,详见 `scripts/` 和 `datas/`。
+
+### 9.2 v1 — 单源 connector(PRD-004,已完成)
+为 OTel Demo 集群接入 6 个真实数据 connector(K8s / Prometheus / Jaeger / flagd / K8s-events / K8s-watch),走 BaseConnector 框架 30s 轮询写 DSS:
+
+| 数据来源 | 采集方式 | 目标层 | 状态 |
+|----------|----------|--------|------|
+| Kubernetes API | `kubernetes-asyncio` list/watch → k8s_connector | L2 实例图 | ✅ |
+| Prometheus(OTel spanmetrics) | HTTP `/api/v1/query` → MetricSnapshot + AlertEvent | L3 指标 + 告警 | ✅ |
+| Jaeger trace | `/api/traces` → ChildOf span 聚合 CALLS 边 | L2 调用关系 | ✅ |
+| flagd | gRPC ResolveAll → flag diff → ChangeEvent | L3 变更事件 | ✅ |
+| K8s events / watch | events 轮询 + watch 长连接 → ChangeEvent | L3 变更事件 | ✅ |
+| ArgoCD / Harbor | webhook → ChangeEvent | L3 变更事件 | ✅ |
+
+### 9.3 v2 — 统一拓扑感知(PRD-005 + PRD-006,规划中)
+
+v1 把 6 个 connector 写 DSS 的"管道"打通了,但**每个 connector 直接 `store.upsert_node()`**,多源数据无合并机制、集群外资产靠 `add_infra_nodes.py` 手工脚本兜底、trace 看到的外部依赖永久丢失。v2 引入横切层解决:
+
+| 数据来源 | 采集方式 | 目标层 | 状态 |
+|----------|----------|--------|------|
+| 云厂商 API(华为云 RDS / DMS / ELB ...) | SDK 30s 轮询 → Cloud connector | L2 集群外资产 | 📋 PRD-005 S4 |
+| 服务注册中心(Nacos / Consul) | Open API → Config plane connector | L2 服务实例 | 📋 PRD-005 S5 |
+| 网关控制面(Kong / APISIX) | Admin API → Gateway connector | L2 路由 / L3 路由变更 | 📋 PRD-005 S5 |
+| GitOps(ArgoCD CR / Terraform tfstate) | API + state 文件 → 声明意图 | L4 intent-drift finding | 📋 PRD-005 S6 |
+| **代码仓**(GitLab / GitHub) | Open API + webhook → code_repo_connector | **L2 CodeRepo + L4 业务规则** | 📋 PRD-006 |
+| Trace 增强(OTel span attrs) | 现有 Jaeger connector 升级,挖 `db.system` / `messaging.system` / `peer.service` | L2 客户端嵌入依赖 | 📋 PRD-005 S2 |
+| 镜像扫描平台(Harbor/Trivy) | API → ContainerImage 漏洞属性 | L2 镜像节点 | 📋 后续 |
+| 日志系统(Loki/ELK) | 查询入口注入(已有 log_source 字段) | L3 日志关联 | 📋 后续 |
+
+**演进的核心是把"connector 直接写 DSS"改成"connector 发 Fact → Identity Resolver 合并 → DSS",并新增 Unknown Dependency Queue 用 trace 做拓扑完整度自检**。详见 `doc/11-PRD-005-universal-topology-service.md`。
