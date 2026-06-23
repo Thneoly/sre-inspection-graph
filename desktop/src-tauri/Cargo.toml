@@ -1,0 +1,37 @@
+[package]
+name = "sre-graph-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "SRE Inspection Graph — Tauri 2.x desktop app"
+license = "MIT OR Apache-2.0"
+
+# 与 engine/ workspace 隔离 — desktop 编译链(tauri、webview2-com)较重,
+# 不污染 engine 增量 build。
+[workspace]
+
+[lib]
+name = "sre_graph_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "sre-graph-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+# Tauri 核心
+tauri        = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+
+# engine path deps(按 doc/16 §3 配置)
+engine-core    = { path = "../../engine/crates/engine-core" }
+engine-storage = { path = "../../engine/crates/engine-storage" }
+engine-wasm    = { path = "../../engine/crates/engine-wasm" }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

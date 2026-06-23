@@ -1,0 +1,7 @@
+# desktop/dist/ — Vite build output goes here.
+# A placeholder index.html is committed so Tauri's `cargo check` can find
+# frontendDist before `npm run build` populates it. The placeholder is
+# overwritten on every `npm run build`.
+*
+!.gitignore
+!index.html

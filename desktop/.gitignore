@@ -1,0 +1,7 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock.bak
+*.log
+.DS_Store
+# desktop/dist/ — managed by its own .gitignore (placeholder index.html committed)
