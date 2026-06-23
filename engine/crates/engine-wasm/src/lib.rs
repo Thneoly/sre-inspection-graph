@@ -24,6 +24,23 @@ pub struct ModuleManifest {
     pub capabilities: Vec<String>,
 }
 
+/// 整张 modules/manifest.toml 反序列化结果。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ManifestFile {
+    /// 当前 schema 版本号(字符串,SemVer-like)。
+    pub schema_version: String,
+    /// 全部模块列表。
+    #[serde(default, rename = "modules")]
+    pub modules: Vec<ModuleManifest>,
+}
+
+impl ManifestFile {
+    /// 解析 toml 字符串。失败返回 `toml::de::Error`。
+    pub fn from_toml_str(s: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+}
+
 /// Crate version.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -46,5 +63,24 @@ mod tests {
         let s = serde_json::to_string(&m).unwrap();
         let back: ModuleManifest = serde_json::from_str(&s).unwrap();
         assert_eq!(back.name, "hello-world");
+    }
+
+    #[test]
+    fn parses_modules_manifest_toml() {
+        let toml = r#"
+schema_version = "1"
+
+[[modules]]
+name = "hello-world"
+type = "connector"
+wasm_path = "x.wasm"
+version = "0.1.0"
+capabilities = []
+"#;
+        let parsed = ManifestFile::from_toml_str(toml).expect("should parse");
+        assert_eq!(parsed.schema_version, "1");
+        assert_eq!(parsed.modules.len(), 1);
+        assert_eq!(parsed.modules[0].name, "hello-world");
+        assert_eq!(parsed.modules[0].kind, "connector");
     }
 }

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "sdk",
+    "connectors/hello-world",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["SRE Graph Team"]
+
+[workspace.dependencies]
+wit-bindgen = "0.30"
+serde       = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json  = { version = "1", default-features = false, features = ["alloc"] }
+module-sdk  = { path = "sdk" }
+
+[profile.release]
+opt-level = "s"   # size first — WASM 模块越小启动越快
+lto       = true
+strip     = true
+panic     = "abort"
+codegen-units = 1

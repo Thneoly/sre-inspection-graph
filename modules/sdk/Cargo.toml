@@ -1,0 +1,14 @@
+[package]
+name = "module-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Shared guest-side SDK for SRE inspection WASM modules"
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# wit-bindgen 留 Step 4 后续 PR 接入(需要 wasm32-wasip2 target 才能编译生成
+# 的 import/export 代码)。Phase 1 此 crate 仅 host 端兼容编译,提供 Fact
+# 数据结构以便 hello-world 通过 dev build 验证。

@@ -1,0 +1,6 @@
+# modules/ WASM 模块独立 workspace
+#
+# 用单独 workspace 与 engine/ 隔离,target 是 wasm32-wasip2 而非 host。
+# Cargo.lock 与 engine/Cargo.lock 互不干扰。
+target/
+**/*.rs.bk

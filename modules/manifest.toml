@@ -1,0 +1,20 @@
+# modules/manifest.toml
+#
+# 引擎启动时读取的模块清单。每个 [[modules]] 条目对应一个 WASM 模块。
+# 字段语义见 engine-wasm crate ModuleManifest 结构体。
+
+schema_version = "1"
+
+# Phase 1 — hello-world 占位 connector,验证 WIT 接口端到端
+[[modules]]
+name = "hello-world"
+type = "connector"
+wasm_path = "connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm"
+version = "0.1.0"
+capabilities = []
+sync_interval_seconds = 60
+# sha256 留空 — Phase 2 起强制校验
+sha256 = ""
+
+# Phase 3+ 起在这里追加 k8s / prometheus / jaeger / flagd / k8s-events 5 个
+# real connector,以及 8 个 PRD-001 handler。

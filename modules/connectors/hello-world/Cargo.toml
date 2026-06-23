@@ -1,0 +1,15 @@
+[package]
+name = "hello-world"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Placeholder WASM connector — emits one fake Fact per sync"
+
+[lib]
+# 用 cdylib 是为 wasm32-wasip2 输出 .wasm 准备;rlib 让 host 测试可链接。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+module-sdk = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
