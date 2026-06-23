@@ -2,7 +2,7 @@
 """CSV → Neo4j bulk import for ChangeEvent — PRD-002 Sprint 2。
 
 读 scripts/output/change_events.csv (`generate_change_events.py --csv` 的输出),
-批量 MERGE 到 Neo4j。结构对标 backend/app/changes/event_service.py:_persist_change_event。
+批量 MERGE 到 Neo4j。结构对标 reference/app/changes/event_service.py:_persist_change_event。
 
 用法:
   python scripts/import_change_events.py
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "backend"))
+sys.path.insert(0, str(REPO_ROOT / "reference"))
 
 from app.db import neo4j_client as n4j  # noqa: E402
 

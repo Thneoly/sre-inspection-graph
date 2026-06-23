@@ -52,7 +52,7 @@ services:
 
   api:
     build:
-      context: ./backend
+      context: ./reference
       dockerfile: Dockerfile
     container_name: sre-api
     ports:
