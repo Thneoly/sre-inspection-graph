@@ -6,6 +6,16 @@
 abi = "0.1.0"
 # 改 wit 后必须重建 engine-bindings + modules/sdk
 
+[wasi]
+# 引擎支持的 WASI ABI 版本(host 侧通过 wasmtime 46 决定)。
+# - p2:Tier 2 stable rustc target,Phase 1+ 默认构建路径
+# - p3:Tier 3,需 nightly + -Z build-std + wasi-sdk 22+;wasmtime 46 host 已默认
+#   支持 WASI 0.3.0 + component-model-async,等 rustc 升 wasip3 到 Tier 2 切默认
+supported_versions = ["p2", "p3"]
+default = "p2"
+# 升 default 到 "p3" 需的前置条件,见 doc/16 §3 WASI ABI 演进策略
+default_can_upgrade_when = "wasm32-wasip3 promoted to Tier 2 on stable rustc"
+
 [arrow]
 # Arrow schema 版本 — Fact / TopologyFact / ChangeFact / AlertFact 任一字段变更
 fact_schema = "0.1.0"

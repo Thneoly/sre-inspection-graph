@@ -13,6 +13,9 @@ wasm_path = "connectors/hello-world/target/wasm32-wasip2/release/hello_world.was
 version = "0.1.0"
 capabilities = []
 sync_interval_seconds = 60
+# WASI ABI 版本 — Phase 1 全 p2(wasm32-wasip2 Tier 2 stable)
+# 切 p3(wasm32-wasip3 Tier 3,要 nightly + -Z build-std)留 doc/16 §3 说明的窗口
+wasi_version = "p2"
 # sha256 留空 — Phase 2 起强制校验
 sha256 = ""
 

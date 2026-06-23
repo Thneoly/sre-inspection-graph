@@ -6,6 +6,13 @@
 // 宏从本文件生成;guest 端在 `modules/sdk` 用 wit-bindgen 生成。
 //
 // 详细 schema 设计见 doc/15-data-contract-spec.md §1。
+//
+// WASIp3 兼容性:
+//   - 当前 sync() 签名是同步的(result<sync-result, sync-error>),wasip2 + wasip3
+//     都能跑;wasip2 模块在 wasip3 runtime 跑也 OK(wasmtime 46 host 端兼容)
+//   - 未来需 async/stream 接口(如 fact 流推送)时按 WIT 0.3+ async syntax 加
+//     `sync-stream: func(...) -> stream<fact>`,届时 modules 切 wasip3 才能用
+//   - 详见 doc/16 §4.x WASI ABI 演进策略
 
 package sre:inspection@0.1.0;
 

@@ -256,6 +256,7 @@ wasm_path = "connectors/k8s/target/wasm32-wasip2/release/k8s_connector.wasm"
 version = "0.1.0"
 capabilities = ["kubernetes-readonly"]
 sync_interval_seconds = 30
+wasi_version = "p2"          # 默认 p2;async-native 模块切 "p3"
 sha256 = "..."
 
 [[modules]]
@@ -267,6 +268,41 @@ capabilities = []
 applies_to = ["MetricSnapshot"]
 sha256 = "..."
 ```
+
+### 4.x WASI ABI 演进策略(p2 → p3)
+
+**当前事实**(2026-06 锁定):
+
+| 维度 | 状态 |
+|---|---|
+| **wasmtime host** | v46.0.0+ 默认支持 WASI 0.3.0 + `component-model-async` |
+| **`wasm32-wasip2`** | Tier 2 stable rustc target,`rustup target add` 直接装,完整 std |
+| **`wasm32-wasip3`** | **Tier 3** — 不在 stable rustup,需 nightly + `-Z build-std` + wasi-sdk 22+;rustc 标准库实际尚未切到 wasip3 API;libc 需 `[patch]` 注入 |
+| **WASIp3 spec** | 仍在 WASI subgroup 终批,预期 2026 年内定稿 |
+
+**因此双轨**:
+
+1. **默认 = p2**(生产路径)
+   - `modules/manifest.toml` 每个模块 `wasi_version = "p2"`
+   - CI `modules-wasip2` job 用 stable rustc,产物 `hello_world.wasm` 上传 artifact
+   - 引擎 `engine-wasm::ModuleManifest::wasi_version` 默认值 `P2`(`#[serde(default)]`)
+
+2. **opt-in = p3**(async-native 模块)
+   - 模块在自己的 `manifest.toml` 条目里写 `wasi_version = "p3"`
+   - 编译指令:`cargo +nightly build --target wasm32-wasip3 -Z build-std=std,panic_abort`
+   - CI `modules-wasip3` job 跑 nightly,`continue-on-error: true`(不阻塞 PR)
+   - 引擎启动时检测 `wasi_version=P3` → 校验当前 wasmtime build 是否含 `component-model-async`(46.0+ 全有)
+
+**升 default 到 p3 的触发条件**(任一满足):
+- `wasm32-wasip3` 升 Tier 2 stable,`rustup target add` 直接能装
+- rustc std 完成 wasip3 切换(`std::os::wasi::p3::*` 真用 WASIp3 syscall)
+- 当前能落地的 WASM 模块里 ≥1 个真需要 async/future(例:Jaeger streaming pull)
+
+满足后:
+- 改 `engine-wasm::WasiVersion::default` 到 `P3`
+- CI `modules-wasip3` 删 `continue-on-error`,toolchain 换 stable
+- `specs/version.toml` `[wasi].default = "p3"`
+- 现有模块按需迁(p2 模块在 wasip3 runtime 仍跑 — 向后兼容)
 
 ## 5. `specs/` — 中立契约
 

@@ -4,17 +4,19 @@ CI / CD workflows for SRE Inspection Graph.
 
 ## ci.yml(本期落地)
 
-5 个并行 job,触发条件:
+7 个 job,触发条件:
 - push 到 `main` 或任意 `phase*/` 分支
 - 对 `main` 的 PR
 
-| Job | 范围 | 时长目标 |
-|---|---|---|
-| `engine` | engine/ Rust workspace(10 crate) cargo fmt+check+clippy+test | ~5min(cold) |
-| `modules` | modules/ WASM workspace host-target check+test | ~2min |
-| `desktop` | desktop/src-tauri Tauri 后端 check+clippy(Linux only) | ~10min(cold,WebKit GTK 重) |
-| `reference` | reference/ Python pytest 472 tests | ~3min |
-| `lockfile` | 3 个 Cargo.lock drift 检查(`--locked` 不修改) | ~3min |
+| Job | 范围 | 时长目标 | 阻塞 PR |
+|---|---|---|---|
+| `engine` | engine/ Rust workspace(10 crate) cargo fmt+check+clippy+test | ~5min(cold) | ✓ |
+| `modules` | modules/ WASM workspace host-target check+test | ~2min | ✓ |
+| `modules-wasip2` | modules/ 真实 `cargo build --target wasm32-wasip2`(Tier 2 stable) | ~3min | ✓ |
+| `modules-wasip3` | modules/ 实验性 `cargo +nightly build --target wasm32-wasip3 -Z build-std`(Tier 3) | ~5min | ✗ `continue-on-error` |
+| `desktop` | desktop/src-tauri Tauri 后端 check+clippy(Linux only) | ~10min(cold,WebKit GTK 重) | ✓ |
+| `reference` | reference/ Python pytest 472 tests | ~3min | ✓ |
+| `lockfile` | 3 个 Cargo.lock drift 检查(`--locked` 不修改) | ~3min | ✓ |
 
 ## 设计
 
@@ -24,9 +26,14 @@ CI / CD workflows for SRE Inspection Graph.
 - **缓存策略** — 三个 workspace 各自 cache,key 含 Cargo.lock 哈希。命中后 cargo check < 30s
 - **WebKit/GTK deps** — Tauri 在 Linux 上要 6 个系统包,job 内部 apt install(Phase 4 可移到 container image)
 
+## WASI 双轨
+
+- **`modules-wasip2`**(默认路径) — `wasm32-wasip2` Tier 2 stable,出真实 `hello_world.wasm` 上传 artifact;`manifest.toml` 指向产物。失败必须修。
+- **`modules-wasip3`**(实验路径) — `wasm32-wasip3` Tier 3,`rustc nightly` + `-Z build-std=std,panic_abort` 试构;wasmtime 46 host 已支持 WASI 0.3.0,等的是 rustc/guest 升 Tier 2 把 `continue-on-error` 撤掉。详见 `doc/16 §3 WASI ABI 演进策略`。
+
 ## 后续
 
-- Phase 2:加 wasm32-wasip2 target install + `cd modules && cargo build --release --target wasm32-wasip2`
-- Phase 3:加 sccache 加速
+- Phase 2:WIT bindgen 完整化 + 把 hello_world.wasm 实际嵌入引擎做端到端 sync 测
+- Phase 3:加 sccache 加速 + `cargo audit` + `cargo deny check` 安全扫描
 - Phase 4:`.github/workflows/release.yml` matrix build(macOS dmg / Linux AppImage+deb / Windows msi)
-- 任何 phase:加 `cargo audit` + `cargo deny check` 安全扫描
+- 当 wasip3 升 Tier 2:删 `continue-on-error`、把 nightly 换成 stable

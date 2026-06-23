@@ -31,4 +31,13 @@ fn reads_real_modules_manifest() {
         "expected hello-world in manifest, got {:?}",
         names
     );
+    // 所有模块默认或显式声明 wasi_version,Phase 1 全 P2
+    for m in &parsed.modules {
+        assert_eq!(
+            m.wasi_version,
+            engine_wasm::WasiVersion::P2,
+            "module {} should declare wasi_version=p2 in Phase 1",
+            m.name
+        );
+    }
 }

@@ -56,8 +56,11 @@ jobs:
         run: cargo test --all --locked
 
   # =====================================================================
-  # modules/ — WASM workspace(只跑 host target check + test;
-  # 真 wasm32-wasip2 build 留 Phase 2 接 wit-bindgen 后开)
+  # modules/ — WASM workspace
+  #   host  : cargo check / clippy / test 跑 host target(给 sdk 单测)
+  #   wasip2: 真实 cargo build --target wasm32-wasip2(Tier 2 stable)产
+  #           hello_world.wasm — 即 manifest.toml 指向的产物
+  #   wasip3: 实验性 nightly build,Tier 3,continue-on-error 不阻塞 PR
   # =====================================================================
   modules:
     name: modules — check / test (host target)
@@ -97,6 +100,105 @@ jobs:
 
       - name: cargo test --all
         run: cargo test --all --locked
+
+  # =====================================================================
+  # modules-wasip2 — 真实 WASM 产物构建(wasm32-wasip2 Tier 2 stable)
+  # 此 job 失败必须修;manifest.toml 指向的 hello_world.wasm 从这里出。
+  # =====================================================================
+  modules-wasip2:
+    name: modules — build wasm32-wasip2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: modules
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain + wasip2 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Cache cargo (wasip2)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            modules/target
+          key: modules-wasip2-${{ runner.os }}-cargo-${{ hashFiles('modules/Cargo.lock') }}
+          restore-keys: |
+            modules-wasip2-${{ runner.os }}-cargo-
+
+      - name: cargo build --release --target wasm32-wasip2
+        run: cargo build --release --target wasm32-wasip2 --locked
+
+      - name: Verify wasm artifact exists
+        run: |
+          ls -lh connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm
+
+      - name: Upload wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello_world-wasip2
+          path: modules/connectors/hello-world/target/wasm32-wasip2/release/hello_world.wasm
+          retention-days: 7
+
+  # =====================================================================
+  # modules-wasip3 — 实验性 WASIp3 构建(Tier 3,需 nightly + build-std)
+  # WASIp3 spec 截至 2026-06 仍待 WASI subgroup 终批,wasm32-wasip3 在 stable
+  # rustc 仍是 Tier 3。此 job 用 nightly + -Z build-std 试跑,continue-on-error
+  # = true 让它不阻塞 PR;一旦 wasip3 升 Tier 2,把 continue-on-error 删掉、
+  # 改 toolchain 为 stable 即可转正。
+  #
+  # wasmtime 46(host)已默认支持 WASI 0.3.0 + component-model-async,
+  # host 端不阻塞 — 等的是 rustc/guest 端。
+  # =====================================================================
+  modules-wasip3:
+    name: modules — build wasm32-wasip3 (experimental)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: modules
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo (wasip3 nightly)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            modules/target
+          key: modules-wasip3-${{ runner.os }}-nightly-${{ hashFiles('modules/Cargo.lock') }}
+          restore-keys: |
+            modules-wasip3-${{ runner.os }}-nightly-
+
+      - name: cargo build --target wasm32-wasip3 (build-std)
+        run: |
+          cargo +nightly build --release \
+            --target wasm32-wasip3 \
+            -Z build-std=std,panic_abort \
+            --locked
+        env:
+          # 如 libc 需 patch,Phase 2 改用 [patch.crates-io] 注入
+          RUSTFLAGS: ""
+
+      - name: Note status
+        if: always()
+        run: |
+          echo "WASIp3 build is experimental — Tier 3 target. Failure does NOT block PR."
+          echo "Promote to required when wasm32-wasip3 reaches Tier 2 on stable rustc."
 
   # =====================================================================
   # desktop/src-tauri — Tauri Rust 后端(Linux runner;macOS/Windows
