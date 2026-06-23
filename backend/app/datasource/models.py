@@ -220,3 +220,31 @@ class ApprovalRequest:
     expiry_at: str = ""
     approver_team: str = ""  # 负责审批的团队(从 target.owner_team 派生),软记录用
 
+
+@dataclass
+class RecoveryChain:
+    """恢复动作链 — PRD-001 Phase 2 余项。
+
+    声明式描述多步恢复(如:先 scale +2 留冗余 → 再 rollback → 再 scale -2 收回),
+    一键发起,中间失败按 on_failure 策略处理。每个 step 是一次普通 RecoveryExecution
+    (chain_id / chain_step_index 反向关联)。
+
+    生命周期:
+        pending → executing → succeeded | partial | failed | rolled_back | aborted
+    """
+    chain_id: str
+    template_id: str                       # 引用 CHAIN_TEMPLATES key,或 "ad-hoc"
+    target_resource_id: str
+    status: str = "pending"                # pending | executing | succeeded | partial |
+                                           # failed | rolled_back | aborted
+    on_failure: str = "stop"               # stop | rollback_all | continue
+    step_executions: list[str] = field(default_factory=list)  # execution_ids,顺序即步骤序
+    current_step_index: int = 0
+    total_steps: int = 0
+    initiated_by: str = ""
+    initiated_at: str = ""
+    completed_at: str = ""
+    approval_id: str = ""                  # 链级审批(任一步 medium/high → 整链单次审批)
+    failure_reason: str = ""
+    template_name: str = ""                # 缓存模板名,便于前端展示
+

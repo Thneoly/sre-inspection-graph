@@ -82,6 +82,25 @@ def approve(approval_id: str,
     approval.approval_comment = comment
     store.update_approval(approval)
 
+    # 链级审批:execution_id 实际指向 chain_id(chains.execute_chain 占用此字段)
+    chain = store.get_chain(approval.execution_id)
+    if chain is not None:
+        from app.recovery.chains import continue_chain_after_approval
+        # 触发链跑完;返回的 RecoveryExecution 是链最后一步的 execution(或 None 时构造 placeholder)
+        chain = continue_chain_after_approval(chain.chain_id)
+        last_eid = chain.step_executions[-1] if chain.step_executions else ""
+        last_ex = store.get_execution(last_eid) if last_eid else None
+        if last_ex is None:
+            # 构造一个 placeholder execution 给返回值(满足类型),不入 store
+            last_ex = RecoveryExecution(
+                execution_id=chain.chain_id,
+                action_id="chain",
+                target_resource_id=chain.target_resource_id,
+                target_resource_type="Chain",
+                status=chain.status,
+            )
+        return approval, last_ex
+
     # 触发后续执行(circular import — 延迟导入)
     from app.recovery.execution import _continue_after_approval
 
@@ -107,6 +126,25 @@ def reject(approval_id: str,
     approval.approved_at = now
     approval.approval_comment = comment
     store.update_approval(approval)
+
+    # 链级 reject:把 chain 标 failed
+    chain = store.get_chain(approval.execution_id)
+    if chain is not None:
+        chain.status = "failed"
+        chain.completed_at = now
+        chain.failure_reason = f"rejected by {approver_id}: {comment}" if comment else f"rejected by {approver_id}"
+        store.update_chain(chain)
+        # 构造 placeholder execution
+        placeholder = RecoveryExecution(
+            execution_id=chain.chain_id,
+            action_id="chain",
+            target_resource_id=chain.target_resource_id,
+            target_resource_type="Chain",
+            status="rejected",
+            completed_at=now,
+            result={"success": False, "error": chain.failure_reason},
+        )
+        return approval, placeholder
 
     # 同步把 execution 标 rejected(不进 executing)
     execution = store.get_execution(approval.execution_id)

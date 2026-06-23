@@ -2,7 +2,7 @@
 from app.datasource.models import (
     DataNode, DataEdge, MetricSnapshot, FaultInjection,
     RecoveryExecution, ApprovalRequest, ChangeEvent,
-    AlertRule, AlertEvent,
+    AlertRule, AlertEvent, RecoveryChain,
 )
 
 
@@ -19,6 +19,7 @@ class DataSourceStore:
         self.change_events: dict[str, ChangeEvent] = {}         # change_event_id → event
         self.alert_rules: dict[str, AlertRule] = {}             # rule_id → rule
         self.alert_events: dict[str, AlertEvent] = {}           # alert_event_id → event
+        self.chains: dict[str, RecoveryChain] = {}              # chain_id → RecoveryChain
         self._initialized = False
 
     # ── Nodes ──
@@ -189,6 +190,26 @@ class DataSourceStore:
 
     def clear_alert_events(self):
         self.alert_events.clear()
+
+    # ── Recovery Chains (PRD-001 Phase 2 余项) ──
+    def add_chain(self, chain: RecoveryChain):
+        self.chains[chain.chain_id] = chain
+
+    def get_chain(self, chain_id: str) -> RecoveryChain | None:
+        return self.chains.get(chain_id)
+
+    def list_chains(self, status: str | None = None) -> list[RecoveryChain]:
+        chains = list(self.chains.values())
+        if status:
+            chains = [c for c in chains if c.status == status]
+        chains.sort(key=lambda c: c.initiated_at or "", reverse=True)
+        return chains
+
+    def update_chain(self, chain: RecoveryChain):
+        self.chains[chain.chain_id] = chain
+
+    def clear_chains(self):
+        self.chains.clear()
 
     # ── Reset ──
     def reset(self):

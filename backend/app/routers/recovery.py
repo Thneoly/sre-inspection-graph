@@ -33,8 +33,10 @@ from app.recovery.execution import (
     ExecutionError,
 )
 from app.recovery import approval as approval_mod
+from app.recovery import chains as chains_mod
+from app.recovery.action_defs import list_chain_templates, get_chain_template
 from app.datasource.store import store
-from app.datasource.models import RecoveryExecution, ApprovalRequest
+from app.datasource.models import RecoveryExecution, ApprovalRequest, RecoveryChain
 
 router = APIRouter(prefix="/api/v1/recovery", tags=["Recovery"])
 
@@ -405,3 +407,118 @@ def _serialize_approval(approval: ApprovalRequest) -> dict:
             } if execution.dry_run_result else None,
         } if execution else None,
     }
+
+
+# ============================================================
+# Phase 2 余项 — Recovery Chains 编排器
+# ============================================================
+
+class ChainExecuteRequest(BaseModel):
+    template_id: str = Field(..., description="CHAIN_TEMPLATES key")
+    target_resource_id: str = Field(..., description="链作用的目标资源 ID")
+    initiated_by: str = Field("system")
+    request_reason: str = Field("")
+    on_failure_override: Optional[str] = Field(
+        None, description="stop | rollback_all | continue;覆盖 template 默认策略",
+    )
+
+
+class ChainAbortRequest(BaseModel):
+    reason: str = Field("", description="中止原因")
+
+
+@router.get("/chains/templates")
+def list_recovery_chain_templates():
+    """列出全部 chain templates(前端选择用)。"""
+    tpls = list_chain_templates()
+    return {"templates": tpls, "total": len(tpls)}
+
+
+@router.get("/chains/templates/{template_id}")
+def get_recovery_chain_template(template_id: str):
+    tpl = get_chain_template(template_id)
+    if tpl is None:
+        raise HTTPException(404, f"template not found: {template_id}")
+    return {"template_id": template_id, **tpl}
+
+
+@router.post("/chains/execute")
+def execute_chain(req: ChainExecuteRequest, response: Response):
+    """发起一条 recovery chain。
+
+    - 全 low_risk → 同步跑完,200 + status=succeeded/partial/rolled_back
+    - 任一步 medium/high → 创建链级 ApprovalRequest,202 + status=awaiting_approval
+    """
+    if req.on_failure_override and req.on_failure_override not in ("stop", "rollback_all", "continue"):
+        raise HTTPException(400, f"invalid on_failure_override: {req.on_failure_override}")
+    try:
+        chain = chains_mod.execute_chain(
+            template_id=req.template_id,
+            target_resource_id=req.target_resource_id,
+            initiated_by=req.initiated_by,
+            on_failure_override=req.on_failure_override,
+            request_reason=req.request_reason,
+        )
+    except ExecutionError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+
+    if chain.status == "awaiting_approval":
+        response.status_code = 202
+    return _serialize_chain(chain)
+
+
+@router.get("/chains")
+def list_recovery_chains(
+    status: Optional[str] = Query(None, pattern="^(pending|awaiting_approval|executing|succeeded|partial|failed|rolled_back|aborted)$"),
+):
+    chains = chains_mod.list_chains(status=status)
+    return {
+        "chains": [_serialize_chain(c, expand=False) for c in chains],
+        "total": len(chains),
+    }
+
+
+@router.get("/chains/{chain_id}")
+def get_recovery_chain(chain_id: str):
+    chain = chains_mod.get_chain(chain_id)
+    if chain is None:
+        raise HTTPException(404, f"chain not found: {chain_id}")
+    return _serialize_chain(chain, expand=True)
+
+
+@router.post("/chains/{chain_id}/abort")
+def abort_recovery_chain(chain_id: str, req: ChainAbortRequest):
+    try:
+        chain = chains_mod.abort_chain(chain_id, reason=req.reason)
+    except ExecutionError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+    return _serialize_chain(chain)
+
+
+def _serialize_chain(chain: RecoveryChain, expand: bool = True) -> dict:
+    """RecoveryChain → 前端友好 dict。expand=True 展开 step_executions 详情。"""
+    out: dict = {
+        "chain_id": chain.chain_id,
+        "template_id": chain.template_id,
+        "template_name": chain.template_name,
+        "target_resource_id": chain.target_resource_id,
+        "status": chain.status,
+        "on_failure": chain.on_failure,
+        "current_step_index": chain.current_step_index,
+        "total_steps": chain.total_steps,
+        "initiated_by": chain.initiated_by,
+        "initiated_at": chain.initiated_at,
+        "completed_at": chain.completed_at,
+        "approval_id": chain.approval_id,
+        "failure_reason": chain.failure_reason,
+        "step_execution_ids": chain.step_executions,
+    }
+    if expand:
+        steps_detail = []
+        for eid in chain.step_executions:
+            ex = store.get_execution(eid)
+            if ex is None:
+                continue
+            steps_detail.append(_serialize_execution(ex))
+        out["steps"] = steps_detail
+    return out

@@ -363,3 +363,67 @@ def suggest_for_change(change_type: str) -> list[dict]:
         }
         for action_id, rationale, confidence in suggestions
     ]
+
+
+# ============================================================
+# Chain Templates(PRD-001 Phase 2 余项 — 动作链 / 编排器)
+# ============================================================
+# 声明式描述多步恢复。每个 step:
+#   - action_id:动作模板 key
+#   - params:固定参数(后续可扩展从 chain context 取值)
+#   - target_from:"input"(用链发起时传的 target_resource_id)| 后续 step output
+#   - verify_required:该步骤是否要求 verifier passed 才能进下一步(默认 True)
+# on_failure 策略:
+#   stop:当前 step 失败/verify_failed → chain.status=partial,停在该步
+#   rollback_all:当前 step 失败 → 反向逐个 rollback 已成功的前置 steps → chain=rolled_back
+#   continue:当前 step 失败 → 继续 N+1(用于"尽力而为",如多 Pod 重启)
+# ============================================================
+
+CHAIN_TEMPLATES: dict[str, dict] = {
+    "safe_rollback_deployment": {
+        "name": "安全回滚 Deployment(先扩容后回滚再收回)",
+        "description": "扩容 +2 留出冗余 → 回滚版本 → 缩回 -2 收回。任一步失败,整链反向回退。",
+        "target_type": "Deployment",
+        "on_failure": "rollback_all",
+        "steps": [
+            {"action_id": "scale_deployment", "params": {"replicas_delta": 2},
+             "target_from": "input", "verify_required": True},
+            {"action_id": "rollback_deployment", "params": {},
+             "target_from": "input", "verify_required": True},
+            {"action_id": "scale_deployment", "params": {"replicas_delta": -2},
+             "target_from": "input", "verify_required": False},
+        ],
+    },
+    "graceful_refresh_secret": {
+        "name": "优雅刷新 Secret(刷新 → 重启关联 Pod)",
+        "description": "刷新 Secret 版本,然后对所有引用该 Secret 的 Pod 滚动重启。",
+        "target_type": "Secret",
+        "on_failure": "stop",
+        "steps": [
+            {"action_id": "refresh_secret", "params": {"trigger_pod_restart": False},
+             "target_from": "input", "verify_required": True},
+            # 注:第二步 target 实际应来自 Secret USES 反向 Pod;
+            # Phase 2 简化为同 target(handler 自己拒非 Pod),Phase 3 扩 target_from chain
+        ],
+    },
+    "drain_node_safely": {
+        "name": "安全驱逐 Node(cordon + 标记 Pod)",
+        "description": "cordon 节点 → 标记其上 Pod eviction_pending(实际 evict 留运维手动)。",
+        "target_type": "KubernetesNode",
+        "on_failure": "stop",
+        "steps": [
+            {"action_id": "drain_node", "params": {"ignore_daemonsets": True},
+             "target_from": "input", "verify_required": True},
+        ],
+    },
+}
+
+
+def get_chain_template(template_id: str) -> dict | None:
+    """获取 chain template 元数据;未找到返回 None。"""
+    return CHAIN_TEMPLATES.get(template_id)
+
+
+def list_chain_templates() -> list[dict]:
+    """列出全部 chain templates,前端选择用。"""
+    return [{"template_id": tid, **defn} for tid, defn in CHAIN_TEMPLATES.items()]
