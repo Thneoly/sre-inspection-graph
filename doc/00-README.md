@@ -1,6 +1,6 @@
 # 00 — 文档导航
 
-本目录共 13 份文档(含本文件),按"读者动机"分四组。建议新人从对应分组的第一篇看起。
+本目录共 15 份文档(含本文件),按"读者动机"分五组。建议新人从对应分组的第一篇看起。
 
 ## 📁 分组速查
 
@@ -41,6 +41,13 @@
 | 11 | [PRD-005 统一拓扑服务 UTS](./11-PRD-005-universal-topology-service.md) | Fact 总线 + Identity Resolver 横切层,N→1 统一合并 | **下一步** |
 | 12 | [PRD-006 代码仓数据源](./12-PRD-006-code-repo-source.md) | 业务规则 / PR-MR 事件 / 构建链路自动抽取,依赖 PRD-005 | 紧随 PRD-005 |
 
+### E. 技术战略 / 架构规约(长期演进)
+
+| # | 文档 | 一句话 | 何时读 |
+|---|------|--------|--------|
+| 14 | [长期技术战略](./14-long-term-tech-strategy.md) | 24 个月 Python → Rust+WASM 渐进迁移(Strangler Fig)+ 退出条件 | 决策入档,实施前必读 |
+| 15 | [数据契约规范](./15-data-contract-spec.md) | 三层契约:WIT(WASM 边界)+ Arrow Flight(数据面)+ JSON/REST(控制面) | 写代码前对照查 |
+
 ## 🧭 按角色选路
 
 ### 你是新加入的 SRE / 平台工程师
@@ -50,8 +57,11 @@
 **01 → 10 → 11 → 12** — 看现状,看差距,看下一步两个 PRD 解决什么。
 
 ### 你是即将上手实施 PRD-005 / PRD-006 的开发
-**11 / 12 全读** → **13 剧本对照** → CLAUDE.md 找 BaseConnector / DSS 现有模式 → 直接照 Sprint Plan 写代码。
+**14 → 15 → 11 → 12** — 先看长期技术战略(为什么 Rust+WASM)和数据契约规范(三层),再看具体 PRD,**最后**配合 13 剧本对照,直接照 Sprint Plan 写代码。
 PRD-005 推荐入手点是 **Sprint 2(trace_aggregator 升级,单文件)** — ROI 最高、影响面小、能立刻补半张图。
+
+### 你是来做技术选型决策 / 长期路线对齐
+**14 → 15 → 10** — 看 24 个月战略 + 三层数据契约 + MVP 起点,理解为什么 Python 留、Rust 起、Arrow Flight 选、protobuf 不选。
 
 ### 你只想看视图能展示什么
 **05 → 07** — 6 视图 + 4 个 PRD 视图(审批中心 / 恢复历史 / 恢复链 / 报告中心 / 变更时间线 / Connector 状态),前端组件树。
@@ -64,27 +74,29 @@ PRD-002 ──┤── 已完成(MVP) ──┐
 PRD-003 ──┤                 │
 PRD-004 ──┘                 │
                             ▼
-                    ┌── PRD-005 (UTS 底座)
+                    ┌── PRD-005 (UTS 底座)  ◄── doc/14 战略 + doc/15 契约
                     │     │
                     │     ▼
-                    └── PRD-006 (代码仓,消费 Fact 总线)
+                    └── PRD-006 (代码仓,消费 Fact 总线 + WASM 规则)
                           │
                           ▼
                   v3 高阶:安全合规图层 / SLO 评分 / AI 活动建模
 ```
 
 PRD-005 是 PRD-006 的硬前置 — 代码仓 connector 通过 Fact 总线注入,而不是直接写 DSS。
+PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 
 ## 📜 演进时间线
 
 ```
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
-2026 Q2   ▶ 当前
+2026 Q2   ▶ 当前 — doc/14 长期战略 + doc/15 数据契约 落档
   ↓
-2026 Q3   PRD-005 S1+S2 落地:Fact 总线 + trace_aggregator 升级
-          → trace 看得到的客户端嵌入依赖进图
-2026 Q4   PRD-005 S3-S6:Unknown Dep Queue / Cloud API / Gateway / GitOps
-2027 Q1   PRD-006 S1+S2 落地:代码仓接入 + 业务规则抽取
+2026 Q3   Phase 1(doc/14):Rust 引擎骨架 + 第一个 WASM connector
+2026 Q4   Phase 2:PRD-005 Rust 原生实现(Fact 总线 + Identity Resolver)
+2027 Q1   Phase 3:PRD-006 + WASM 规则引擎
+2027 Q2+  Phase 4:老 Python 模块逐个迁移到 Rust
+2028 Q2   Phase 4 完成,Rust + WASM 100% 核心引擎
 ```
 
 ## 📝 文档约定
