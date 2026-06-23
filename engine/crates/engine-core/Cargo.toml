@@ -14,5 +14,9 @@ tracing    = { workspace = true }
 chrono     = { workspace = true }
 uuid       = { workspace = true }
 
+# canonical Fact store — Arrow RecordBatch + schema
+arrow         = { workspace = true }
+arrow-schema  = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }

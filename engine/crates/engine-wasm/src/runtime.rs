@@ -239,3 +239,32 @@ impl HostFact {
         }
     }
 }
+
+/// 适配器:`HostFact` → engine-core canonical `Fact`。
+///
+/// host runtime 拿到 wasmtime 调出来的 `HostFact` 后,工程上不直接消费它 ——
+/// engine-storage / engine-cli / Arrow Flight 全用 [`engine_core::Fact`] 这一规范型。
+/// 转换是字段平移(完全同构),零分配的复用都已经在 String move 里完成。
+impl From<HostFact> for engine_core::Fact {
+    fn from(h: HostFact) -> Self {
+        engine_core::Fact {
+            id: h.id,
+            kind: h.kind,
+            source: h.source,
+            resource_id: h.resource_id,
+            resource_type: h.resource_type,
+            timestamp: h.timestamp,
+            attributes_json: h.attributes_json,
+        }
+    }
+}
+
+impl SyncOutcome {
+    /// 消费此 SyncOutcome,把 [`HostFact`] 全转成 canonical [`engine_core::Fact`] 列表。
+    ///
+    /// 调用方场景:`WasmRuntime::sync_all` 把多 connector 的 Fact 攒进一个
+    /// `FactBatch`,这里是单 connector 的批转换入口。
+    pub fn into_canonical_facts(self) -> Vec<engine_core::Fact> {
+        self.facts.into_iter().map(Into::into).collect()
+    }
+}

@@ -9,7 +9,12 @@
 /// Phase 2 runtime —— 真实 wasmtime Component 加载 + capability 注入。
 pub mod runtime;
 
-pub use runtime::{SyncOutcome, WasmConnector};
+/// 多 connector 编排 —— `WasmRuntime` 持多个 `WasmConnector`,
+/// `sync_all` 一次跑完,`tick_loop` 周期跑。
+pub mod multi;
+
+pub use multi::{ConnectorEntry, SyncSummary, WasmRuntime};
+pub use runtime::{HostFact, SyncOutcome, WasmConnector};
 
 /// 模块声明使用的 WASI ABI 版本。
 ///
@@ -64,6 +69,21 @@ pub struct ModuleManifest {
     /// 模块所用的 WASI ABI 版本(默认 P2)。
     #[serde(default)]
     pub wasi_version: WasiVersion,
+    /// connector 周期同步间隔(秒)。
+    ///
+    /// `WasmRuntime::tick_loop` 用此值跑 `tokio::time::interval`。0 / 缺省 →
+    /// 走 [`default_sync_interval_seconds`]。
+    #[serde(default = "default_sync_interval_seconds")]
+    pub sync_interval_seconds: u64,
+    /// 二进制 sha256(可选)。Phase 2 起对 enabled 模块强制校验,
+    /// Phase 1 留空即可。
+    #[serde(default)]
+    pub sha256: String,
+}
+
+/// `sync_interval_seconds` 缺省值 —— 30s,与 PRD-004 connector 现网默认一致。
+pub fn default_sync_interval_seconds() -> u64 {
+    30
 }
 
 /// 整张 modules/manifest.toml 反序列化结果。
@@ -101,11 +121,14 @@ mod tests {
             version: "0.1.0".into(),
             capabilities: vec![],
             wasi_version: WasiVersion::P2,
+            sync_interval_seconds: 30,
+            sha256: String::new(),
         };
         let s = serde_json::to_string(&m).unwrap();
         let back: ModuleManifest = serde_json::from_str(&s).unwrap();
         assert_eq!(back.name, "hello-world");
         assert_eq!(back.wasi_version, WasiVersion::P2);
+        assert_eq!(back.sync_interval_seconds, 30);
     }
 
     #[test]
