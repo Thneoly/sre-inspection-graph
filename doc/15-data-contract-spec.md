@@ -1,35 +1,43 @@
-# 15 — 数据契约规范:WIT + Arrow Flight + JSON/REST 三层
+# 15 — 数据契约规范:WIT + Tauri Commands + Arrow + REST 多层
 
 ## 0. 上下文
 
-本文是 [`14-long-term-tech-strategy.md`](./14-long-term-tech-strategy.md) §4 数据契约决策的**详细规约**。所有 Rust 引擎实现、WASM 插件开发、Python ↔ Rust 互操作、前端 API 调用**必须遵守本文 schema**。
+本文是 [`14-long-term-tech-strategy.md`](./14-long-term-tech-strategy.md) §4 数据契约决策的**详细规约**。所有 Rust 引擎实现、WASM 插件开发、Tauri 桌面前端、可选 headless CLI **必须遵守本文 schema**。
 
-**核心决策**:三层契约,各司其职,**不使用 protobuf**。
+> **v0.2 更新**:doc/14 改为 Supervised Rewrite + Tauri 桌面化后,主交付路径不再有"Python ↔ Rust 跨进程边界",REST 退化为 **headless 模式可选层**。本版本加入 **Tauri Commands 层(B)**作为桌面默认 UI ↔ Rust 边界。
+
+**核心决策**:**四层契约**,各司其职,**不使用 protobuf**。
 
 ```
-┌─────────────────┐  JSON/REST       ┌─────────────────┐
-│   Frontend TS   │ ◄──────────────► │  Python FastAPI │
-└─────────────────┘                  └────────┬────────┘
-                                              │ JSON/REST(控制面)
-                                              ▼
-                                     ┌─────────────────┐
-                          ┌─────────►│ Rust            │
-                          │          │ topology-engine │
-              WIT (零拷贝) │          └────────┬────────┘
-                          │                   │ Arrow Flight
-                  ┌───────┴────┐              │ (数据面)
-                  │ WASM Module│              ▼
-                  └────────────┘    ┌──────────────────┐
-                                    │ External Agents  │
-                                    │ (Cloud/On-Prem)  │
-                                    └──────────────────┘
+              ┌─────────────────────────────────────┐
+              │  Tauri Webview (React + TS)         │
+              └─────────────┬───────────────────────┘
+                            │ 层 B:Tauri Commands (IPC, JSON)
+              ┌─────────────▼───────────────────────┐
+              │  Tauri Backend / engine-core (Rust) │
+              └──┬──────────┬───────────────────────┘
+       层 A: WIT │          │ 层 D: Arrow (内部表示)
+                 ▼          ▼
+        ┌───────────┐ ┌──────────────────┐
+        │ WASM 模块 │ │ SQLite + Parquet │
+        └───────────┘ └──────────────────┘
+
+                     [ headless 模式可选 ]
+              ┌─────────────────────────────────────┐
+              │  engine-cli                          │
+              └─────────────┬───────────────────────┘
+                            │ 层 C:REST + Arrow Flight
+              ┌─────────────▼───────────────────────┐
+              │  外部客户端 / SaaS Web shell         │
+              └─────────────────────────────────────┘
 ```
 
-| 层 | 协议 | 边界 | 频率/体量 | 调试方式 |
-|---|---|---|---|---|
-| **A** | WIT (Component Model) | WASM guest ↔ Rust host | 小消息高频 | `wasmtime explore`, `wit-tools` |
-| **B** | Arrow Flight (gRPC + Arrow IPC) | Connector → Fact 总线 | 大批量流式 | `pyarrow.flight.FlightClient` REPL |
-| **C** | JSON over REST | TS/Python ↔ Rust 控制面 | 低频 req/resp | `curl`, OpenAPI Swagger UI |
+| 层 | 协议 | 边界 | 频率/体量 | 桌面默认 | Headless 模式 |
+|---|---|---|---|---|---|
+| **A** | WIT (Component Model) | WASM guest ↔ Rust host | 小消息高频 | ✅ | ✅ |
+| **B** | **Tauri Commands** (JSON IPC + specta TS gen) | Webview ↔ Rust 主进程 | 低-中频 req/resp | ✅ **首选** | ❌ N/A |
+| **C** | REST + Arrow Flight | 外部 ↔ engine-cli | 低频 + 高吞吐流 | ❌ N/A | ✅ **首选** |
+| **D** | Arrow RecordBatch (内存) + Parquet (归档) | Rust 内部 | 全部 | ✅ | ✅ |
 
 ## 1. 层 A:WIT 接口(WASM ↔ Host)
 
@@ -265,20 +273,98 @@ wasmtime-wasi = "23"
 
 Python 端:`wasmtime-py`(只在测试 / CLI 时用,生产 host 是 Rust)。
 
-## 2. 层 B:Arrow Flight(Fact 总线数据面)
+## 2. 层 B:Tauri Commands(桌面 UI ↔ Rust)
+
+详细 commands 设计、安全模型、TS 类型自动生成、AppState 模式见 [`17-tauri-desktop-architecture.md`](./17-tauri-desktop-architecture.md) §3-§4。本节列契约规范。
 
 ### 2.1 设计原则
 
-- **所有 fact 内部表示统一 Arrow RecordBatch**(connector → bus → Identity Resolver → store)
-- 跨进程发送走 **Arrow Flight**(底层 gRPC + Arrow IPC,零拷贝)
-- 进程内传递走 **RecordBatch 直引用**(不再 marshal)
-- batch size:**500-2000 fact / batch**(实测拿 sweet spot,初值用 1000)
-- 流式上传用 `DoExchange`(双向),控制 backpressure
+- Tauri 2.x `#[tauri::command]` + `#[specta::specta]` 双标
+- 命名 snake_case 动词开头:`list_executions`, `execute_recovery`, `dry_run_action`
+- 参数包成 struct(便于 specta TS 类型生成)
+- 错误统一 `Result<T, AppError>`,AppError 是 tagged enum
+- 全部 `async fn`
+- 事件 emit 用 snake_case 名词:`fact_emitted`, `connector_synced`
 
-### 2.2 Fact 主 Schema
+### 2.2 模块命名表(对应 reference Python router)
+
+| Tauri commands 模块 | 等价 reference router | Phase |
+|---|---|---|
+| `topology` | `topology.py` / `access_link.py` / `node_impact.py` | 1-2 |
+| `recovery` | `recovery.py` | 3 |
+| `change_events` | `change_event.py` | 3 |
+| `reports` | `report.py` | 4 |
+| `connectors` | `connectors.py` | 1-2 |
+| `fault_simulation` | `simulation.py` | 4 |
+| `system` | (新增 — 桌面专属:配置、路径、版本) | 1 |
+
+### 2.3 类型契约
+
+所有 Tauri commands 入参 / 出参类型 → `specs/tauri-commands/index.ts` 自动生成(`make specs-generate-tauri-types`)。
+
+**前端唯一允许的 API 调用路径**:
+
+```typescript
+import { invoke } from '@tauri-apps/api/core';
+import type { ExecuteActionArgs, ExecutionResult } from '../../specs/tauri-commands';
+
+const result: ExecutionResult = await invoke('execute_action', { args: { ... } });
+```
+
+**禁止** webview 直接 `fetch` / `axios`(Tauri allowlist 已 disable http)。
+
+### 2.4 错误信封
 
 ```rust
-// topology-engine/src/schema/fact.rs
+#[derive(Debug, thiserror::Error, Serialize, Type)]
+#[serde(tag = "kind", content = "message")]
+pub enum AppError {
+    NotFound(String),
+    InvalidInput(String),
+    Engine(String),
+    Storage(String),
+    ApprovalRequired(String),
+    Internal(String),
+}
+```
+
+前端 TS 拿到结构化 `{ kind: "ApprovalRequired", message: "..." }`,可 switch 分支。
+
+### 2.5 演化策略
+
+- 加 command:加 + 注册即可,前端可选用
+- 加字段(入参 / 出参 struct):末尾加可选字段(`Option<T>`),不破老前端
+- 改字段类型 / 改名:必须新 command 名(`execute_action_v2`),老 command 标 deprecated 至少 3 个月
+- 删 command:走两步(deprecated → 删)
+
+### 2.6 调试
+
+- DevTools(右键 → Inspect Element):`window.__TAURI__` 全 API 可玩
+- Rust 侧 `tracing` 日志:`make desktop-dev` 终端直接看
+- specta 生成的 TS 类型与 Rust struct 自动对齐,IDE 提示完整
+
+## 3. 层 C:REST + Arrow Flight(headless 模式专属)
+
+**仅在 `engine-cli serve` 启动时生效**;Tauri 桌面模式下这层不存在。
+
+### 3.1 适用场景
+
+- 团队部署 engine-cli 作中心服务,多客户端共享
+- SaaS Web shell(未来)调 engine-cli
+- 远程 connector(部署在客户云端)上传 fact 到中心
+
+### 3.2 协议分工
+
+REST 走低频 req/resp(状态查询 / 触发 sync / 列资源),Arrow Flight 走高吞吐 fact 数据流(connector 上传 fact batch)。复用底层 tonic gRPC,共享 mTLS 配置。
+
+### 3.3 Arrow Flight Fact Schema
+
+所有 fact 内部表示统一 Arrow RecordBatch(connector → bus → Identity Resolver → store)。跨进程发送走 Arrow Flight(底层 gRPC + Arrow IPC,零拷贝)。进程内传递走 RecordBatch 直引用。
+
+Batch size:**500-2000 fact / batch**(初值 1000),流式上传用 `DoExchange` 控制 backpressure。
+
+```rust
+// engine/crates/engine-core/src/schema/fact.rs
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use std::sync::Arc;
 
@@ -292,16 +378,15 @@ pub fn fact_schema() -> Arc<Schema> {
         ),
         Field::new("ttl_seconds", DataType::UInt32, false),
         Field::new("confidence", DataType::Float32, false),
-        // "node" | "edge" | "attr" | "absence" (low-card; future: DictionaryArray)
+        // "node" | "edge" | "attr" | "absence"
         Field::new("fact_type", DataType::Utf8, false),
-        // JSON-encoded payload (see §2.4 for known payload shapes)
+        // JSON-encoded payload(见 §3.5)
         Field::new("payload_json", DataType::Utf8, false),
         Field::new(
             "correlation_keys",
             DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             false,
         ),
-        // Optional: trace id for debugging
         Field::new("trace_id", DataType::Utf8, true),
     ]))
 }
@@ -311,23 +396,23 @@ pub fn fact_schema() -> Arc<Schema> {
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `source` | string | ✅ | connector 标识符,如 `"k8s"`, `"jaeger"`, `"coderepo:gitlab"` |
+| `source` | string | ✅ | connector 标识,如 `"k8s"`, `"jaeger"`, `"coderepo:gitlab"` |
 | `observed_at` | timestamp(ms, UTC) | ✅ | 原始观测时刻,**非**发送时刻 |
-| `ttl_seconds` | u32 | ✅ | 多久后这条 fact 应被视为过期(默认 600) |
+| `ttl_seconds` | u32 | ✅ | 默认 600 |
 | `confidence` | f32 | ✅ | [0.0, 1.0],trace 推断 0.6 / API 直读 0.95 |
 | `fact_type` | string | ✅ | 4 取一 |
-| `payload_json` | string | ✅ | 见 §2.4 |
-| `correlation_keys` | list\<string\> | ✅ | 至少 1 个,Identity Resolver 用它做合并 |
-| `trace_id` | string | ❌ | OpenTelemetry trace_id,用于调试和审计 |
+| `payload_json` | string | ✅ | 见 §3.5 |
+| `correlation_keys` | list\<string\> | ✅ | 至少 1 个,Identity Resolver 用来 merge |
+| `trace_id` | string | ❌ | OpenTelemetry trace_id,用于调试 |
 
-### 2.3 为什么 payload 用 JSON string 而不是 Arrow Union
+### 3.4 为什么 payload 用 JSON string 而不是 Arrow Union
 
-- Arrow Union(Dense/Sparse)跨语言互操作有边角 case,pyarrow 旧版本支持不全
-- 4 类 payload 字段差异大(node 有 node_type / display_name / properties;edge 有 src/dst / edge_type / properties),硬塞 Struct 要 nullable 一堆
+- Arrow Union(Dense/Sparse)跨语言互操作有边角 case
+- 4 类 payload 字段差异大,硬塞 Struct 要 nullable 一堆
 - 解析时按 `fact_type` 走 `serde_json` 分支,等同 protobuf oneof 的开销
 - **未来想升 Arrow Struct 时,加一列 `payload_typed` 并存即可,不破老契约**
 
-### 2.4 已知 payload 形态(JSON schema)
+### 3.5 已知 payload 形态(JSON schema)
 
 **Node payload**:
 ```json
@@ -367,7 +452,7 @@ pub fn fact_schema() -> Arc<Schema> {
 }
 ```
 
-**Absence payload**(罕用,用于"我观察到 X 不存在了"):
+**Absence payload**(罕用,"我观察到 X 不存在了"):
 ```json
 {
   "target_correlation_key": "ip:10.0.0.5",
@@ -376,97 +461,35 @@ pub fn fact_schema() -> Arc<Schema> {
 }
 ```
 
-### 2.5 Flight RPC 路径
+### 3.6 Flight RPC 路径
 
 Rust Arrow Flight server 暴露:
 
 | Path | Verb | 用途 |
 |---|---|---|
 | `/grpc.flight.FlightService/DoPut` | client-stream | Connector 推 fact batch |
-| `/grpc.flight.FlightService/DoGet` | server-stream | 引擎内部 fact 订阅(留 Phase 2 用) |
-| `/grpc.flight.FlightService/DoExchange` | bidi | 高吞吐场景 + backpressure |
+| `/grpc.flight.FlightService/DoGet` | server-stream | 引擎内部 fact 订阅 |
+| `/grpc.flight.FlightService/DoExchange` | bidi | 高吞吐 + backpressure |
 | `/grpc.flight.FlightService/GetSchema` | unary | 客户端发现 fact schema |
-| `/grpc.flight.FlightService/ListFlights` | server-stream | 列已注册 stream(诊断用) |
+| `/grpc.flight.FlightService/ListFlights` | server-stream | 列已注册 stream(诊断) |
 
-**Auth**:Flight 底层是 tonic gRPC,直接配 mTLS;Phase 1 可先 token-based(`Authorization: Bearer <token>`)。
+**Auth**:Flight 底层 tonic gRPC,直接配 mTLS;Phase 1 可先 token-based(`Authorization: Bearer <token>`)。
 
-### 2.6 Connector → Bus 上传示例(伪 Python)
+### 3.7 Connector → Bus 上传示例(伪 Rust client)
 
-```python
-import pyarrow as pa
-import pyarrow.flight as flight
+```rust
+use arrow_flight::client::FlightClient;
+use arrow::record_batch::RecordBatch;
 
-# Connector 累积 fact 到 batch
-client = flight.FlightClient("grpc://localhost:50051")
-schema = pa.schema([
-    ("source", pa.string()),
-    ("observed_at", pa.timestamp("ms", tz="UTC")),
-    ("ttl_seconds", pa.uint32()),
-    ("confidence", pa.float32()),
-    ("fact_type", pa.string()),
-    ("payload_json", pa.string()),
-    ("correlation_keys", pa.list_(pa.string())),
-])
+let mut client = FlightClient::new(channel);
+let batch: RecordBatch = build_fact_batch(facts);  // 1000 fact
+let descriptor = FlightDescriptor::new_path(vec!["facts".into(), "v1".into()]);
 
-batch = pa.record_batch([
-    pa.array(["k8s"] * 1000),
-    pa.array([...]),       # observed_at
-    pa.array([600] * 1000, type=pa.uint32()),
-    ...
-], schema=schema)
-
-descriptor = flight.FlightDescriptor.for_path("facts/v1")
-writer, _ = client.do_put(descriptor, schema)
-writer.write_batch(batch)
-writer.close()
+let stream = futures::stream::iter(vec![FlightData::from(&batch)]);
+client.do_put(descriptor, stream).await?;
 ```
 
-### 2.7 Schema 演化策略
-
-- **加列**:允许,放末尾,旧 reader 忽略
-- **改列类型**:不允许,必须新版本 schema(`facts/v2`)
-- **删列**:走两步:先标 deprecated 6 个月,再删,且必须升 schema 版本
-- **改列名**:同删列,新名加列 + 旧名标 deprecated
-
-每个 Flight descriptor path 带版本(`facts/v1` / `facts/v2`),server 同时支持 N 和 N-1 至少 6 个月。
-
-### 2.8 工具链
-
-```toml
-# Cargo.toml
-[dependencies]
-arrow = "54"
-arrow-flight = "54"
-datafusion = "44"          # SQL on Arrow,Identity Resolver 用
-tonic = "0.12"             # gRPC,Flight 底层
-tokio = { version = "1", features = ["full"] }
-```
-
-Python 端:
-```toml
-# pyproject.toml
-pyarrow = "^18"            # 与 Rust arrow=54 ABI 兼容
-```
-
-**ABI 兼容性**:`arrow-rs 54.x` ↔ `pyarrow 18.x`(Arrow C Data Interface)。升级时双侧锁版本,先在 staging 验证。
-
-## 3. 层 C:JSON over REST(控制面 + 业务 API)
-
-### 3.1 设计原则
-
-- **资源风格 URL**,动词通过 HTTP method 表达
-- **JSON body**,顶层永远是对象(不是数组,方便加字段)
-- **错误统一信封**(下文 §3.4)
-- **OpenAPI 3.1 自动生成**,前端 / Python 都从此白嫖 client
-- 版本走 URL prefix:`/api/v1/...` / `/api/v2/...`
-
-### 3.2 URL 命名约定
-
-- 资源用复数:`/facts`, `/connectors`, `/executions`,**不用** `/getFact`
-- 子资源平铺:`/connectors/{name}/sync` ✅,**不深嵌**:`/connectors/{name}/sync-cycles/{cycle}/...` ❌
-- 动作类用动词后缀:`/executions/{id}:rollback`(Google AIP 风格),与 RESTful 资源解耦
-
-### 3.3 标准端点(Rust topology-engine 暴露)
+### 3.8 REST 端点(engine-cli 暴露)
 
 | Method | Path | 用途 |
 |---|---|---|
@@ -475,18 +498,25 @@ pyarrow = "^18"            # 与 Rust arrow=54 ABI 兼容
 | POST | `/api/v1/connectors/{name}:sync` | 触发同步 |
 | GET | `/api/v1/facts/recent` | 调试:最近 N 条 fact(分页) |
 | GET | `/api/v1/nodes/{node_id}` | 查节点 |
-| GET | `/api/v1/nodes/{node_id}/neighbors` | 一跳邻居(替代 Cypher) |
+| GET | `/api/v1/nodes/{node_id}/neighbors` | 一跳邻居 |
 | POST | `/api/v1/queries:bfs` | 反向 BFS 查 propagation |
 | GET | `/api/v1/unknown-deps` | PRD-005 Queue |
 | POST | `/api/v1/unknown-deps/{id}:promote` | 一键入图 |
-| GET | `/api/v1/wasm-modules` | 列已加载 WASM 模块 |
-| POST | `/api/v1/wasm-modules:load` | 加载新 WASM(WASM URL + sha256 hash) |
+| GET | `/api/v1/executions` | 列 recovery executions |
+| POST | `/api/v1/executions` | 发起 recovery |
+| POST | `/api/v1/executions/{id}:rollback` | 回滚 |
+| GET | `/api/v1/change-events` | 列 ChangeEvent |
+| ... | ... | (其余对照 Tauri commands,1:1 映射) |
 
-Python FastAPI 端**保留现有所有路由**(`/api/v1/topology`, `/api/v1/recovery/*`, `/api/v1/change-events/*` 等),只是内部实现从 Python DSS 改为调 Rust REST。
+### 3.9 REST 设计原则
 
-### 3.4 错误信封
+- 资源风格 URL,动词通过 HTTP method 表达;**资源用复数**:`/executions` ✅ / `/getExecution` ❌
+- JSON body,顶层永远是对象,方便加字段
+- 子资源平铺,**不深嵌**
+- 动作类用动词后缀(Google AIP 风格):`/executions/{id}:rollback`,与 RESTful 资源解耦
+- 版本走 URL prefix:`/api/v1/...`
 
-所有 4xx / 5xx 响应:
+### 3.10 错误信封(REST 模式)
 
 ```json
 {
@@ -503,110 +533,134 @@ Python FastAPI 端**保留现有所有路由**(`/api/v1/topology`, `/api/v1/reco
 }
 ```
 
-`error.code` 是机读;`message` 是给人看的;`details` 是结构化上下文;`trace_id` 让用户报问题时能立刻定位。
+### 3.11 分页
 
-### 3.5 分页约定
-
-列表型 GET:
-- query param:`?cursor=<opaque>&limit=100`
-- response:
-  ```json
-  {
-    "items": [...],
-    "next_cursor": "abc123",       // null when no more
-    "total": null                  // optional, only when cheap
-  }
-  ```
-- **不用** offset/page-number(在长尾大数据集下不稳)
-
-### 3.6 OpenAPI 工具链
-
-```toml
-# Rust axum 端
-[dependencies]
-axum = "0.7"
-utoipa = "5"              # OpenAPI generator
-utoipa-swagger-ui = "8"   # Swagger UI
-
-# 生成的 openapi.json 可被前端 TS 用:
-# npx openapi-typescript openapi.json -o src/api/generated.ts
+```
+GET /api/v1/executions?cursor=<opaque>&limit=100
 ```
 
-Python 端 FastAPI 已自带 OpenAPI 自动生成。
+```json
+{
+  "items": [...],
+  "next_cursor": "abc123",
+  "total": null
+}
+```
+
+**不用** offset/page-number(长尾大数据集下不稳)。
+
+### 3.12 Schema / 工具链
+
+```toml
+# Cargo.toml(engine-cli 依赖)
+[dependencies]
+arrow         = "54"
+arrow-flight  = "54"
+datafusion    = "44"          # SQL on Arrow,Identity Resolver 用
+tonic         = "0.12"        # gRPC,Flight 底层
+axum          = "0.7"
+utoipa        = "5"           # OpenAPI generator
+utoipa-swagger-ui = "8"
+```
+
+**Schema 演化**(Arrow Flight):
+- **加列**:允许,放末尾,旧 reader 忽略
+- **改列类型**:不允许,必须新版本 schema(`facts/v2`)
+- **删列**:走两步(deprecated 6 个月 → 删,升 schema 版本)
+- **改列名**:同删列
+
+每个 Flight descriptor path 带版本(`facts/v1` / `facts/v2`),server 同时支持 N 和 N-1 至少 6 个月。
 
 ## 4. 跨层数据流动示例
 
-**场景**:一个 K8s Pod 通过 trace 暴露出对 Stripe 的调用,经过完整 3 层契约。
+**场景**:Tauri 桌面模式下,K8s Pod 通过 trace 暴露对 Stripe 的调用,经过完整契约链。
 
 ```
 1. jaeger-connector.wasm
-     ↓ WIT  (sync() → list<fact>)
-2. Rust host 接收 fact list
-     ↓ 内部封装成 Arrow RecordBatch
-3. Fact bus 写入 (Arrow 内部表示)
+     ↓ 层 A:WIT  (sync() → list<fact>)
+2. Rust host(Tauri 主进程内)接收 fact list
+     ↓ 层 D:封装成 Arrow RecordBatch(内存)
+3. Fact bus 写入(Arrow 内部表示)
      ↓ DataFusion SQL 在 RecordBatch 上做 Identity Resolver
-4. Unknown Dep Queue 入队 (Arrow 表)
-     ↓ Arrow Flight DoGet (前端轮询)
-     ↓ 或 REST GET /api/v1/unknown-deps  (前端直接查)
-5. SRE 点击「一键入图」
-     ↓ REST POST /api/v1/unknown-deps/{id}:promote
-6. Rust 写入 canonical store (Arrow)
-     ↓ 异步双写 Neo4j (通过 Python adapter REST)
-7. Python FastAPI /api/v1/topology 查询时
-     ↓ REST GET (内部调) Rust /api/v1/nodes/{id}/neighbors
-     ↓ Rust 返回 JSON (从 Arrow store 转)
-8. 前端 Cytoscape 渲染新节点
+4. Unknown Dep Queue 入队(Arrow 表)
+     ↓ Tauri emit('unknown_dep_added', payload)
+5. React webview 收到事件,刷新 unknown-deps 视图
+     ↓ 层 B:Tauri command — invoke('list_unknown_deps')
+6. SRE 点击「一键入图」
+     ↓ 层 B:Tauri command — invoke('promote_unknown_dep', {id})
+7. Rust 写入 canonical store(Arrow)+ SQLite metadata
+     ↓ engine-storage 持久化
+8. Tauri emit('node_added')
+     ↓ webview 收事件,refetch topology
+9. Cytoscape 渲染新节点
 ```
 
-**3 种契约都参与了**:WIT (1)、Arrow Flight + 内部 Arrow (2-4)、REST (4-7)。
+**Headless 模式同场景**(engine-cli + 远程 Web shell):
+- 步骤 4 → Arrow Flight DoExchange 推 fact 给 SaaS Web shell 或事件总线
+- 步骤 5-6 → REST `GET /api/v1/unknown-deps` + `POST /api/v1/unknown-deps/{id}:promote`
+- 其余等价
+
+**Tauri 模式下所有跨层通信是进程内函数调用 + Tauri IPC**,无 HTTP 栈。Headless 模式下层 C(REST + Flight)出现。
 
 ## 5. 性能 / 体量 baseline
 
 | 路径 | 目标 | 测试方式 |
 |---|---|---|
 | WASM connector → Rust host fact emit | ≥ 50k fact/s | criterion bench |
-| Arrow Flight DoPut(本机) | ≥ 100k fact/s | 自带 bench |
+| Arrow Flight DoPut(headless 模式,本机) | ≥ 100k fact/s | 自带 bench |
 | Identity Resolver(DataFusion SQL) | < 50ms 处理 10k fact | criterion |
-| REST /nodes/{id} P99 | < 10ms(内存图) | wrk 压测 |
+| Tauri invoke 一次往返(空 command) | < 1ms | 自建 bench |
+| Tauri invoke 一次往返(典型 query) | < 10ms | 自建 bench |
+| REST `/nodes/{id}` P99(headless) | < 10ms(内存图) | wrk 压测 |
 | BFS depth=4 on 10k-node graph | < 100ms | criterion |
-| Python ↔ Rust REST 一次往返(本机) | < 5ms | requests benchmark |
+| Cytoscape 渲染 200 节点 | < 200ms | browser perf |
 
-**Phase 1 验收**:跑通这些 baseline,**与 Python 现状对比 ≥ 5×**。
+**Phase 1 验收**:跑通这些 baseline,**与 Python reference 对比 ≥ 5×**。
 
 ## 6. Contract Testing 框架
 
-每个被迁移的 Python 模块,迁移前先写 YAML contract:
+Supervised Rewrite 下 contract test 是 **单 Rust runner**,不再双跑。Python `reference/` 在本地 dev 手动跑 + curl 对比作 oracle,**不进 CI**。
 
-```yaml
-# tests/contract/prd-002/record_change.yaml
-contract: record_change
-description: PRD-002 ChangeEvent 写入 + propagation 推导 + Neo4j dual-write
+每个被复刻的模块,写 Rust contract test(参考 reference 的 pytest 行为):
 
-inputs:
-  - name: configmap_update_with_propagation
-    request:
-      change_type: configmap_updated
-      target_resource_id: cm:vm-cluster:otel-demo:app-config
-      author: alice
-      diff_summary: { key: log_level, old: INFO, new: DEBUG }
-    expected:
-      response_status: 200
-      response_body:
-        change_event_id: { type: string, pattern: "^ce-[0-9]+$" }
-        severity_estimate: medium
-        propagated_to_count: { gte: 3, lte: 8 }
-      side_effects:
-        dss.change_events.count: +1
-        neo4j.cypher:
-          query: "MATCH (:ChangeEvent {node_id:$id}) RETURN count(*) as n"
-          expected: { n: 1 }
+```rust
+// tests/contract/prd-002-changes/record_change.rs
+use engine_testkit::{TestEngine, expect};
+
+#[tokio::test]
+async fn configmap_update_propagation() {
+    let engine = TestEngine::with_fixtures("changes_basic").await;
+
+    let result = engine.record_change(RecordChangeArgs {
+        change_type: "configmap_updated".into(),
+        target_resource_id: "cm:vm-cluster:otel-demo:app-config".into(),
+        author: "alice".into(),
+        diff_summary: serde_json::json!({"key":"log_level","old":"INFO","new":"DEBUG"}),
+    }).await.unwrap();
+
+    expect!(result.severity_estimate, "medium");
+    expect!(result.propagated_to.len(), between: 3..=8);
+    expect!(result.change_event_id, matches: r"^ce-[0-9]+$");
+
+    // 副作用断言
+    expect!(engine.storage.change_events_count().await, 1);
+}
 ```
 
-**测试 runner 双跑**:
-- `pytest tests/contract/` — Python 实现跑过
-- `cargo test --test contract` — Rust 实现跑过同一份 YAML
+**测试 fixture 同时被 reference 跑**(本地 dev,非 CI):
 
-Phase 4 迁移每个模块时:contract 全过 + 流量 diff 为零 + 切流量。
+```bash
+# 终端 1 — 老 Python 跑同一 fixture
+cd reference && uv run pytest tests/test_change_events.py::test_configmap_propagation
+
+# 终端 2 — 新 Rust 跑
+cargo test --test contract -p engine-changes configmap_update_propagation
+
+# 对比:行为对齐(包括 propagated_to 长度等同 / severity 一致)即通过复刻
+```
+
+复刻完更新 `reference/MIGRATION_STATUS.md` 标 ✅。
+
 
 ## 7. 版本基线锁定(T+0)
 

@@ -1,6 +1,6 @@
 # 00 — 文档导航
 
-本目录共 15 份文档(含本文件),按"读者动机"分五组。建议新人从对应分组的第一篇看起。
+本目录共 17 份文档(含本文件),按"读者动机"分五组。建议新人从对应分组的第一篇看起。
 
 ## 📁 分组速查
 
@@ -45,8 +45,10 @@
 
 | # | 文档 | 一句话 | 何时读 |
 |---|------|--------|--------|
-| 14 | [长期技术战略](./14-long-term-tech-strategy.md) | 24 个月 Python → Rust+WASM 渐进迁移(Strangler Fig)+ 退出条件 | 决策入档,实施前必读 |
-| 15 | [数据契约规范](./15-data-contract-spec.md) | 三层契约:WIT(WASM 边界)+ Arrow Flight(数据面)+ JSON/REST(控制面) | 写代码前对照查 |
+| 14 | [长期技术战略](./14-long-term-tech-strategy.md) | 12 个月 Supervised Rewrite(Python → Rust+WASM)+ Tauri 桌面化 + 退出条件 | 决策入档,实施前必读 |
+| 15 | [数据契约规范](./15-data-contract-spec.md) | 四层契约:WIT + Tauri Commands + Arrow + REST/Flight(headless) | 写代码前对照查 |
+| 16 | [仓库与代码目录设计](./16-repo-and-codebase-layout.md) | Mono-repo 物理结构:engine/desktop/modules/specs/reference + Bootstrap 步骤 | Phase 1 开工时必读 |
+| 17 | [Tauri 桌面架构](./17-tauri-desktop-architecture.md) | Tauri 2.x commands / IPC / 本地存储 / 跨平台打包 / 安全模型 | 桌面 app 开发前必读 |
 
 ## 🧭 按角色选路
 
@@ -57,11 +59,10 @@
 **01 → 10 → 11 → 12** — 看现状,看差距,看下一步两个 PRD 解决什么。
 
 ### 你是即将上手实施 PRD-005 / PRD-006 的开发
-**14 → 15 → 11 → 12** — 先看长期技术战略(为什么 Rust+WASM)和数据契约规范(三层),再看具体 PRD,**最后**配合 13 剧本对照,直接照 Sprint Plan 写代码。
-PRD-005 推荐入手点是 **Sprint 2(trace_aggregator 升级,单文件)** — ROI 最高、影响面小、能立刻补半张图。
+**14 → 15 → 16 → 17 → 11 → 12** — 先看长期技术战略 + 三层契约 + 仓库目录 + Tauri 架构,再看具体 PRD,**最后**配合 13 剧本对照,直接照 Sprint Plan 写代码。
 
 ### 你是来做技术选型决策 / 长期路线对齐
-**14 → 15 → 10** — 看 24 个月战略 + 三层数据契约 + MVP 起点,理解为什么 Python 留、Rust 起、Arrow Flight 选、protobuf 不选。
+**14 → 17 → 15 → 16 → 10** — 战略 + Tauri 形态 + 契约 + 仓库 + MVP 起点,理解为什么 **Supervised Rewrite + Tauri 桌面 + Rust+WASM**(放弃 Strangler Fig / 放弃 SaaS Web)。
 
 ### 你只想看视图能展示什么
 **05 → 07** — 6 视图 + 4 个 PRD 视图(审批中心 / 恢复历史 / 恢复链 / 报告中心 / 变更时间线 / Connector 状态),前端组件树。
@@ -90,13 +91,13 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 
 ```
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
-2026 Q2   ▶ 当前 — doc/14 长期战略 + doc/15 数据契约 落档
+2026 Q2   ▶ 当前 — Phase 0:doc/14-17 战略决策落档
   ↓
-2026 Q3   Phase 1(doc/14):Rust 引擎骨架 + 第一个 WASM connector
-2026 Q4   Phase 2:PRD-005 Rust 原生实现(Fact 总线 + Identity Resolver)
-2027 Q1   Phase 3:PRD-006 + WASM 规则引擎
-2027 Q2+  Phase 4:老 Python 模块逐个迁移到 Rust
-2028 Q2   Phase 4 完成,Rust + WASM 100% 核心引擎
+2026 Q3   Phase 1:Tauri + engine 最小可跑 + 第一个 WASM connector
+2026 Q4   Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver)
+2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002
+2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
+2027 Q3   Buffer / 社区 / 技术分享
 ```
 
 ## 📝 文档约定

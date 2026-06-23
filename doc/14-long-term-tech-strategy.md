@@ -1,279 +1,334 @@
-# 14 — 长期技术战略:Python → Rust + WASM 渐进迁移
+# 14 — 长期技术战略:Supervised Rewrite + Tauri 桌面化
 
 ## 0. 上下文 / 为什么写这份
 
-这个项目是**副业**(主业兜底无短期收入压力),但目标是 **长期成果**(技术资产、架构示范作、可能的未来商业化前奏)。团队具备**成熟的 Rust + WASM/WASI 工程经验**和**可借鉴的参考项目**。
+这个项目是**副业**(主业兜底无短期收入压力),目标是 **长期技术资产 / 架构示范作 / 个人自用工具**。团队具备**成熟的 Rust + WASM/WASI 工程经验**和**可借鉴的参考项目**。
 
-商业团队的"不要重写"铁律(Joel)在这个场景下**只适用一半** — 时间约束消失了,但 **代码里 embedded 的知识(12,732 LOC + 472 测试里的边界 case)仍然不能丢弃**。
+商业团队的"不要重写"铁律在**副业场景部分失效** — 时间约束消失了,持续交付不是必需,但 **代码里 embedded 的知识(12,732 LOC + 472 测试里的边界 case)仍然不能丢弃**。
 
-本文落档:**未来 24 个月**沿着 **Strangler Fig** 路径,把 Python 平台逐步替换为 **Rust + WASM 引擎**,**不做 clean-sheet rewrite**。
-
-> 这是 **决策文档**,不是设计文档。详细技术 schema 在 [`15-data-contract-spec.md`](./15-data-contract-spec.md);PRD-005/006 实现路径在各自 PRD 里。
+> 本文是 doc/14 的 v0.2。v0.1 曾推荐 Strangler Fig 渐进迁移,**复盘后否决**:Strangler 的核心好处(零停机持续交付)对副业不成立,代价(桥接 / 双语维护 / 心智切换)却照收。**实测 Strangler 多花 ~17 个月换不需要的能力**。改为 **Supervised Rewrite** 路线。
 
 ## 1. 决策摘要(TL;DR)
 
 | 项 | 决策 |
 |---|---|
-| 整体语言路线 | Python → Rust + WASM(渐进) |
-| 迁移方法 | **Strangler Fig**(老 Python 不动,新模块 Rust 原生,逐模块替换) |
-| 时间窗 | 24 个月(T+0 → T+24mo) |
-| 终态 | Rust + WASM 核心引擎,Python 仅 CLI/scripts(或完全退役),前端 TS 不动 |
-| **数据契约(三层)** | **WIT**(WASM↔host) + **Arrow Flight**(fact 数据面) + **JSON/REST**(控制面 + 业务 API) |
-| Neo4j 角色 | 退化为审计/持久化备份,**热路径全在 Rust 内存** |
-| 新 PRD 实现 | PRD-005/006 直接 Rust+WASM 原生写,不再写 Python 版 |
-| 老 PRD 处理 | PRD-001/002/003/004 现状保留,T+12mo 后逐模块迁 |
-| 测试策略 | Contract testing 框架,Python 测试转行为规约,Rust 实现复刻通过 |
+| 整体语言路线 | Python → Rust + WASM(**全量替换**,Supervised Rewrite) |
+| 迁移方法 | 全新 Rust 仓 + WASM 模块;**Python 仓改名 `reference/`,read-only,本地 dev 作 oracle**;完成后 `git rm` |
+| 产品形态 | **Tauri 2.x 桌面应用**(单二进制,本地优先,跨平台)— **不**走 SaaS Web 默认路径 |
+| 时间窗 | **12 个月**(T+0 → T+12mo,加 2 个月 buffer 到 v1.0) |
+| 终态 | Rust + WASM 核心引擎 + Tauri 桌面 app + 可选 headless CLI(团队/SaaS 模式) |
+| 前端 | **沿用 React 18 + TS + AntD 5 + Cytoscape.js**,迁移宿主到 Tauri webview;UI 代码 ~90% 复用 |
+| 数据契约 | WIT(WASM 边界) + Tauri commands(UI↔Rust,本地 IPC) + Arrow / SQLite / Parquet(存储) + REST/Flight(仅 headless 模式) |
+| 本地存储 | **SQLite + Parquet 默认**;Neo4j 可选(headless 模式给团队用) |
+| 测试策略 | Rust 单测试栈;Python `reference/` 作行为 oracle,关键路径转 Rust contract test |
 | 退出条件 | 见 §8 |
 
-## 2. 战略目标
+## 2. 战略目标(优先级)
 
-按优先级:
+1. **个人/团队自用工具** — 主业 SRE 工作中真在用,这是最大动力来源
+2. **架构差异化** — WASM-native + 桌面优先 SRE 工具(类比 k9s + 图形化),非主流但有空间
+3. **技术资产质量** — 12 个月后代码库应"愿意挂在 GitHub 给同行看"
+4. **个人能力沉淀** — Rust + WASM + Tauri + SRE 四领域交叉实战经验
+5. **副业可持续** — 必须经得起 context switch(放 2 周回来还能写)
+6. **公开演示价值** — 每 3-4 个月一篇 blog,milestone 驱动
 
-1. **架构差异化** — 拿到 **WASM-native SRE 平台** 这个定位,这是 Python 生态做不到的。参考 Envoy / Fastly / Suborbital。
-2. **技术资产质量** — 24 个月后的代码库应当是"愿意挂在 GitHub 给同行看"的水平,**不只是能跑**。
-3. **个人/团队能力沉淀** — Rust + WASM + SRE 三个领域交叉的实战经验,这是稀缺技能。
-4. **长期可维护性** — 副业产能有限,**架构必须经得起 context switch**(放两周再回来还能继续写)。
-5. **可演示性** — 每 Phase 末尾应有 **公开可演示的成果**(blog / demo / 仓库 release),这是副业项目维持动力的关键机制。
+**非目标**:
 
-**非目标**(明确不追求):
-
-- 短期可商业化(2 年内不卖)
+- 短期商业化(2 年内不卖)
 - 抢市场速度
-- 成为最快/最便宜的 SRE 工具
-- 兼容所有云厂商(选 1-2 个深度做)
+- 多租户 SaaS(后期通过 engine-cli 可扩,但不是核心)
+- 浏览器直接访问(Tauri 桌面专属)
+- 移动端
 
-## 3. 整体架构终态(T+24mo 视图)
+## 3. 整体架构终态(T+12mo 视图)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Frontend (TS + Cytoscape) ── 保留                           │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ REST / JSON (OpenAPI auto)
-┌──────────────────────▼──────────────────────────────────────┐
-│  topology-engine (Rust)                                     │
-│   ├── axum REST(控制面 + 视图查询)                          │
-│   ├── arrow-flight gRPC(fact 数据面)                       │
-│   ├── wasmtime runtime(WASM connector / rule / handler)     │
-│   ├── Canonical Graph Store(内存,Arrow-backed columnar)    │
-│   ├── Identity Resolver(DataFusion SQL 查 Arrow)            │
-│   ├── Recovery Engine(沿 PRD-001 contract 迁)               │
-│   └── Report Engine(可选迁,Jinja2 留 Python 也行)          │
-└──────────────────┬───────────────────┬──────────────────────┘
-                   │ WIT (Component    │ Arrow Flight
-                   │  Model ABI)       │ (跨进程 connector)
-┌──────────────────▼────────────┐   ┌─▼──────────────────────┐
-│ WASM Modules                  │   │ External Agents        │
-│  • k8s-connector.wasm         │   │  • cloud-agent(Go/Rust)│
-│  • prom-connector.wasm        │   │  • on-prem agent       │
-│  • jaeger-connector.wasm      │   │                        │
-│  • flagd-connector.wasm       │   │                        │
-│  • cloud-connector.wasm       │   │                        │
-│  • coderepo-connector.wasm    │   │                        │
-│  • inspection-rules/*.wasm    │   │                        │
-│  • recovery-handlers/*.wasm   │   │                        │
-└───────────────────────────────┘   └────────────────────────┘
-                   │
-                   │ 后台异步持久化(降级)
-                   ▼
-              ┌──────────┐
-              │  Neo4j   │  仅审计/备份/复杂图查询时用
-              └──────────┘
+│  Tauri Desktop App  ── 单二进制,跨平台(macOS/Linux/Win)  │
+│                                                             │
+│   ┌─────────────────────────────────────────────────┐      │
+│   │  Webview                                         │      │
+│   │   React 18 + TS + AntD 5 + Cytoscape.js          │      │
+│   │   ├── 6 巡检视图 + 4 PRD 视图                    │      │
+│   │   ├── 故障模拟 / 报告 / 审批中心 / 恢复链         │      │
+│   │   └── 通过 invoke('cmd_name', args) 调 Rust     │      │
+│   └────────────────────┬────────────────────────────┘      │
+│                        │ Tauri IPC(进程内 JSON)          │
+│   ┌────────────────────▼────────────────────────────┐      │
+│   │  tauri-commands(薄包装层,~500 LOC)            │      │
+│   └────────────────────┬────────────────────────────┘      │
+│                        │ 直接 fn 调                       │
+│   ┌────────────────────▼────────────────────────────┐      │
+│   │  engine-core(共用 Rust 内核)                   │      │
+│   │   ├── Fact 总线 + Identity Resolver(DataFusion)│      │
+│   │   ├── Canonical Graph Store(Arrow 内存表)      │      │
+│   │   ├── wasmtime runtime(WASM 模块宿主)          │      │
+│   │   ├── Recovery / ChangeEvent / Reports          │      │
+│   │   └── engine-storage(SQLite + Parquet)          │      │
+│   └────────────────────┬────────────────────────────┘      │
+│                        │ WIT (Component Model)            │
+│   ┌────────────────────▼────────────────────────────┐      │
+│   │  WASM Modules                                     │      │
+│   │  • k8s.wasm / prom.wasm / jaeger.wasm /          │      │
+│   │    flagd.wasm / coderepo.wasm                    │      │
+│   │  • threshold-rule.wasm / slo-rule.wasm           │      │
+│   │  • custom-recovery-handler.wasm                  │      │
+│   └─────────────────────────────────────────────────┘      │
+│                                                             │
+│  本地存储:                                                  │
+│   • SQLite ── metadata(executions / approvals / changes)   │
+│   • Parquet ── fact 历史归档(可选)                        │
+│   • ~/.config/sre-graph/ ── kubeconfig / Prom URL 等        │
+└─────────────────────────────────────────────────────────────┘
+                          ▲ 直接连(用户机器上)
+                          │
+                  ┌───────┴────────┐
+                  │  User's K8s,  │
+                  │  Prometheus,   │
+                  │  Jaeger, Git   │
+                  └────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────┐
+│  engine-cli  ── 可选,headless 二进制(团队/SaaS 模式)      │
+│   ├── 共用 engine-core                                      │
+│   ├── REST + Arrow Flight server                            │
+│   └── 可挂 Neo4j 作中心存储                                 │
+└─────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────┐
+│  reference/  ── Python 老仓,本地 dev only,DO NOT DEPLOY    │
+│   └── 跑老 FastAPI,curl 对比新 Rust 行为                    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**关键变化**:
-- DSS 内存层从 Python dict → Rust Arrow columnar(向量化扫描)
-- Connector 从 Python class → WASM module(热加载)
-- Recovery handler 从 Python class → WASM module(沙箱)
-- Inspection rule 从 Python regex → WASM(任何语言可编译过来)
-- Neo4j 从热路径 → 冷归档
+**关键设计点**:
 
-## 4. 三层数据契约(关键决策)
+- **默认路径无网络栈** — Tauri webview ↔ Rust 是 IPC,**不走 HTTP**。CORS / dev proxy / auth 这些问题消失。
+- **engine-core 是单一内核**,Tauri 嵌入 / CLI 包它,两个交付物共代码。
+- **Neo4j 退化为可选** — 桌面用户不装,headless 模式可挂。
+- **WIT 是 WASM 边界唯一契约**;Tauri commands 是 UI 边界契约;REST/Flight 只在 headless 路径。
 
-**不用 protobuf**。三层各司其职:
+## 4. 三层数据契约(更新版,Tauri 优先)
 
-| 层 | 协议 | 用途 | 工具链 |
-|---|---|---|---|
-| **A. WASM ↔ host** | **WIT** (Component Model) | 强类型边界,小消息高频,零开销 | `wit-bindgen` |
-| **B. Fact 总线数据面** | **Arrow Flight** | 高吞吐流式 tabular 数据,零拷贝 | `arrow-flight` (Rust) + `pyarrow.flight` (Python) |
-| **C. 控制面 + 业务 API** | **JSON over REST** | 低频请求/响应,易调试,前端友好 | `axum` (Rust) + FastAPI (Python) + 自动 OpenAPI |
+| 层 | 协议 | 边界 | Tauri 模式 | Headless 模式 |
+|---|---|---|---|---|
+| A | **WIT** (Component Model) | WASM ↔ host | ✅ | ✅ |
+| B | **Tauri commands**(JSON IPC + tauri-specta TS 类型生成) | webview ↔ Rust | ✅ **首选** | ❌ 不需要 |
+| B' | **REST + Arrow Flight** | 外部客户端 ↔ engine-cli | ❌ 不需要 | ✅ **首选** |
+| C | **Arrow RecordBatch**(内存) + **Parquet**(归档) | engine 内部 | ✅ | ✅ |
 
-**为什么不 protobuf**:
-- 小消息走 WIT 已足够,无需 protoc
-- 大批量走 Arrow Flight 零拷贝,胜过 protobuf marshal
-- 控制面 JSON 调试更友好,前端白嫖 OpenAPI
-- **少装一个 build 工具链(protoc),副业可持续性 +1**
+**简化**:Tauri 路径无 protobuf / 无 REST / 无 Arrow Flight 跨进程 RPC。所有数据流量进程内传递。
 
-**衍生收益**:Arrow → Parquet 落对象存储几乎零成本,未来历史 fact 归档/分析直接接 DuckDB/DataFusion,不再设计存储格式。
+详细 schema 见 [`15-data-contract-spec.md`](./15-data-contract-spec.md) + [`17-tauri-desktop-architecture.md`](./17-tauri-desktop-architecture.md)。
 
-详细 schema 见 [`15-data-contract-spec.md`](./15-data-contract-spec.md)。
+## 5. Supervised Rewrite 节奏(12 个月)
 
-## 5. Strangler Fig 迁移节奏(24 个月)
+每 Phase 末有公开 demo,作为副业项目外部 commitment 机制。
 
-每个 Phase 都设 **公开可演示节点**,作为副业项目的外部 commitment 机制。
+### Phase 0 — 决策固化(T+0,1-2 周) ▶ 进行中
 
-### Phase 0 — 决策固化(T+0 ~ T+2 周) ▶ 进行中
-
-- [x] doc/11/12 PRD-005/006 规划落档
+- [x] doc/11/12 PRD-005/006 规划
 - [x] doc/13 端到端剧本
-- [ ] **doc/14(本文)+ doc/15 数据契约 落档**
-- [ ] 修改 doc/11 PRD-005,把 Rust+WASM 路径列为首选实现
-- [ ] 公开 GitHub project board,设 milestone 节点
-- [ ] **demo 节点**:文档体系完整可读
+- [x] doc/14(本文,v0.2)+ doc/15 + doc/16 + doc/17 落档
+- [ ] `backend/` → `reference/` 改名,加 DO NOT DEPLOY README
+- [ ] `frontend/` → `desktop/` 改名(留作 Tauri 集成)
+- [ ] 顶层 Cargo workspace 骨架(`engine/` + `modules/`)
+- [ ] GitHub project board + Phase milestone 公开
 
-### Phase 1 — Rust 引擎骨架(T+0 → T+3mo)
+### Phase 1 — Tauri + engine 最小可跑(T+0 → T+1mo)
 
-- [ ] 新仓 `topology-engine`(Cargo workspace)
-- [ ] 集成 wasmtime + WIT 工具链
-- [ ] `axum` REST 骨架(`/health`, `/facts`, `/connectors`)
-- [ ] `arrow-flight` server 骨架,定义 fact schema(同 doc/15)
-- [ ] **第一个 WASM connector**:把 `k8s_connector.py` 等价逻辑用 Rust 写,编译成 `.wasm`,通过 WIT 接口装载
-- [ ] Python FastAPI 通过 REST 调 Rust 拿 fact / 状态,e2e 跑通
-- [ ] **demo 节点**:blog "Building a WASM-native SRE Platform — Part 1: 引擎骨架"
+- [ ] Tauri 2.x app 骨架,React + AntD + Cytoscape 加载
+- [ ] engine-core + wasmtime hello world,1 个 invoke 调通
+- [ ] WIT 接口完整定义(types / connector / rule / handler)
+- [ ] 第一个 WASM connector:`k8s.wasm` 对照 `reference/app/datasource/connectors/k8s_connector.py` 实现等价逻辑
+- [ ] 1 个最小视图:打开 app 看到 1 张 mock 拓扑图
+- [ ] **Demo + Blog Part 1**:"WASM-native SRE Desktop — 引擎骨架"
 
-### Phase 2 — PRD-005 Rust 原生实现(T+3 → T+9mo)
+### Phase 2 — PRD-005 在 Rust 原生 + 真数据(T+1 → T+4mo)
 
-- [ ] Fact 总线 Rust 实现(Arrow RecordBatch 内部表示)
-- [ ] Identity Resolver(DataFusion SQL 做去重 / merge)
-- [ ] Unknown Dependency Queue + 代码仓 enrichment hook
-- [ ] WASM 化 Prometheus / Jaeger connector
-- [ ] Cloud API connector(华为云 / AWS 至少一家)走 Arrow Flight 上传
-- [ ] DSS canonical store 双写过渡:Python DSS + Rust store 并存,行为 diff 校验
-- [ ] **demo 节点**:blog "Part 2: Trace 看到的 Stripe 被 Rust 引擎纳管,5 分钟入图"
+- [ ] Fact 总线 + Identity Resolver(DataFusion SQL)+ Unknown Dep Queue
+- [ ] 5 个 connector WASM 化(k8s / prom / jaeger / flagd / k8s_events)
+- [ ] Cloud API connector(华为云或 AWS)— Arrow Flight 客户端,通过 engine-cli 也能用
+- [ ] Tauri 视图迁:topology / connectors / unknown-deps
+- [ ] SQLite + Parquet 本地存储就位
+- [ ] **Demo + Blog Part 2**:"连真实 k8s 集群 + trace 看到的 Stripe 自动入图"
 
-### Phase 3 — PRD-006 代码仓 + WASM 规则引擎(T+9 → T+15mo)
+### Phase 3 — PRD-001/002 + PRD-006(T+4 → T+8mo)
 
-- [ ] code_repo_connector(WASM 模块)
-- [ ] 业务规则 WASM 引擎(用户写 rule.wasm,host 沙箱跑)
-- [ ] PR/MR webhook → ChangeEvent 扩展
-- [ ] 规则市场 PoC(.wasm 文件分发机制)
-- [ ] **demo 节点**:blog "Part 3: 用户自定义巡检规则,WASM 沙箱执行"
-- [ ] 可能的对外演讲/分享(QCon / GIAC / GopherChina-Rust track)
+- [ ] Recovery 引擎复刻(8 action + dry-run + 审批 + 回滚 + 跨集群 + 自动验证 + 动作链)
+- [ ] ChangeEvent 引擎复刻(propagation + correlated + frequency + alert correlation)
+- [ ] code_repo_connector(WASM)+ 业务规则 WASM 引擎(PRD-006 S1+S2)
+- [ ] 自定义 recovery handler WASM(PRD-001 Phase 3 解锁项)
+- [ ] Tauri 视图迁:recovery / change-timeline / approvals / chains / config-impact
+- [ ] **Demo + Blog Part 3**:"用户自定义规则 + 自定义恢复动作,WASM 沙箱跑"
 
-### Phase 4 — 老 Python 模块逐个迁(T+15 → T+24mo)
+### Phase 4 — PRD-003/004 + 收尾(T+8 → T+12mo)
 
-按风险升序迁移:
+- [ ] Report 引擎(application_health / cluster_overview / incident_report 三模板)
+- [ ] APScheduler → tokio-cron-scheduler;SMTP 邮件 → lettre
+- [ ] connector 状态页 + 故障模拟视图迁完
+- [ ] 跨平台打包:macOS dmg / Linux AppImage+deb / Windows msi
+- [ ] tauri-updater 自动更新机制
+- [ ] **`git rm -r reference/`** 仪式
+- [ ] **Demo + Blog Part 4**:"v1.0 release,跨三平台桌面 app"
 
-1. **MetricSnapshot / AlertEvent service**(T+15-16):简单,纯数据
-2. **ChangeEvent service**(T+16-18):中等,有 Neo4j 双写
-3. **Recovery Engine**(T+18-21):复杂,要保留所有 472 测试行为
-4. **Report Engine**(T+21-23):Jinja2 换 Tera,或留 Python 永不迁
-5. **FastAPI 路由层**(T+23-24):可选换 axum,或保留 Python 作为兼容层
+### Phase 5 — Buffer + 社区(T+12 → T+14mo)
 
-每一步:**老 Python 模块跑业务 + 新 Rust 模块影子跑,输出 diff,zero diff 持续一周才切流量**。
+- [ ] GitHub release v1.0
+- [ ] 写一篇综述长文 / 技术演讲投稿(QCon Rust / GIAC 等)
+- [ ] 文档 / 教程完整化
+- [ ] 收 issue 改 bug
 
-- [ ] **demo 节点**:blog "Part 4: Python 模块如何安全退役"
-- [ ] **终态 demo**:Rust 100% 核心,WASM 插件生态完整
+## 6. Supervised 工作流(取代 Strangler Fig)
 
-## 6. 接口契约策略
+**每个被迁移模块的标准步骤**:
 
-为了 Strangler Fig 安全平移,每个被迁移模块必须先做:
+```
+1. 翻 reference/ 找到对应 Python 模块 + 测试,通读理解行为
+2. 写 Rust 实现(可以重设计,不必照搬结构)
+3. 写 Rust 测试 — 用 reference/ 的测试作行为规约参考,但不强制 1:1 转译
+   • 仍有价值的边界 case → 转 Rust test
+   • Python 特有 case(asyncio bridge / FastAPI 集成)→ 弃
+4. 开发期对照验证:
+   • 终端 1:cd reference && uv run uvicorn ... — 跑老 Python
+   • 终端 2:cargo run --bin engine-server — 跑新 Rust
+   • 对同一输入 curl,diff 输出,直到一致
+5. Rust 通过后,reference/ 对应模块标记为「已复刻」(README 表格)
+6. Phase 4 末尾,确认所有模块复刻完,git rm -r reference/
+```
 
-1. **行为规约文档化** — 把现有 Python 模块的对外行为(API 响应、DSS 变化、Neo4j 写入、事件发布)写成 YAML contract
-2. **现有 Python 测试转 contract test** — 472 个测试逐个映射到 contract,**Python 实现 + Rust 实现都跑同一份 contract**
-3. **双跑验证** — Python 主、Rust 影子,所有 contract test 双方都通过 + 实际流量输出 diff 为零 ≥ 1 周
-4. **流量切换** — feature flag 切到 Rust,Python 模块保留 1 个月回退余地
-5. **Python 退役** — 移除代码,contract 归档
-
-Contract 格式细节见 [`15-data-contract-spec.md`](./15-data-contract-spec.md) §6。
+**reference/ 目录纪律**:
+- ❌ 不接受 feature 改动
+- ❌ 不接受 bug 修复(除非阻塞 dev 验证)
+- ✅ 接受最小化兼容补丁(让 reference 跑得起来即可)
+- ✅ 接受 README 表格更新(标记哪些模块已复刻)
 
 ## 7. Phase 验收标准
 
-每 Phase 验收必须满足:
-
 | 维度 | 标准 |
 |---|---|
-| **功能** | 对应 PRD 验收准则全部通过 |
-| **测试** | Rust 部分 ≥ 80% line coverage,关键路径 hypothesis/proptest 覆盖 |
-| **性能基线** | 与 Python 版本对比,关键路径 ≥ 5× 提升(否则只是浪费精力) |
-| **可演示** | 有 blog / demo video / public release |
-| **文档** | 对应模块的 doc/PRD 更新到与代码一致 |
-| **回归** | 已迁移模块的旧 Python 测试零回归(通过 contract test) |
+| **功能** | 对应 PRD 验收准则全过;若该 Phase 复刻老 PRD,行为与 reference 对齐 |
+| **测试** | Rust 单测 + 集成测覆盖关键路径;hypothesis/proptest 用于核心算法(BFS / Identity Resolver) |
+| **性能** | 与 Python reference 对比:关键路径 ≥ 5× 提升,内存 ≤ 30% |
+| **可演示** | Tauri app 跑得起来,操作流畅,有 blog / demo video / GitHub release tag |
+| **文档** | 对应 PRD doc 更新到与代码一致 |
+| **平台** | macOS 优先(开发机)+ Linux(用户),Windows 在 Phase 4 末尾兜底 |
 
-## 8. 退出条件(什么情况下停止此计划)
+## 8. 退出条件
 
-副业项目必须有诚实的退出机制,避免变成"沉没成本陷阱"。任一条触发就重新评估:
+副业项目必须诚实的退出机制。任一触发重新评估:
 
 | 触发 | 应对 |
 |---|---|
-| 连续 3 个月主业占满,无法投入项目 | **暂停**,公开仓库 archive,保留所有 doc/code |
-| Phase 1 结束时(T+3mo)WASM connector 无法稳定跑 | **回退**:放弃 WASM 路径,只用 Rust 不做 WASM 插件化 |
-| Phase 2 结束时(T+9mo)Rust 引擎性能未达 Python 5× | **重新评估**:可能是设计问题不是语言问题,审视架构 |
-| Rust 主流 crate(wasmtime / arrow-rs / tokio)出现重大破坏性变更且无平滑迁移路径 | **冻结版本**,等待生态稳定 |
-| 团队 Rust 经验丢失(人员变动) | **冻结新模块开发**,保护已迁移部分 |
-| 24 个月后未到达 T+15mo 实际进度 | **诚实评估**:是否方向有问题,or 接受 36 个月节奏 |
+| 连续 3 个月主业占满,无法投入 | **暂停**,公开仓库 archive,所有 doc/code 保留 |
+| Phase 1 结束(T+1mo)Tauri + engine 无法稳定跑 | **重新评估技术选型**,可能回退到纯 Web(放弃 Tauri) |
+| Phase 2 结束(T+4mo)Rust 性能未达 reference 5× | **审视架构**(可能是 Arrow / DataFusion 误用) |
+| Tauri / wasmtime / arrow 主流 crate 出现重大破坏性变更 | **冻结版本**,等生态稳定 |
+| 团队 Rust 经验丢失 | **冻结新模块**,保护已迁移部分 |
+| 12 个月后未到 Phase 3 实际进度 | **诚实评估**,接受 18 个月节奏 or 调减范围 |
 | 个人兴趣转移 | **不强求**,公开 archive,文档保留 |
 
-**重要**:退出不是失败。半成品如果有 doc 完备,本身就是技术资产。
+**退出 ≠ 失败**。半成品 + 完整 doc 仍是技术资产。
 
 ## 9. 风险登记
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| 双语言代码库长期维护成本 | 中 | gRPC/REST 边界 clean,各自独立部署/测试;Strangler Fig 终点是单语言 |
-| 24 个月跨度兴趣维持 | **高(副业最大风险)** | 公开 milestone + blog + 自用驱动;每 Phase 有可见产出 |
-| Rust + WASM 生态 breaking change | 中 | 锁主流 crate minor 版本,半年评估升级;WIT 选 Component Model(2024 稳定) |
-| 个人 code review 缺失 | 中 | `clippy --deny warnings` + `cargo audit` + `cargo deny`;关键 PR 拉同行 review |
-| 过度设计(无现网压力) | **高** | 自己当 customer:**自用 SRE 工具**,真在生产环境跑(主业相关或开源他用) |
-| Neo4j 退化为冷存储后想用其图查询能力 | 低 | 保留 Python Neo4j adapter,需要时调用,不强迫 Rust 重做图查询 |
-| 老 Python 472 测试在迁移中丢失 | 高 | Contract test 框架强制(见 §6) |
-| Frontend 长期跟不上后端演进 | 中 | 后端 API 用 OpenAPI 自动出 TS client,前端零成本跟进 |
+| **12 个月跨度兴趣维持**(副业最大风险) | 高 | 公开 milestone + blog + 自用驱动;每 Phase 有可见产出 |
+| Tauri 生态不如 Web 成熟 | 中 | Tauri 2.x 2024 GA,生态正起;无法解时回退 Web(engine-cli + browser) |
+| 桌面 app 用户安装意愿 | 中 | 自用第一,他用第二;签名 + 自动更新降摩擦 |
+| Cytoscape.js 在 Tauri webview 性能 | 低 | webview 现代,性能与浏览器同;预 Phase 1 验证一次 |
+| Rust + WASM 生态 breaking change | 中 | 锁主流 crate minor;半年评估升 |
+| Python reference 漂移 | 中 | 显式 read-only 纪律(§6)+ README 标记 |
+| 472 测试转译耗时 | 中 | 不全转,只转有价值的;FastAPI/Neo4j 集成测试弃 |
+| 单人 code review 缺失 | 中 | `clippy --deny warnings` + `cargo audit` + `cargo deny`;关键 PR 拉同行 review |
+| 过度设计(无现网压力) | 高 | 强制自用 — 主业 SRE 工作真用,真出问题立刻反馈 |
+| 多平台兼容(尤其 Windows) | 中 | Phase 1-3 macOS+Linux 主用,Windows 在 Phase 4 集中 fix |
 
 ## 10. 不做(本战略)
 
-明确排除:
-
-| 能力 | 原因 |
+| 能力 | 理由 |
 |---|---|
-| 整体 clean-sheet rewrite | Chesterton's Fence — 老代码里的知识不能丢 |
-| 用 Go(替代 Rust) | 团队已具 Rust+WASM 经验,换 Go 是浪费;WASM 生态 Rust 更前沿 |
-| 自研 WASM runtime | 用 wasmtime,Bytecode Alliance 标准实现 |
-| 自研列存格式 | 用 Arrow,事实标准 |
-| 改前端语言 | TS + Cytoscape 已稳,前端不是瓶颈 |
-| Neo4j 改图数据库 | Neo4j 退到冷路径后,选型不重要 |
-| 24 个月内做 IM 推送 / PDF 报告 / AI 推荐 | 这些都是 v3 能力,优先底座 |
+| Strangler Fig 渐进迁移 | doc/14 v0.1 复盘后否决,副业不需要 |
+| 整体 Go 替代(而非 Rust) | 团队 Rust+WASM 经验不浪费 |
+| 自研 WASM runtime | 用 wasmtime |
+| 自研列存格式 | 用 Arrow |
+| Pure-Rust UI(Dioxus / Yew / Leptos) | 生态不如 React 成熟,前端代码可复用 90% |
+| 改前端语言(React → Vue / Svelte) | React 18 + AntD 已稳,不动 |
+| SaaS / 多租户 / 账号体系 | 后期通过 engine-cli + Web shell 扩,**不是 v1.0 目标** |
+| 移动端 / Web 浏览器版本 | Tauri 桌面专属 |
+| 自定义 K8s operator | 引擎是数据消费者,不是 K8s controller |
 
-## 11. 成功度量(T+24mo 时)
+## 11. 成功度量(T+12mo)
 
 主观但具体:
 
 | 度量 | 目标 |
 |---|---|
-| Rust 核心引擎 LOC | 15-25k(基本对齐 Python 现状,部分模块更小) |
-| WASM 插件数 | ≥ 8 个(6 connector + 2 rule/handler) |
-| Contract test 通过率 | 100%(行为完全对齐迁移前) |
-| 公开 blog 系列 | ≥ 4 篇,Part 1-4 |
-| GitHub stars | ≥ 100(weak signal,不强求) |
-| 自用价值 | 主业或开源环境真在跑,且我自己愿意每天看 |
-| 个人技术深度 | Rust + WASM + SRE 三领域交叉,**这是最重要的隐性 ROI** |
+| Tauri 桌面 app 跨平台构建 | macOS + Linux + Windows 三平台 binary |
+| Rust 核心引擎 LOC | 18-28k(对齐 Python 规模,部分模块更紧凑) |
+| WASM 插件数 | ≥ 8 个(6 connector + 2 rule + N 自定义 handler) |
+| 自用频率 | 主业 SRE 工作每周打开 ≥ 3 次 |
+| 公开 blog 系列 | ≥ 4 篇 |
+| GitHub stars | ≥ 150(弱信号,不强求) |
+| 个人技术深度 | Rust + WASM + Tauri + SRE,**这是最重要的隐性 ROI** |
 
-## 12. 立即下一步
+## 12. 立即下一步(本周末)
 
-T+0(本周末):
-1. ✅ 写完本文 + doc/15
-2. [ ] 改 doc/11 PRD-005,把"实现选型"章节改为 Rust+WASM 首选
-3. [ ] 建 GitHub project board,milestone 拆到 Phase 1 周级
-4. [ ] 写 Phase 1 "Build a WASM-native SRE Platform" 系列第 1 篇 outline
-
-T+1 周:
-- [ ] 新建 `topology-engine` Cargo workspace
-- [ ] `Cargo.toml` 锁定 crate 版本基线(见 doc/15 §7)
-- [ ] hello-world WASM connector 跑通
+1. ✅ doc/14 v0.2 / doc/16 v0.2 / doc/17 / doc/15 更新
+2. [ ] `git mv backend/ reference/`,加 DO NOT DEPLOY README
+3. [ ] `git mv frontend/ desktop/`(空 Tauri 壳留待 Phase 1 填)
+4. [ ] 顶层 `Cargo.toml` workspace 骨架(engine/* + modules/* + desktop/src-tauri)
+5. [ ] GitHub project board + 12 个月 milestone 公开
 
 ## 13. 相关文档
 
-- **本文上游**:[`13-story-unknown-dep-stripe.md`](./13-story-unknown-dep-stripe.md)(为什么 WASM 是战略)
-- **本文下游**:[`15-data-contract-spec.md`](./15-data-contract-spec.md)(三层契约详细 schema)
-- **架构上下文**:[`11-PRD-005-...`](./11-PRD-005-universal-topology-service.md) / [`12-PRD-006-...`](./12-PRD-006-code-repo-source.md)
-- **现状参照**:[`10-product-gap-analysis.md`](./10-product-gap-analysis.md)(MVP 100% 起点)
-- **导航**:[`00-README.md`](./00-README.md)
+- 起点:[`13-story-unknown-dep-stripe.md`](./13-story-unknown-dep-stripe.md)
+- 数据契约:[`15-data-contract-spec.md`](./15-data-contract-spec.md)
+- 仓库布局:[`16-repo-and-codebase-layout.md`](./16-repo-and-codebase-layout.md)
+- Tauri 架构:[`17-tauri-desktop-architecture.md`](./17-tauri-desktop-architecture.md)
+- 上下文:[`10-product-gap-analysis.md`](./10-product-gap-analysis.md) / [`11-PRD-005-...`](./11-PRD-005-universal-topology-service.md) / [`12-PRD-006-...`](./12-PRD-006-code-repo-source.md)
+- 导航:[`00-README.md`](./00-README.md)
 
 ---
 
-**签字**(决策快照):
+## 附录 A — 考虑过但放弃的路径
 
-| 项 | 状态 |
-|---|---|
-| 决策时间 | 2026-06-23 |
-| 决策范围 | 24 个月技术路线 |
-| 决策依据 | 副业属性 + 长期成果 + 团队 Rust/WASM 经验 + WASM 战略价值 |
-| 下一次重评 | T+3mo(Phase 1 结束) |
+### A.1 Strangler Fig(原 v0.1 方案)
+
+老 Python 跑业务,新 Rust 模块逐个替换,gRPC/REST 桥接,18-24 个月双语言并存。
+
+**否决理由**:Strangler 的核心好处(零停机持续交付)对副业不成立 — 没有 7×24 跑的客户。但代价照收:
+
+- 桥接代码 ~3 mo
+- 双语言 contract YAML ~3 mo
+- 4 套 toolchain 维护 ~2 mo
+- Context switch 隐形税 ~5 mo
+- **总浪费 ~13 mo,换不需要的能力**
+
+副业场景下 Strangler 是过设计。
+
+### A.2 Clean-sheet 完全抛弃 Python
+
+不看老代码,从零设计。
+
+**否决理由**:472 测试 + 12k LOC 里 embedded 的边界 case(Neo4j Path 三类异常 / BFS 深度 4 不是 5 / diff_summary JSON 编码 / verify 防递归)再走一遍 80% 都会踩。Chesterton's Fence。
+
+Supervised Rewrite 保留 Python 作 oracle,既享重写的清洁,又保留知识。
+
+### A.3 走 SaaS Web 默认路径(原 v0.1 方案)
+
+FastAPI + Web 前端 + Docker Compose / k8s 部署。
+
+**否决理由**:
+
+- 副业不应该背 SaaS 包袱(账号 / 计费 / 多租户 / 7×24 运维)
+- 个人 SRE 工具的最佳形态参考 k9s / Lens — 都是桌面
+- Tauri 单二进制 + 本地数据,**摩擦最小**
+- 想做 SaaS,engine-cli 已经在,后期加 web shell
+
+---
+
+**版本**:v0.2.0 — 2026-06-23 Supervised Rewrite + Tauri 决策定稿。v0.1 Strangler Fig 路径见 附录 A.1。
