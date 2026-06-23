@@ -1,0 +1,29 @@
+# modules/.cargo/config.toml
+#
+# 为什么不直接 `[build] target = "wasm32-wasip2"` 默认目标?
+#   因为 modules/sdk + modules/connectors/hello-world 各自带 `#[cfg(test)]`
+#   单测,需要在 host target 下跑 `cargo test`。如果默认目标设成 wasip2,
+#   `cargo test` 会试着用 wasm 跑(没 test 运行器),全 fail。
+#
+# 故采用 alias 模式:`cargo wasi-build` / `cargo wasi-check` 是短写
+# `cargo build/check --target wasm32-wasip2`,host 测试不动。
+#
+# 对照 `/home/cc/Desktop/code/ntx/show/ntxdemo/plugins/.cargo/config.toml`:
+#   他们也不 pin 默认 target,只加 rustflags。我们走同样选择。
+#
+# 参考 ntx executor/.cargo/config.toml 的 [build] target = "wasm32-wasip2":
+#   那个是 single-crate template 没有 host tests,我们不一样。
+
+[alias]
+# 完整发布产物:cargo wasi-build → cargo build --release --target wasm32-wasip2
+wasi-build       = "build --release --target wasm32-wasip2"
+# debug build,迭代时用
+wasi-build-debug = "build --target wasm32-wasip2"
+# 不出产物,只走 type-check,最快
+wasi-check       = "check --target wasm32-wasip2"
+# clippy 必须显式带 --target 才扫 wasm 代码路径
+wasi-clippy      = "clippy --target wasm32-wasip2 -- -D warnings"
+
+[build]
+# 这里**不**设默认 target,让 cargo test 走 host target。
+# 用户要构建 wasm 产物显式跑 `cargo wasi-build` 或 `make modules-build`。

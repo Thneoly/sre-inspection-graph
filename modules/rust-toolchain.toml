@@ -1,0 +1,17 @@
+# modules/rust-toolchain.toml
+#
+# 强制为本目录(含子 crate)使用 stable rustc + 装上 wasm32-wasip2 target。
+# 第一次在 modules/ 下跑 cargo 会自动 rustup install stable + add target,
+# 新人 onboard 零摩擦。
+#
+# 与 ntx/show 对照:他们 pin "1.91.1",我们用 floating "stable"。Phase 2 起
+# Cargo.lock 已锁所有依赖,toolchain 浮动不会影响产物可重现。如真需固定,
+# 锁到具体版本(例 "1.86")即可。
+#
+# 注意作用域:此文件**只对 modules/ 及其子目录生效**,不影响 engine/ 或
+# desktop/src-tauri/ 的 toolchain。
+
+[toolchain]
+channel = "stable"
+targets = ["wasm32-wasip2"]
+components = ["rustfmt", "clippy"]

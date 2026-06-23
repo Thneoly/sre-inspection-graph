@@ -1,10 +1,13 @@
+package sre:inspection@0.1.0;
+
 // SRE Inspection Graph — handler module WIT interface
 // 版本:0.1.0(见 specs/version.toml)
 //
 // handler 模块执行恢复动作(PRD-001 8 action + 用户自定义)。
 // Phase 3 起 8 个 reference handler 复刻为 WASM 模块。
-
-package sre:inspection-handler@0.1.0;
+//
+// 此文件与 connector.wit / rule.wit / host.wit 共享 `sre:inspection@0.1.0` package,
+// 注释必须放在 package 声明之后,否则会被当作 package 的 doc,多文件冲突。
 
 interface handler {
     record execution-context {
@@ -34,13 +37,14 @@ interface handler {
     execute: func(ctx: execution-context) -> result<execution-result, execution-error>;
 
     /// 验证 — execute 之后查 predicate,确认动作真生效。
-    verify: func(ctx: execution-context, result: execution-result) -> result<bool, execution-error>;
+    /// 参数 prior-result 不能叫 result(WIT 关键字)。
+    verify: func(ctx: execution-context, prior-result: execution-result) -> result<bool, execution-error>;
 }
 
 world handler-world {
-    import sre:inspection/logging@0.1.0;
-    import sre:inspection/clock@0.1.0;
-    import sre:inspection/http-client@0.1.0;
+    import logging;
+    import clock;
+    import http-client;
 
     export handler;
 }

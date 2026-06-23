@@ -1,3 +1,5 @@
+package sre:inspection@0.1.0;
+
 // SRE Inspection Graph — connector module WIT interface
 // 版本:0.1.0(见 specs/version.toml)
 //
@@ -13,8 +15,9 @@
 //   - 未来需 async/stream 接口(如 fact 流推送)时按 WIT 0.3+ async syntax 加
 //     `sync-stream: func(...) -> stream<fact>`,届时 modules 切 wasip3 才能用
 //   - 详见 doc/16 §4.x WASI ABI 演进策略
-
-package sre:inspection@0.1.0;
+//
+// 与 host.wit / rule.wit / handler.wit 共享 sre:inspection@0.1.0 package。
+// 注释必须放在 package 声明之后(WIT 把 package 前注释当 doc,多文件冲突)。
 
 interface logging {
     enum level {

@@ -310,9 +310,10 @@ sha256 = "..."
 specs/
 ├── wit/                    # Component Model
 │   ├── types.wit
-│   ├── connector.wit
-│   ├── rule.wit
-│   ├── handler.wit
+│   ├── host.wit            # ★ host-capabilities world(host 端 bindgen 用)
+│   ├── connector.wit       # connector-world + 3 capability interface(共享)
+│   ├── rule.wit            # rule-world
+│   ├── handler.wit         # handler-world
 │   └── README.md           # WIT 演化规则
 ├── arrow/                  # Arrow schema(机读 JSON)
 │   ├── fact_v1.json
@@ -325,6 +326,19 @@ specs/
 │   └── engine.json         # 自动生成
 └── version.toml            # 跨组件版本锁
 ```
+
+### Host vs Guest WIT bindgen 分工
+
+参考 ntx/show 的 `hostnet` world 模式(`/home/cc/Desktop/code/ntx/show/ntxdemo/component/wit/host/world.wit`):
+
+| 端 | 用谁 bindgen | bindgen 哪个 world | 目的 |
+|---|---|---|---|
+| **host** | `wasmtime::component::bindgen!` 宏(`engine-bindings` crate) | `sre:inspection/host-capabilities@0.1.0`(`specs/wit/host.wit`)+ 每个 guest world(connector-world / rule-world / handler-world)| 一次 `HostCapabilities::add_to_linker(linker, ...)` 接全 capability,再用 `XxxWorld::instantiate_async(...)` 强类型调 guest exports |
+| **guest** | `wit_bindgen::generate!` 宏(各 module crate 内) | 仅它要 export 的那个 world(connector-world / rule-world / handler-world)— 同时声明它 import 的 capability interfaces 子集 | 给本 module 生成 host import stubs + guest export trait |
+
+**互不冲突**:同一个 `.wit` 文件被两端解析两次,产物分别是 host glue 和 guest stubs,wit-bindgen / wasmtime-bindgen 各自处理。
+
+`host-capabilities` world 是**纯聚合**(无 export),专为 host 端"一次接全部 capability 到 linker"服务。新增 capability(如 `metric-emit` / `k8s-readonly`)在 `host.wit` 加一行 `import`,engine-bindings 自动跟进。
 
 ### `specs/version.toml`
 

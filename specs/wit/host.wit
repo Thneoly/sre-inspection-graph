@@ -1,0 +1,43 @@
+package sre:inspection@0.1.0;
+
+// SRE Inspection Graph — host capabilities WIT world
+// 版本:0.1.0(见 specs/version.toml)
+//
+// 此文件定义 `host-capabilities` world,**专供 host 端 wasmtime::component::bindgen!
+// 使用**,把 logging / clock / http-client 三个 capability 接口集合到一个 world,
+// 让 host 一次 add_to_linker 就把全部 capability 接进 wasmtime::Linker。
+//
+// 设计参考:`/home/cc/Desktop/code/ntx/show/ntxdemo/component/wit/host/world.wit`
+// 的 `hostnet` world 模式(单一 host imports world + `Hostnet::add_to_linker` 一行)。
+//
+// 用法对照:
+// - host 端(engine-bindings crate):
+//     wasmtime::component::bindgen!({
+//         world: "sre:inspection/host-capabilities@0.1.0",
+//         path: "../../../specs/wit",
+//     });
+//     // 然后 HostCapabilities::add_to_linker(&mut linker, |s| s)? 把 3 个 capability
+//     // 一并接到 linker
+//
+// - guest 端(modules/connectors/* 等):各自 bindgen 自己用得到的 world
+//   (connector-world / rule-world / handler-world),WIT 文件相同
+//   不会重复编译,wit-bindgen 处理好了
+//
+// 此 world **不导出任何东西** — 它是纯 host imports surface 的集合。
+// guest 永远不会 bindgen 此 world。
+//
+// 与 connector.wit / rule.wit / handler.wit 共享 sre:inspection@0.1.0 package。
+// 注释必须放在 package 声明之后(WIT 把 package 前注释当 doc,多文件冲突)。
+
+/// host-capabilities — host 给 guest 的所有 capability 一站式聚合。
+///
+/// 当前覆盖三类 capability;新增 capability(如 metric-emit / k8s-readonly)
+/// 时往这里 import 一行即可,engine-bindings 自动跟着扩展。
+world host-capabilities {
+    /// 结构化日志(level + message),host 写到 tracing
+    import logging;
+    /// 时钟(Unix seconds),host 用 tokio::time::Instant
+    import clock;
+    /// 受 capability 限制的 HTTP GET,host 走 reqwest + capability allow-list
+    import http-client;
+}

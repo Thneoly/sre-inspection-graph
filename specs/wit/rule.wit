@@ -1,10 +1,12 @@
+package sre:inspection@0.1.0;
+
 // SRE Inspection Graph — rule module WIT interface
 // 版本:0.1.0(见 specs/version.toml)
 //
 // rule 模块在 Fact 流上做匹配 / 阈值检查 / SLO 评估,产出 finding。
 // Phase 1 仅定义骨架,具体字段 Phase 4 PRD-003 复刻时锁定。
-
-package sre:inspection-rule@0.1.0;
+//
+// 共享 `sre:inspection@0.1.0` package,注释必须放在 package 声明之后。
 
 interface rule {
     record finding {
@@ -42,8 +44,8 @@ interface rule {
 }
 
 world rule-world {
-    import sre:inspection/logging@0.1.0;
-    import sre:inspection/clock@0.1.0;
+    import logging;
+    import clock;
 
     export rule;
 }

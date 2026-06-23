@@ -9,6 +9,18 @@ description = "Placeholder WASM connector — emits one fake Fact per sync"
 # 用 cdylib 是为 wasm32-wasip2 输出 .wasm 准备;rlib 让 host 测试可链接。
 crate-type = ["cdylib", "rlib"]
 
+# Phase 2 起接 cargo-component / wac compose 工具链时读此段。
+# 即使不装 cargo-component,留这段也不影响 `cargo build` —— 它只是 metadata。
+# 参考 /home/cc/Desktop/code/ntx/show/ntxdemo/component/scheduler/Cargo.toml。
+[package.metadata.component]
+package = "sre:inspection-hello-world@0.1.0"
+
+[package.metadata.component.target]
+# 全局 WIT 单一来源:specs/wit/(从此 crate 走 4 级 ../)
+# 内含 connector.wit(connector-world)+ host.wit(host-capabilities,Phase 2 用)
+path  = "../../../specs/wit"
+world = "connector-world"
+
 [dependencies]
 module-sdk = { workspace = true }
 serde      = { workspace = true }
