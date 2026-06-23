@@ -1,0 +1,32 @@
+# .github/workflows/
+
+CI / CD workflows for SRE Inspection Graph.
+
+## ci.yml(本期落地)
+
+5 个并行 job,触发条件:
+- push 到 `main` 或任意 `phase*/` 分支
+- 对 `main` 的 PR
+
+| Job | 范围 | 时长目标 |
+|---|---|---|
+| `engine` | engine/ Rust workspace(10 crate) cargo fmt+check+clippy+test | ~5min(cold) |
+| `modules` | modules/ WASM workspace host-target check+test | ~2min |
+| `desktop` | desktop/src-tauri Tauri 后端 check+clippy(Linux only) | ~10min(cold,WebKit GTK 重) |
+| `reference` | reference/ Python pytest 472 tests | ~3min |
+| `lockfile` | 3 个 Cargo.lock drift 检查(`--locked` 不修改) | ~3min |
+
+## 设计
+
+- **Linux only Phase 1** — Tauri 跨平台 build 留 `release.yml`(Phase 4 引入 matrix:macOS/Windows)
+- **`--locked`** 拒绝 Cargo.lock drift(本地必须把 lock 提交)
+- **`-D warnings`** — clippy 与 cargo 都按 0 warning 跑
+- **缓存策略** — 三个 workspace 各自 cache,key 含 Cargo.lock 哈希。命中后 cargo check < 30s
+- **WebKit/GTK deps** — Tauri 在 Linux 上要 6 个系统包,job 内部 apt install(Phase 4 可移到 container image)
+
+## 后续
+
+- Phase 2:加 wasm32-wasip2 target install + `cd modules && cargo build --release --target wasm32-wasip2`
+- Phase 3:加 sccache 加速
+- Phase 4:`.github/workflows/release.yml` matrix build(macOS dmg / Linux AppImage+deb / Windows msi)
+- 任何 phase:加 `cargo audit` + `cargo deny check` 安全扫描

@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "phase*/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  # 缓存 sccache 留 Phase 2 启用
+
+jobs:
+  # =====================================================================
+  # engine/ — Rust workspace(10 crate)
+  # =====================================================================
+  engine:
+    name: engine — check / test / clippy / fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: ""
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: engine-${{ runner.os }}-cargo-${{ hashFiles('engine/Cargo.lock') }}
+          restore-keys: |
+            engine-${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets --locked
+
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test --all
+        run: cargo test --all --locked
+
+  # =====================================================================
+  # modules/ — WASM workspace(只跑 host target check + test;
+  # 真 wasm32-wasip2 build 留 Phase 2 接 wit-bindgen 后开)
+  # =====================================================================
+  modules:
+    name: modules — check / test (host target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: modules
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            modules/target
+          key: modules-${{ runner.os }}-cargo-${{ hashFiles('modules/Cargo.lock') }}
+          restore-keys: |
+            modules-${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets --locked
+
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test --all
+        run: cargo test --all --locked
+
+  # =====================================================================
+  # desktop/src-tauri — Tauri Rust 后端(Linux runner;macOS/Windows
+  # 留 Phase 4 release.yml 启用 matrix build)
+  # =====================================================================
+  desktop:
+    name: desktop — Tauri backend check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux WebKit / GTK deps for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            javascriptcoregtk-4.1 \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: desktop-${{ runner.os }}-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            desktop-${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo check
+        run: cargo check --locked
+
+      - name: cargo clippy -- -D warnings
+        run: cargo clippy --locked -- -D warnings
+
+  # =====================================================================
+  # reference/ — Python(read-only,但要保证测试仍跑得起)
+  # =====================================================================
+  reference:
+    name: reference — pytest (oracle parity check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install reference deps
+        run: |
+          cd reference
+          uv sync --frozen
+
+      - name: Run pytest
+        run: |
+          cd reference
+          uv run python -m pytest tests/ -p no:asyncio -q --no-header
+
+  # =====================================================================
+  # 跨工作区一致性检查 — Cargo.lock 不应在 PR 中被未提交修改
+  # =====================================================================
+  lockfile:
+    name: lockfile drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check engine/Cargo.lock
+        run: cd engine && cargo check --locked --quiet 2>&1 | head -5
+
+      - name: Check modules/Cargo.lock
+        run: cd modules && cargo check --locked --quiet 2>&1 | head -5
+
+      - name: Check desktop Cargo.lock
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev javascriptcoregtk-4.1
+          cd desktop/src-tauri && cargo check --locked --quiet 2>&1 | head -5
