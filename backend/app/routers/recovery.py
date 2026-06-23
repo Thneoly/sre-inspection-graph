@@ -29,6 +29,7 @@ from app.recovery.execution import (
     execute as run_execution,
     list_executions,
     rollback as run_rollback,
+    reverify as run_reverify,
     ExecutionError,
 )
 from app.recovery import approval as approval_mod
@@ -56,6 +57,7 @@ class ExecuteRequest(BaseModel):
     finding_id: Optional[str] = Field(None, description="触发的 Finding")
     initiated_by: str = Field("system", description="发起人 ID")
     request_reason: str = Field("", description="申请理由(用于审计 + Sprint 3 审批)")
+    verify: bool = Field(True, description="执行成功后是否自动验证(Phase 2 余项),失败 → 自动回滚")
 
 
 # ============================================================
@@ -192,6 +194,7 @@ def execute(req: ExecuteRequest, response: Response):
             initiated_by=req.initiated_by,
             finding_id=req.finding_id,
             request_reason=req.request_reason,
+            verify=req.verify,
         )
     except ExecutionError as e:
         raise HTTPException(status_code=e.code, detail=e.message)
@@ -358,6 +361,20 @@ def rollback_execution(execution_id: str, req: RollbackRequest):
         raise HTTPException(status_code=e.code, detail=e.message)
 
     return _serialize_execution(rb_execution)
+
+
+@router.post("/executions/{execution_id}/verify")
+def reverify_execution(execution_id: str):
+    """主动触发 execution 的重新验证(不触发 auto rollback)。
+
+    - 仅允许 status ∈ (succeeded, rolled_back)
+    - 用于 dashboard 刷新 verify_status,或对原 verify=skipped 的执行补做验证
+    """
+    try:
+        execution = run_reverify(execution_id)
+    except ExecutionError as e:
+        raise HTTPException(status_code=e.code, detail=e.message)
+    return _serialize_execution(execution)
 
 
 def _serialize_approval(approval: ApprovalRequest) -> dict:

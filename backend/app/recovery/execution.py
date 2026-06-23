@@ -51,12 +51,14 @@ def execute(action_id: str, target_resource_id: str,
             input_params: dict | None = None,
             initiated_by: str = "system",
             finding_id: str | None = None,
-            request_reason: str = "") -> RecoveryExecution:
+            request_reason: str = "",
+            verify: bool = True) -> RecoveryExecution:
     """执行恢复动作。
 
     - low_risk + 不需要审批 → 同步执行,返回 status=succeeded/failed
     - medium / high_risk 或 requires_approval=True → 创建 awaiting_approval execution +
       ApprovalRequest,返回 status=awaiting_approval(调用方据此判断是否要审批)
+    - verify=True(默认):succeeded 后自动跑 verifier;verify_failed → 自动 rollback
 
     抛 ExecutionError 表示**前置校验失败**(动作不存在、目标非法等);
     handler 内部失败不抛异常,而是 status=failed + result.error。
@@ -111,12 +113,15 @@ def execute(action_id: str, target_resource_id: str,
             request_reason=request_reason,
         )
         execution.approval_id = approval.approval_id
+        # 把 verify 偏好记到 input_params 里,_continue_after_approval 复用
+        if not verify:
+            execution.input_params["__verify"] = False
         store.update_execution(execution)
         # awaiting_approval 不写 Neo4j(避免一个动作产生多次写入);由 _continue 阶段写
         return execution
 
     # low_risk → 同步执行
-    return _run_handler_and_persist(execution)
+    return _run_handler_and_persist(execution, verify=verify)
 
 
 # ============================================================
@@ -142,7 +147,8 @@ def _continue_after_approval(execution_id: str) -> RecoveryExecution:
     execution.executed_at = now_iso
     store.update_execution(execution)
 
-    return _run_handler_and_persist(execution)
+    verify = execution.input_params.pop("__verify", True) if isinstance(execution.input_params, dict) else True
+    return _run_handler_and_persist(execution, verify=verify)
 
 
 # ============================================================
@@ -181,6 +187,28 @@ def rollback(execution_id: str,
             code=400,
         )
 
+    return _do_rollback(original, initiated_by, reason, auto_rollback_marker=False)
+
+
+def _do_rollback(original: RecoveryExecution,
+                 initiated_by: str,
+                 reason: str,
+                 auto_rollback_marker: bool = False) -> RecoveryExecution:
+    """实际创建并执行 rollback execution。
+
+    供 `rollback()` 与 `_verify_and_maybe_rollback` 复用。
+    auto_rollback_marker=True 时:
+    - rollback execution 自身 **不再 verify**(预防 verify_failed → rollback → rollback verify_failed 死循环)
+    - result 标 `auto_rollback_origin: <original_execution_id>`
+    """
+    action = get_action(original.action_id)
+    rollback_action_id = (action or {}).get("rollback_action_id")
+    if not rollback_action_id:
+        raise ExecutionError(
+            f"action '{original.action_id}' has no rollback_action_id",
+            code=400,
+        )
+
     # 反向参数:scale_deployment 的反向是 scale_deployment(replicas_delta 取反)
     rollback_params = _derive_rollback_params(original)
 
@@ -198,15 +226,23 @@ def rollback(execution_id: str,
         dry_run_result=dry_result,
         status="executing",
         initiated_by=initiated_by,
-        request_reason=reason or f"rollback of {execution_id}",
+        request_reason=reason or f"rollback of {original.execution_id}",
         initiated_at=now_iso,
         executed_at=now_iso,
-        reverses_execution_id=execution_id,
+        reverses_execution_id=original.execution_id,
         cluster_id=original.cluster_id,
     )
     store.add_execution(rb_execution)
 
-    rb_execution = _run_handler_and_persist(rb_execution)
+    # 自动回滚:跳过 rollback 自身的 verify(防递归),且不要它再自动 rollback
+    rb_execution = _run_handler_and_persist(
+        rb_execution,
+        auto_rollback=False,
+        verify=not auto_rollback_marker,
+    )
+    if auto_rollback_marker:
+        rb_execution.result["auto_rollback_origin"] = original.execution_id
+        store.update_execution(rb_execution)
 
     # 若回滚成功,把原 execution 标 rolled_back;失败则原 execution 保持 succeeded
     if rb_execution.status == "succeeded":
@@ -254,6 +290,24 @@ def _derive_cluster_id(target_id: str, target_node) -> str:
     return ""
 
 
+def reverify(execution_id: str) -> RecoveryExecution:
+    """主动触发某 execution 的重新验证(不触发 auto rollback)。
+
+    用于:① UI dashboard 刷新 verify_status ② succeeded 后等了一段时间想再确认状态。
+    仅允许 status ∈ (succeeded, rolled_back);其他状态(awaiting_approval / failed)报 409。
+    """
+    execution = store.get_execution(execution_id)
+    if execution is None:
+        raise ExecutionError(f"execution not found: {execution_id}", 404)
+    if execution.status not in ("succeeded", "rolled_back"):
+        raise ExecutionError(
+            f"reverify only allowed on succeeded/rolled_back executions (current: {execution.status})",
+            code=409,
+        )
+    _verify_and_maybe_rollback(execution, auto_rollback=False)
+    return execution
+
+
 # ============================================================
 # 列表 + 持久化
 # ============================================================
@@ -282,8 +336,15 @@ def list_executions(status: str | None = None,
     return executions[:limit]
 
 
-def _run_handler_and_persist(execution: RecoveryExecution) -> RecoveryExecution:
-    """执行 handler,更新 status,持久化到 Neo4j。供 execute / _continue / rollback 复用。"""
+def _run_handler_and_persist(execution: RecoveryExecution,
+                              auto_rollback: bool = True,
+                              verify: bool = True) -> RecoveryExecution:
+    """执行 handler,更新 status,持久化到 Neo4j。供 execute / _continue / rollback 复用。
+
+    auto_rollback=True(默认):succeeded 后若 verify_status=failed → 自动调 rollback。
+    rollback 自身重入本函数时传 auto_rollback=False 防递归。
+    verify=False:跳过 verifier(测试 / 用户显式关闭场景)。
+    """
     handler = get_handler(execution.action_id)
     if handler is None:
         execution.result = {"success": False, "error": f"no handler for action {execution.action_id}"}
@@ -295,6 +356,7 @@ def _run_handler_and_persist(execution: RecoveryExecution) -> RecoveryExecution:
     context = {
         "execution_id": execution.execution_id,
         "initiated_by": execution.initiated_by,
+        "auto_rollback": auto_rollback,
     }
 
     try:
@@ -307,6 +369,10 @@ def _run_handler_and_persist(execution: RecoveryExecution) -> RecoveryExecution:
     execution.status = "succeeded" if result.get("success") else "failed"
     store.update_execution(execution)
 
+    # Phase 2 余项 — 执行成功后跑 verifier
+    if execution.status == "succeeded" and verify:
+        _verify_and_maybe_rollback(execution, auto_rollback=auto_rollback)
+
     try:
         _persist_execution(execution)
     except Exception as e:    # noqa
@@ -315,6 +381,69 @@ def _run_handler_and_persist(execution: RecoveryExecution) -> RecoveryExecution:
         )
 
     return execution
+
+
+def _verify_and_maybe_rollback(execution: RecoveryExecution, auto_rollback: bool) -> None:
+    """跑 verifier;若 passed=False 且 auto_rollback=True → 触发自动回滚。
+
+    verify_status 取值:passed | failed | skipped | not_supported | timeout | error
+    """
+    from app.recovery.verifiers import run_verifier
+
+    context = {
+        "execution_id": execution.execution_id,
+        "initiated_by": execution.initiated_by,
+    }
+    verdict = run_verifier(
+        execution.action_id,
+        execution.target_resource_id,
+        execution.input_params,
+        execution.result,
+        context,
+    )
+    execution.verify_result = verdict
+    execution.verified_at = datetime.now(timezone.utc).isoformat()
+
+    predicate = verdict.get("predicate", "")
+    if predicate in ("skipped", "not_supported"):
+        execution.verify_status = predicate
+    elif verdict.get("passed"):
+        execution.verify_status = "passed"
+    elif predicate == "error":
+        execution.verify_status = "error"
+    else:
+        execution.verify_status = "failed"
+
+    store.update_execution(execution)
+
+    # verify_failed + auto_rollback → 触发回滚(但仅当原动作有 rollback_action_id)
+    if execution.verify_status == "failed" and auto_rollback:
+        action = get_action(execution.action_id)
+        rb_action_id = (action or {}).get("rollback_action_id")
+        if not rb_action_id:
+            execution.result.setdefault("warnings", []).append(
+                f"verify_failed but action has no rollback_action_id, manual intervention needed"
+            )
+            store.update_execution(execution)
+            return
+        try:
+            rb = _do_rollback(
+                original=execution,
+                initiated_by="auto-verifier",
+                reason=f"auto rollback: verify_failed ({verdict.get('message', '')})",
+                auto_rollback_marker=True,
+            )
+            execution.result["auto_rollback"] = {
+                "triggered": True,
+                "rollback_execution_id": rb.execution_id,
+                "rollback_status": rb.status,
+            }
+            store.update_execution(execution)
+        except Exception as e:  # noqa: BLE001
+            execution.result.setdefault("warnings", []).append(
+                f"auto rollback failed: {type(e).__name__}: {e}"
+            )
+            store.update_execution(execution)
 
 
 def _persist_execution(execution: RecoveryExecution):
@@ -340,6 +469,8 @@ def _persist_execution(execution: RecoveryExecution):
                 e.result_json = $rjson,
                 e.reverses_execution_id = $reverses,
                 e.cluster_id = $cluster,
+                e.verify_status = $vstatus,
+                e.verified_at = $vat,
                 e.label = 'RecoveryExecution',
                 e.name = $name,
                 e.health_status = $health,
@@ -360,6 +491,8 @@ def _persist_execution(execution: RecoveryExecution):
               rjson=str(execution.result),
               reverses=execution.reverses_execution_id or "",
               cluster=execution.cluster_id or "",
+              vstatus=execution.verify_status or "",
+              vat=execution.verified_at or "",
               name=f"{execution.action_id} on {execution.target_resource_id}",
               health="normal" if execution.status == "succeeded" else "critical",
               )
