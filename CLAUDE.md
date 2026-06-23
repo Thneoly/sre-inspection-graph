@@ -15,7 +15,7 @@ L3 Dynamic Observability → MetricQuery + MetricSnapshot + AlertEvent + ChangeE
 L4 Inspection Results → InspectionRun/Rule/Finding
 
 + Data Source Service (DSS) → in-memory cache layer, decouples fault injection from Neo4j
-+ Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback / 真实 K8s+MySQL+Redis handler (Phase 2)
++ Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback / 真实 K8s+MySQL+Redis handler + 跨集群编排 / 自动验证 / 动作链 (Phase 2 余项)
 + Change Event Tracking (PRD-002) → ChangeEvent + correlated query + propagation BFS
 + Real-data Connectors (PRD-004) → K8s / Prometheus / Jaeger / flagd / K8s-events
 + Self-Inspection Report (PRD-003) → Jinja2 Markdown 报告 + 3 模板 + 12 模块 + 邮件订阅
@@ -47,13 +47,13 @@ make down           # Stop all
 make clean          # Remove containers + volumes + generated data
 
 # Testing
-make test           # Backend 418 tests + Frontend 68 tests
+make test           # Backend 472 tests + Frontend 71 tests
 make test-cov       # Backend coverage report
 
 # Single test
 cd backend && uv run python -m pytest tests/test_routers.py::test_topology -v -p no:asyncio
 cd backend && uv run python -m pytest tests/ -k "fault" -v -p no:asyncio    # filter by name
-cd backend && uv run python -m pytest tests/ -k "recovery" -v -p no:asyncio # 104 recovery tests
+cd backend && uv run python -m pytest tests/ -k "recovery" -v -p no:asyncio # 180 recovery tests
 cd backend && uv run python -m pytest tests/test_sprint23_connectors.py -v -p no:asyncio  # 39 PRD-004 tests
 cd frontend && npm test -- GraphCanvas                                       # vitest substring match
 
@@ -271,6 +271,57 @@ cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints,
 ### E2E
 
 `bash scripts/sprint3_e2e_test.sh` runs 8 curl steps against a live API: high_risk submit → approval list → approve → duplicate-approve 409 → low_risk sync → rollback → original marked rolled_back → duplicate-rollback 409.
+
+### Phase 2 余项 — 跨集群编排 + 自动验证 + 动作链
+
+补 PRD §9 列的 3 项原始 Phase 2 范围(此前只补了 handler 真实化技术债)。剩下 2 项(自定义动作脚本沙箱 / LDAP/SSO 审批集成)外部依赖重、安全风险大,Phase 3 再做。
+
+1. **跨集群恢复编排**:6 个 K8s handler 按 `target.cluster_id` 路由到对应 kubeconfig,而非固定 `active_cluster`。
+   - `k8s_client.py`:`_loaded_cluster` → `_active_cluster` + switch-and-reload(同集群幂等,异集群 reset+reload);`get_k8s_apps_api(cluster_id)` / `get_k8s_core_api(cluster_id)` 接受参数;`resolve_cluster_id(target_id)`(DSS prop 优先 → target_id 第二段兜底 → settings.kubeconfigs 校验);`k8s_ref(target_id)` 返三元组 `(cluster_id, namespace, name)`
+   - 全 6 个 K8s handler:`cluster_id, namespace, name = k8s_ref(target_id); api, ... = await get_k8s_*_api(cluster_id)`;result 加 `cluster_id`
+   - `RecoveryExecution` 加 `cluster_id` 字段,`execute()` / `_do_rollback` 创建时填充;Neo4j SET / serialize 都带
+   - kubernetes_asyncio config 是**全局状态**,故只能 switch-and-reload(~100ms 代价),真并发留 Phase 3 上 per-ApiClient `Configuration`
+
+2. **动作执行后自动验证**:`recovery/verifiers.py` 平行注册器 `VERIFIERS`,8 个 verifier(scale / restart_pod / restart_service / refresh_secret / rollback_deployment / drain_node + kill_query/clear_cache=not_supported)。每个 verifier 查 DSS predicate,返 `{passed, predicate, actual, expected, message}`。
+   - `_run_handler_and_persist` 单点插桩 `_verify_and_maybe_rollback`,覆盖 execute / `_continue_after_approval` / rollback 三路径
+   - **verify_failed + 有 rollback_action_id → 自动反向回滚**(`_do_rollback(auto_rollback_marker=True)`)。反向 execution 自身 `verify_status=""` 且 `auto_rollback=False`,**双重防递归**
+   - 无 rollback_action_id 的 action verify_failed → 仅 `result.warnings += "manual intervention needed"`,status 保持 succeeded
+   - `RecoveryExecution` 加 `verify_status` / `verify_result` / `verified_at` 字段(verify_status ∈ "" / passed / failed / skipped / not_supported / error)
+   - `POST /api/v1/recovery/executions/{id}/verify` 主动重验,不触发 auto rollback(用户操作不应有副作用)
+   - `ExecuteRequest.verify: bool = True` 可关闭。审批前 verify 偏好暂存在 `input_params.__verify`,`_continue_after_approval` 阶段读出
+
+3. **动作链 / 编排器**:声明式 `CHAIN_TEMPLATES` + `recovery/chains.py`,3 个内置 template:
+   - `safe_rollback_deployment`(rollback_all):scale +2 → rollback → scale -2
+   - `graceful_refresh_secret`(stop):refresh_secret + 重启 USES 反向 Pod
+   - `drain_node_safely`(stop):drain_node 单步
+   - **on_failure 策略**:`stop`(失败即停 → partial) / `rollback_all`(反向 _do_rollback 1..N-1 → rolled_back) / `continue`(失败继续 N+1 → 末尾 partial)
+   - **链级单次审批**:任一步 medium/high → 整链 awaiting_approval(approver_team 取 max_risk step 派生)。审批 reject → chain.failed,无 step 执行。`approval.approve()` / `reject()` 检测 `execution_id` 实际指向 `chain_id` → 调 `chains.continue_chain_after_approval` / 标 chain 状态
+   - step execution 通过 `chain_id` / `chain_step_index` 反向关联;step 自身 `auto_rollback=False`(链 on_failure 单一决策点,不要 step 重复回滚)
+   - `RecoveryChain` dataclass 入 `store.chains`(uvicorn 重启会丢,Phase 3 再上 Neo4j dual-write)
+   - 端点:`GET /chains/templates` / `GET /chains/templates/{id}` / `POST /chains/execute`(202 if approval else 200) / `GET /chains` / `GET /chains/{id}`(expand step) / `POST /chains/{id}/abort`
+
+### Phase 2 余项 关键设计
+
+1. **switch-and-reload 不是 per-ApiClient 真并发** —— kubernetes_asyncio config 是全局状态(load_kube_config 写入模块级 Configuration),无法同时持多个 cluster。Phase 2 余项接受 ~100ms 切换代价 + `_active_cluster` 标记;Phase 3 上 `Configuration(host=..., api_key=...)` per-call 真正并发
+2. **VERIFIERS 与 HANDLERS 平行注册器** —— 与 PRD-002 Phase 2 的 `CHANGE_ACTION_SUGGESTIONS` 同构,单一插桩在 `_run_handler_and_persist`。新增 verifier 三步:写函数 → 注册 dict → 测试
+3. **auto rollback 双重防递归** —— rollback execution 自身 verify=False(`_do_rollback(auto_rollback_marker=True)` → `_run_handler_and_persist(verify=not marker)`)+ auto_rollback=False。避免 verify_failed → rollback → rollback verify_failed → ... 死循环
+4. **链级审批合并** —— PRD §9 原描述「动作链」隐含每步可能独立审批,但实操"每步一审"会让链卡死。本期决策:整链一次审批(approver_team 取最高风险 step 派生),审批过 → 整链跑完;reject → chain.failed 无 step 执行
+5. **abort 不做反向 rollback** —— 用户主动 abort 语义是"放弃这串操作",不是"撤销已发生的"。已执行成功的 step 保留 succeeded 状态;chain.status=aborted
+6. **continue 策略循环内处理而非递归** —— `_run_chain_steps` 内部 `if on_failure == "continue": continue`,避免递归 `_handle_step_failure → _run_chain_steps` 导致 `had_failure` 状态丢失
+
+### Phase 2 余项 File Map
+
+- k8s_client 多集群:`backend/app/datasource/connectors/k8s_client.py` — `_active_cluster` / `ensure_kube_loaded(cluster_id)` / `get_k8s_apps_api(cluster_id)` / `get_k8s_core_api(cluster_id)` / `resolve_cluster_id` / `k8s_ref` 返三元组
+- 自动验证:`backend/app/recovery/verifiers.py` — 8 verifier + `VERIFIERS` 注册器 + `get_verifier` / `run_verifier`(异常兜底)
+- 自动回滚 + reverify:`backend/app/recovery/execution.py` — `_run_handler_and_persist(verify, auto_rollback)` + `_verify_and_maybe_rollback` + `_do_rollback(auto_rollback_marker)` + `reverify`
+- 动作链编排器:`backend/app/recovery/chains.py` — `execute_chain` / `continue_chain_after_approval` / `abort_chain` / `_run_chain_steps` / `_run_single_step` / `_handle_step_failure`
+- 模板:`backend/app/recovery/action_defs.py` — `CHAIN_TEMPLATES` + `get_chain_template` + `list_chain_templates`
+- 模型:`backend/app/datasource/models.py` — `RecoveryExecution` 加 cluster_id / verify_* / chain_* 字段;`RecoveryChain` dataclass
+- 存储:`backend/app/datasource/store.py` — `chains` dict + `add_chain` / `get_chain` / `list_chains` / `update_chain`
+- 端点:`backend/app/routers/recovery.py` — `POST /executions/{id}/verify` + `/chains/*` 5 端点 + `_serialize_chain`
+- 审批集成:`backend/app/recovery/approval.py` — `approve()` / `reject()` 检测 chain_id 派发 chain continuation
+- 前端:`frontend/src/components/Recovery/RecoveryChainsView.tsx`(新)+ `ExecutionsView.tsx`(加集群 / 验证列 + 详情段)+ `api/client.ts`(+ Phase 2 字段 + Chain types + 5 函数)+ `App.tsx` / `MainLayout.tsx` 加路由 + 菜单
+- 测试:`backend/tests/test_recovery_multicluster.py`(16)+ `test_recovery_verify.py`(24)+ `test_recovery_chains.py`(14)+ `frontend/src/__tests__/RecoveryChainsView.test.tsx`(3)
 
 ## OTel Demo Real-Data Connectors — PRD-004
 

@@ -170,6 +170,13 @@ export interface RecoveryExecution {
   approval_id: string | null;
   rollback_execution_id: string | null;
   reverses_execution_id: string | null;
+  // Phase 2 余项
+  cluster_id?: string;
+  verify_status?: '' | 'passed' | 'failed' | 'skipped' | 'not_supported' | 'error';
+  verify_result?: Record<string, unknown>;
+  verified_at?: string;
+  chain_id?: string;
+  chain_step_index?: number;
   dry_run_summary: {
     affected_count: number;
     estimated_sla_impact: string | null;
@@ -301,6 +308,102 @@ export function postExecutionRollback(req: {
   return api.post<RecoveryExecution>(
     `/recovery/executions/${encodeURIComponent(req.execution_id)}/rollback`,
     { initiated_by: req.initiated_by ?? 'web-ui', reason: req.reason ?? '' },
+  );
+}
+
+export function postExecutionVerify(executionId: string) {
+  return api.post<RecoveryExecution>(
+    `/recovery/executions/${encodeURIComponent(executionId)}/verify`,
+  );
+}
+
+
+// ============================================================
+// PRD-001 Phase 2 余项 — Recovery Chains
+// ============================================================
+
+export type ChainStatus =
+  | 'pending'
+  | 'awaiting_approval'
+  | 'executing'
+  | 'succeeded'
+  | 'partial'
+  | 'failed'
+  | 'rolled_back'
+  | 'aborted';
+
+export type ChainOnFailure = 'stop' | 'rollback_all' | 'continue';
+
+export interface ChainTemplate {
+  template_id: string;
+  name: string;
+  description: string;
+  target_type: string;
+  on_failure: ChainOnFailure;
+  steps: Array<{
+    action_id: string;
+    params: Record<string, unknown>;
+    target_from: string;
+    verify_required: boolean;
+  }>;
+}
+
+export interface RecoveryChain {
+  chain_id: string;
+  template_id: string;
+  template_name: string;
+  target_resource_id: string;
+  status: ChainStatus;
+  on_failure: ChainOnFailure;
+  current_step_index: number;
+  total_steps: number;
+  initiated_by: string;
+  initiated_at: string;
+  completed_at: string;
+  approval_id: string;
+  failure_reason: string;
+  step_execution_ids: string[];
+  steps?: RecoveryExecution[];
+}
+
+export function fetchChainTemplates() {
+  return api.get<{ templates: ChainTemplate[]; total: number }>('/recovery/chains/templates');
+}
+
+export function fetchChainTemplate(templateId: string) {
+  return api.get<ChainTemplate>(
+    `/recovery/chains/templates/${encodeURIComponent(templateId)}`,
+  );
+}
+
+export function postChainExecute(req: {
+  template_id: string;
+  target_resource_id: string;
+  initiated_by?: string;
+  request_reason?: string;
+  on_failure_override?: ChainOnFailure;
+}) {
+  return api.post<RecoveryChain>('/recovery/chains/execute', {
+    template_id: req.template_id,
+    target_resource_id: req.target_resource_id,
+    initiated_by: req.initiated_by ?? 'web-ui',
+    request_reason: req.request_reason ?? '',
+    on_failure_override: req.on_failure_override,
+  });
+}
+
+export function fetchChains(params?: { status?: ChainStatus }) {
+  return api.get<{ chains: RecoveryChain[]; total: number }>('/recovery/chains', { params });
+}
+
+export function fetchChain(chainId: string) {
+  return api.get<RecoveryChain>(`/recovery/chains/${encodeURIComponent(chainId)}`);
+}
+
+export function postChainAbort(chainId: string, reason: string = '') {
+  return api.post<RecoveryChain>(
+    `/recovery/chains/${encodeURIComponent(chainId)}/abort`,
+    { reason },
   );
 }
 

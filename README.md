@@ -1,6 +1,6 @@
 # SRE 云原生巡检图谱平台
 
-基于 Neo4j 四层模型的云原生资源巡检 + 故障模拟 + **恢复动作引擎(含审批流 + 一键回滚)** + **OpenTelemetry Demo 真实数据接入(PRD-004)** 平台。
+基于 Neo4j 四层模型的云原生资源巡检 + 故障模拟 + **恢复动作引擎(含审批流 + 一键回滚 + 跨集群编排 + 自动验证 + 动作链)** + **OpenTelemetry Demo 真实数据接入(PRD-004)** 平台。
 
 ## 架构
 
@@ -10,7 +10,8 @@ L2 资源实例图谱  →  应用/组件/Deployment/Pod/中间件 30+ 实例
 L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent + ChangeEvent
 L4 巡检结果层    →  InspectionRun/Rule/Finding
 +  故障模拟引擎   →  FaultScenario + 时间线推进 + 数据维度注入
-+  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001)
++  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001) +
+                    跨集群编排 + 执行后自动验证 + 动作链 (Phase 2 余项)
 +  变更事件追踪   →  ChangeEvent + 故障关联查询 + 前端时间线 + Neo4j 双写 + K8s watcher + webhook + 频率告警 + CORRELATED_WITH (PRD-002)
 +  实数据 connector → K8s + Prometheus + Jaeger + flagd + K8s events (PRD-004)
 +  自检报告引擎   →  Jinja2 Markdown + 3 模板 + 邮件订阅 + APScheduler (PRD-003)
@@ -70,7 +71,8 @@ make dev-frontend   # 终端3: 前端 (HMR)
 | 镜像风险 | `/image-risk` | 镜像漏洞影响传播 |
 | 告警归并 | `/alert-aggregation` | 多告警按应用归并 |
 | 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
-| 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 |
+| 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 + 验证状态 + 集群 |
+| 恢复链   | `/recovery/chains` | 多步恢复编排:发起 / 监控 / 中止 + 失败策略可视 |
 | 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 + Git/CI + YAML diff + 关联告警 (PRD-002) |
 | 报告中心 | `/reports` | 自检报告生成 + 下载 + 邮件订阅 (PRD-003) |
 | Connector 状态 | `/connectors` | 5 个数据源 connector 健康检查 + 手动同步 (PRD-004) |
@@ -104,6 +106,12 @@ make dev-frontend   # 终端3: 前端 (HMR)
 make dev-api &                    # 终端 1
 bash scripts/sprint3_e2e_test.sh  # 终端 2 — 8 步检查 high_risk 审批流 + 回滚
 ```
+
+**Phase 2 余项**(3 件,补 PRD §9 原始范围):
+
+- **跨集群恢复编排**:6 个 K8s handler 按 `target.cluster_id` 路由到对应 kubeconfig,而非固定 active_cluster。`resolve_cluster_id` 优先 DSS prop / 兜底 `target_id` 第二段;`k8s_ref` 返三元组 `(cluster_id, namespace, name)`;ensure_kube_loaded 切换时 reset+reload kubeconfig
+- **动作执行后自动验证**:每个 action 注册 verifier(8 个:scale/restart_pod/restart_service/refresh_secret/rollback/drain + kill_query/clear_cache 标 not_supported)。succeeded 后跑 predicate 查 DSS;**verify_failed + 有 rollback_action_id → 自动反向回滚**;反向 execution 自身不再 verify 防递归。`POST /executions/{id}/verify` 主动重验(不触发 auto rollback)。`ExecuteRequest.verify=false` 可关闭
+- **动作链 / 编排器**:声明式 `CHAIN_TEMPLATES`(safe_rollback_deployment / graceful_refresh_secret / drain_node_safely)+ 3 失败策略(stop / rollback_all / continue);链级单次审批(任一步 medium/high → 整链审批一次,避免每步卡死);step execution.chain_id / chain_step_index 反向关联;5 端点(templates / execute / list / get / abort)
 
 ## OpenTelemetry Demo 真实数据接入(PRD-004)
 
@@ -206,23 +214,26 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 │   ├── app/
 │   │   ├── db/        # Neo4j 客户端 + 6 视图 Cypher 查询
 │   │   ├── routers/   # API 路由 (视图 + simulation + recovery + health)
-│   │   ├── recovery/  # PRD-001:action_defs / cascade / execution / approval / handlers
+│   │   ├── recovery/  # PRD-001:action_defs / cascade / execution / approval / handlers /
+│   │   │              # verifiers (Phase 2 余项) / chains (Phase 2 余项)
 │   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
 │   │   ├── models/    # Pydantic 模型
 │   │   └── services/  # 业务逻辑
-│   └── tests/         # 418 pytest (含 104 mock + 15 real recovery + 67 reports + 21 phase2 变更 + 20 alert/flagd 测试)
+│   └── tests/         # 472 pytest (含 104 mock + 15 real recovery + 16 跨集群 +
+│                      # 24 自动验证 + 14 动作链 + 67 reports + 21 phase2 变更 +
+│                      # 20 alert/flagd 测试)
 ├── frontend/
 │   └── src/
 │       ├── components/
 │       │   ├── Graph/      # GraphCanvas + NodeDetailPanel + LayerToggle
 │       │   ├── Views/      # 6 视图 + SimulationView
 │       │   ├── Recovery/   # RecoveryActionsSection / DryRunModal /
-│       │   │              # ExecutionsView / ApprovalsView (PRD-001)
+│       │   │              # ExecutionsView / ApprovalsView / RecoveryChainsView (PRD-001)
 │       │   └── Layout/     # MainLayout (antd)
 │       ├── api/            # API client (Axios)
 │       ├── hooks/          # useGraphData
 │       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 68 vitest
+│       └── __tests__/      # 71 vitest
 ├── docker-compose.yml
 ├── Makefile
 └── .gitignore
@@ -231,6 +242,6 @@ bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
 ## 测试
 
 ```bash
-make test          # backend 418 + frontend 68 = 486 tests
+make test          # backend 472 + frontend 71 = 543 tests
 make test-cov      # backend coverage
 ```

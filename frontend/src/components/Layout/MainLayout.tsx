@@ -14,6 +14,7 @@ import {
   FieldTimeOutlined,
   FileTextOutlined,
   ApiOutlined,
+  BranchesOutlined,
 } from '@ant-design/icons';
 
 const { Sider, Content, Header: AntHeader } = Layout;
@@ -29,6 +30,7 @@ const menuItems: MenuProps['items'] = [
   { type: 'divider' },
   { key: '/recovery/approvals', icon: <AuditOutlined />,      label: '审批中心' },
   { key: '/recovery/history',  icon: <HistoryOutlined />,     label: '恢复历史' },
+  { key: '/recovery/chains',   icon: <BranchesOutlined />,    label: '恢复链' },
   { key: '/reports',           icon: <FileTextOutlined />,    label: '报告中心' },
   { key: '/connectors',        icon: <ApiOutlined />,         label: 'Connector 状态' },
 ];

@@ -12,6 +12,7 @@ import ConnectorsView from './components/Views/ConnectorsView';
 import SimulationView from './components/Views/SimulationView';
 import ExecutionsView from './components/Recovery/ExecutionsView';
 import ApprovalsView from './components/Recovery/ApprovalsView';
+import RecoveryChainsView from './components/Recovery/RecoveryChainsView';
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/change-timeline" element={<ChangeTimelineView />} />
         <Route path="/recovery/approvals" element={<ApprovalsView />} />
         <Route path="/recovery/history" element={<ExecutionsView />} />
+        <Route path="/recovery/chains" element={<RecoveryChainsView />} />
         <Route path="/reports" element={<ReportsView />} />
         <Route path="/connectors" element={<ConnectorsView />} />
       </Route>

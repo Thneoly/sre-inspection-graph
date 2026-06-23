@@ -37,6 +37,14 @@ const statusColor: Record<ExecutionStatus, string> = {
   rolled_back: 'magenta',
 };
 
+const verifyColor: Record<string, string> = {
+  passed: 'success',
+  failed: 'error',
+  skipped: 'default',
+  not_supported: 'default',
+  error: 'red',
+};
+
 const STATUS_OPTIONS: { value: ExecutionStatus; label: string }[] = [
   { value: 'succeeded', label: '已成功' },
   { value: 'failed', label: '已失败' },
@@ -153,9 +161,20 @@ export default function ExecutionsView() {
       render: (rid: string, row) => (
         <Space size={4} direction="vertical" style={{ gap: 0 }}>
           <Text style={{ fontSize: 11, fontFamily: 'monospace' }}>{rid}</Text>
-          <Tag>{row.target_resource_type}</Tag>
+          <Space size={4}>
+            <Tag>{row.target_resource_type}</Tag>
+            {row.cluster_id && <Tag color="geekblue" style={{ fontSize: 10 }}>{row.cluster_id}</Tag>}
+          </Space>
         </Space>
       ),
+    },
+    {
+      title: '验证',
+      dataIndex: 'verify_status',
+      key: 'verify_status',
+      width: 100,
+      render: (s: string | undefined) =>
+        s ? <Tag color={verifyColor[s] || 'default'}>{s}</Tag> : <Text type="secondary">-</Text>,
     },
     {
       title: '发起人',
@@ -290,6 +309,30 @@ export default function ExecutionsView() {
               <Descriptions.Item label="完成时间">
                 {selectedExecution.completed_at || '-'}
               </Descriptions.Item>
+              {selectedExecution.cluster_id && (
+                <Descriptions.Item label="所属集群">
+                  <Tag color="geekblue">{selectedExecution.cluster_id}</Tag>
+                </Descriptions.Item>
+              )}
+              {selectedExecution.verify_status && (
+                <Descriptions.Item label="验证状态">
+                  <Tag color={verifyColor[selectedExecution.verify_status] || 'default'}>
+                    {selectedExecution.verify_status}
+                  </Tag>
+                  {selectedExecution.verified_at && (
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 11 }}>
+                      {selectedExecution.verified_at}
+                    </Text>
+                  )}
+                </Descriptions.Item>
+              )}
+              {selectedExecution.chain_id && (
+                <Descriptions.Item label="所属链">
+                  <Text code style={{ fontSize: 11 }}>
+                    {selectedExecution.chain_id.slice(0, 8)} (step {selectedExecution.chain_step_index})
+                  </Text>
+                </Descriptions.Item>
+              )}
               {selectedExecution.finding_id && (
                 <Descriptions.Item label="触发 Finding">
                   <Text code style={{ fontSize: 11 }}>{selectedExecution.finding_id}</Text>
@@ -313,6 +356,14 @@ export default function ExecutionsView() {
                 {JSON.stringify(selectedExecution.result, null, 2)}
               </pre>
             </Card>
+
+            {selectedExecution.verify_result && Object.keys(selectedExecution.verify_result).length > 0 && (
+              <Card title="验证结果" size="small" style={{ marginTop: 16 }}>
+                <pre style={{ fontSize: 11, background: '#f5f5f5', padding: 8, margin: 0, borderRadius: 4 }}>
+                  {JSON.stringify(selectedExecution.verify_result, null, 2)}
+                </pre>
+              </Card>
+            )}
           </>
         )}
       </Drawer>
