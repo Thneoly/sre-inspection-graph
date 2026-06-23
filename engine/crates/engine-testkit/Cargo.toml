@@ -1,0 +1,13 @@
+[package]
+name = "engine-testkit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared test fixtures + contract runner for parity testing against reference/"
+
+[dependencies]
+engine-core = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }

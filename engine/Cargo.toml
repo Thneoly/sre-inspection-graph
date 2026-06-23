@@ -1,0 +1,97 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine-core",
+    "crates/engine-identity",
+    "crates/engine-wasm",
+    "crates/engine-recovery",
+    "crates/engine-changes",
+    "crates/engine-reports",
+    "crates/engine-storage",
+    "crates/engine-bindings",
+    "crates/engine-testkit",
+    "crates/engine-cli",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.83"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Thneoly/sre-inspection-graph"
+authors = ["SRE Graph Team"]
+
+[workspace.dependencies]
+# Internal
+engine-core      = { path = "crates/engine-core" }
+engine-identity  = { path = "crates/engine-identity" }
+engine-wasm      = { path = "crates/engine-wasm" }
+engine-recovery  = { path = "crates/engine-recovery" }
+engine-changes   = { path = "crates/engine-changes" }
+engine-reports   = { path = "crates/engine-reports" }
+engine-storage   = { path = "crates/engine-storage" }
+engine-bindings  = { path = "crates/engine-bindings" }
+engine-testkit   = { path = "crates/engine-testkit" }
+
+# Runtime & async
+tokio        = { version = "1.40", features = ["full"] }
+
+# Data plane
+arrow        = "54"
+arrow-flight = "54"
+arrow-schema = "54"
+datafusion   = "44"
+parquet      = "54"
+
+# WASM
+wasmtime      = "23"
+wasmtime-wasi = "23"
+wit-bindgen-rt = "0.30"
+
+# Networking (cli only)
+axum         = "0.7"
+tonic        = "0.12"
+tower        = "0.5"
+reqwest      = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Storage
+sqlx         = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+neo4rs       = "0.8"
+
+# Serde / serialization
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+toml         = "0.8"
+
+# Time
+chrono       = { version = "0.4", features = ["serde"] }
+time         = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow    = "1"
+thiserror = "1"
+
+# Templates (engine-reports)
+tera = "1"
+
+# UUIDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Cron (engine-reports scheduler)
+cron = "0.13"
+
+# Test deps
+insta = { version = "1", features = ["yaml", "json"] }
+proptest = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

@@ -1,0 +1,15 @@
+[package]
+name = "engine-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "wasmtime runtime + capability injection for WASM modules"
+
+[dependencies]
+engine-core = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }

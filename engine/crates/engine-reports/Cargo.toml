@@ -1,0 +1,16 @@
+[package]
+name = "engine-reports"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Self-inspection report engine (PRD-003 port) — health score / templates / scheduler / email"
+
+[dependencies]
+engine-core = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }

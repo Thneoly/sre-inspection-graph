@@ -1,0 +1,13 @@
+[package]
+name = "engine-identity"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Identity Resolver — DataFusion SQL over Arrow facts"
+
+[dependencies]
+engine-core = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }

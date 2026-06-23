@@ -1,0 +1,20 @@
+[package]
+name = "engine-storage"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Storage backends — SQLite (default) + Parquet + optional Neo4j adapter"
+
+[features]
+default = ["sqlite", "parquet"]
+sqlite  = []
+parquet = []
+neo4j   = []
+
+[dependencies]
+engine-core = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }

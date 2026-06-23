@@ -1,0 +1,16 @@
+[package]
+name = "engine-changes"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ChangeEvent service (PRD-002 port) — propagation BFS / yaml diff / frequency / alert correlation"
+
+[dependencies]
+engine-core = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }

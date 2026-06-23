@@ -1,0 +1,22 @@
+[package]
+name = "engine-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Headless binary — REST + Arrow Flight server (team / SaaS mode)"
+
+[[bin]]
+name = "engine-cli"
+path = "src/main.rs"
+
+[dependencies]
+engine-core    = { workspace = true }
+engine-storage = { workspace = true }
+engine-wasm    = { workspace = true }
+tokio          = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+anyhow         = { workspace = true }
+tracing        = { workspace = true }
+tracing-subscriber = { workspace = true }
