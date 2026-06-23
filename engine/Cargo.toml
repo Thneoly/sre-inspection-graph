@@ -15,11 +15,14 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Thneoly/sre-inspection-graph"
 authors = ["SRE Graph Team"]
 
+# 依赖版本对齐 2026-06 最新稳定;详见 doc/16 §3。
+# Phase 1 这些 dep 大多只在 workspace 声明、尚未 use,巨型 major
+# bump(wasmtime 23→46 / datafusion 44→54 / arrow 54→59)风险面小。
 [workspace.dependencies]
 # Internal
 engine-core      = { path = "crates/engine-core" }
@@ -33,28 +36,28 @@ engine-bindings  = { path = "crates/engine-bindings" }
 engine-testkit   = { path = "crates/engine-testkit" }
 
 # Runtime & async
-tokio        = { version = "1.40", features = ["full"] }
+tokio        = { version = "1.52", features = ["full"] }
 
 # Data plane
-arrow        = "54"
-arrow-flight = "54"
-arrow-schema = "54"
-datafusion   = "44"
-parquet      = "54"
+arrow        = "59"
+arrow-flight = "59"
+arrow-schema = "59"
+datafusion   = "54"
+parquet      = "59"
 
-# WASM
-wasmtime      = "23"
-wasmtime-wasi = "23"
-wit-bindgen-rt = "0.30"
+# WASM(Component Model — wasmtime 30+ 才稳定支持)
+wasmtime       = "46"
+wasmtime-wasi  = "46"
+wit-bindgen-rt = "0.44"
 
 # Networking (cli only)
-axum         = "0.7"
-tonic        = "0.12"
+axum         = "0.8"
+tonic        = "0.14"
 tower        = "0.5"
-reqwest      = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest      = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
 
 # Storage
-sqlx         = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+sqlx         = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
 neo4rs       = "0.8"
 
 # Serde / serialization
@@ -72,7 +75,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow    = "1"
-thiserror = "1"
+thiserror = "2"
 
 # Templates (engine-reports)
 tera = "1"
@@ -81,7 +84,7 @@ tera = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Cron (engine-reports scheduler)
-cron = "0.13"
+cron = "0.17"
 
 # Test deps
 insta = { version = "1", features = ["yaml", "json"] }
