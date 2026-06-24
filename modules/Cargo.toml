@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "sdk",
     "connectors/hello-world",
+    "connectors/k8s-mini",
 ]
 
 [workspace.package]

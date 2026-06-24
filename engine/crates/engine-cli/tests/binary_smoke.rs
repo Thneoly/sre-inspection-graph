@@ -82,6 +82,16 @@ fn tick_loads_manifest_and_emits_facts() {
         stdout.contains("arrow RecordBatch"),
         "arrow summary missing"
     );
+    // 如果 k8s-mini 也 build 了(modules/manifest.toml 默认包含),要看到它
+    if modules_root()
+        .join("target/wasm32-wasip2/release/k8s_mini.wasm")
+        .exists()
+    {
+        assert!(
+            stdout.contains("k8s-mini:"),
+            "k8s-mini summary line missing: {stdout}"
+        );
+    }
 }
 
 #[test]

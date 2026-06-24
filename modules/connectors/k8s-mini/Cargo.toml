@@ -1,0 +1,26 @@
+[package]
+name = "k8s-mini"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Mini K8s connector — emits one topology-node Fact per namespace from config_json"
+
+[lib]
+# cdylib 出 wasm32-wasip2 二进制;rlib 让 host 端单测可链接(由于全部
+# 逻辑都在 cfg(target_arch = \"wasm32\") 里,host 端 lib 实际是空 crate)。
+crate-type = ["cdylib", "rlib"]
+
+# 与 hello-world 一致 —— 见 doc/16-repo-and-codebase-layout.md。
+# wac compose / cargo-component 启用时读此段;cargo build 时是 noop。
+[package.metadata.component]
+package = "sre:inspection-k8s-mini@0.1.0"
+
+[package.metadata.component.target]
+path  = "../../../specs/wit"
+world = "connector-world"
+
+[dependencies]
+module-sdk  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+wit-bindgen = { workspace = true }

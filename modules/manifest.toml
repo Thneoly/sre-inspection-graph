@@ -22,5 +22,18 @@ wasi_version = "p2"
 # sha256 留空 — Phase 2 起强制校验
 sha256 = ""
 
-# Phase 3+ 起在这里追加 k8s / prometheus / jaeger / flagd / k8s-events 5 个
-# real connector,以及 8 个 PRD-001 handler。
+# Phase 2 E — k8s-mini,第二条 connector,验证 WasmRuntime 多 connector 编排路径。
+# 当前用 config_json 静态读 namespaces 列表;Phase 3 起 http-client capability
+# 接 reqwest 后切真实 K8s API。
+[[modules]]
+name = "k8s-mini"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/k8s_mini.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock"]
+sync_interval_seconds = 30
+wasi_version = "p2"
+sha256 = ""
+
+# Phase 3+ 起在这里追加 prometheus / jaeger / flagd / k8s-events real connector
+# 以及 8 个 PRD-001 handler。
