@@ -136,6 +136,18 @@ impl WasmRuntime {
         })
     }
 
+    /// 不加载任何 connector 的空 runtime。
+    ///
+    /// 用于宿主启动时 manifest 缺失 / 解析失败的 fallback —— 让 UI 起得来,
+    /// `connector_count() == 0` 时前端引导用户跑 build。Tauri F path 用。
+    pub fn empty(modules_root: impl Into<PathBuf>) -> Self {
+        Self {
+            modules_root: modules_root.into(),
+            entries: Vec::new(),
+            load_errors: Vec::new(),
+        }
+    }
+
     /// 已加载 connector 数。
     pub fn connector_count(&self) -> usize {
         self.entries.len()

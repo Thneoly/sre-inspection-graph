@@ -88,6 +88,21 @@ async fn wasm_runtime_loads_hello_world_from_manifest() {
     );
 }
 
+/// `WasmRuntime::empty` —— Tauri F path fallback,modules 没 build / manifest 缺失
+/// 时让 host 起得来。
+#[tokio::test]
+async fn wasm_runtime_empty_is_inert_but_callable() {
+    let rt = WasmRuntime::empty(modules_root());
+    assert_eq!(rt.connector_count(), 0);
+    assert!(rt.connector_names().is_empty());
+    assert!(rt.load_errors.is_empty());
+
+    let summary = rt.sync_all("{}").await;
+    assert_eq!(summary.batch.len(), 0);
+    assert_eq!(summary.per_connector.len(), 0);
+    assert_eq!(summary.total_errors, 0);
+}
+
 #[tokio::test]
 async fn wasm_runtime_records_load_errors_for_missing_wasm() {
     // 不依赖真实 wasm,造一个指向不存在文件的 manifest

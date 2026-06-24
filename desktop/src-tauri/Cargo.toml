@@ -27,6 +27,11 @@ tauri-plugin-shell = "2.3"
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 
+# 启动 wasm runtime 时的错误处理 + 日志
+anyhow             = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # engine path deps(按 doc/16 §3 配置)
 engine-core    = { path = "../../engine/crates/engine-core" }
 engine-storage = { path = "../../engine/crates/engine-storage" }
