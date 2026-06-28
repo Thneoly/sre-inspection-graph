@@ -51,10 +51,12 @@ wasmtime-wasi  = "46"
 wit-bindgen-rt = "0.44"
 
 # Networking (cli only)
+# 注:reqwest 0.13 把 `rustls-tls` feature 拆成了 `rustls`(+ aws-lc-rs provider
+# 走 `__rustls-aws-lc-rs`)。这里用 `rustls` 即可拿到完整 TLS。
 axum         = "0.8"
 tonic        = "0.14"
 tower        = "0.5"
-reqwest      = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
+reqwest      = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # Storage
 sqlx         = { version = "0.9", features = ["sqlite", "runtime-tokio"] }

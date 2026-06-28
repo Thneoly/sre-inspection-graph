@@ -9,8 +9,11 @@
 //! - `WasmConnector::sync(json).await` 调真实 guest export 拿回 SyncResult + Facts
 //!
 //! 关于 http-client:WIT world 声明了 import,host 必须实现,即便 guest 不调
-//! (wasmtime 46 严格校验)。Phase 2 给 stub(返 network error),Phase 3 接 reqwest。
+//! (wasmtime 46 严格校验)。**Phase 1 G** 起 [`http_host::http_get`] 真实装
+//! (reqwest GET + capability allow-list),本文件 `HttpClientHost for State`
+//! 是它到 WIT 类型的薄适配。host 类型 ↔ binding 类型的字段平移在这里。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
@@ -54,9 +57,20 @@ pub struct WasmConnector {
 
 /// host 端 Store 内挂载的状态。`WasiView::ctx` 返回 `WasiCtxView` 同时
 /// 暴露 WasiCtx + ResourceTable,wasmtime-wasi 46+ 不再要分别的 IoView。
+///
+/// Phase 1 G 起额外持:
+/// - `http_client` —— 共享的 reqwest Client(`Arc<Inner>` 内部,clone 廉价),
+///   `HttpClientHost::get` 用它发 GET。由 [`WasmConnector::load_with_http`]
+///   注入,便于测试换成预配 timeout 的 Client
+/// - `allowed_capabilities` —— 该 connector 在 manifest 申明的 capability
+///   allow-list。`http_get` 每次调用查 `"http-client"` 是否在内,deny by default
 pub struct State {
     table: ResourceTable,
     wasi: WasiCtx,
+    /// `http-client` capability 用的 reqwest Client(共享,clone 廉价)。
+    http_client: reqwest::Client,
+    /// 该 connector 申明的 capability 集合(`manifest.capabilities`)。
+    allowed_capabilities: HashSet<String>,
 }
 
 impl WasiView for State {
@@ -66,6 +80,18 @@ impl WasiView for State {
             table: &mut self.table,
         }
     }
+}
+
+/// Phase 1 G 默认 reqwest Client —— 30s timeout,带 rustls TLS(对齐
+/// workspace `reqwest` features)。`WasmConnector::load` 旧签名走此默认;
+/// 测试 / WasmConnector::load_with_http 可注入自定义 Client。
+///
+/// Phase 3 可提到 `WasmRuntime` 级共享一个 Client(见 http_host.rs §4 注释)。
+fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest::Client::build with only timeout cannot fail")
 }
 
 // ============================================================================
@@ -94,16 +120,43 @@ impl ClockHost for State {
 }
 
 impl HttpClientHost for State {
-    /// Phase 2 stub。Phase 3 接 reqwest + capability allow-list 校验。
+    /// Phase 1 G —— 委托 [`crate::http_host::http_get`](纯函数 + capability
+    /// allow-list + reqwest GET),再把 host 侧 `HostHttpResponse`/`HostHttpError`
+    /// 平移到 WIT binding 的 `Response`/`Error`。
+    ///
+    /// host 实装与 WIT 类型刻意解耦(见 http_host.rs 顶部说明):这里只做字段
+    /// 平移,真正的 capability 检查 + 网络调用都在 `http_host`。
     async fn get(
         &mut self,
         url: String,
-        _headers: Vec<(String, String)>,
+        headers: Vec<(String, String)>,
     ) -> std::result::Result<HttpResponse, HttpError> {
-        tracing::warn!(url = %url, "http-client not implemented yet (Phase 3)");
-        Err(HttpError::Network(
-            "http-client not implemented in Phase 2".to_string(),
-        ))
+        let resp = crate::http_host::http_get(
+            &self.http_client,
+            &self.allowed_capabilities,
+            &url,
+            &headers,
+        )
+        .await
+        .map_err(map_host_err_to_wit)?;
+        Ok(HttpResponse {
+            status: resp.status,
+            body: resp.body,
+        })
+    }
+}
+
+/// host 侧 [`http_host::HostHttpError`] → WIT binding `HttpError` 的一一映射。
+///
+/// `Unauthorized` / `NotFound` / `Timeout` 无负载,直接对位;`Network(String)`
+/// 透出底层错误字符串,guest 自己决定怎么处理。
+fn map_host_err_to_wit(e: crate::http_host::HostHttpError) -> HttpError {
+    use crate::http_host::HostHttpError;
+    match e {
+        HostHttpError::Unauthorized(_) => HttpError::Unauthorized,
+        HostHttpError::NotFound => HttpError::NotFound,
+        HostHttpError::Timeout => HttpError::Timeout,
+        HostHttpError::Network(msg) => HttpError::Network(msg),
     }
 }
 
@@ -118,10 +171,30 @@ impl WasmConnector {
     /// 1. Config:wasm_component_model + async(wasmtime 46 已默认开 async)
     /// 2. Engine 创建一次,多个 WasmConnector 可共享(但 Store 各自一份)
     /// 3. Linker 接 WASI p2 全套 + 我们的 connector-world host traits
-    /// 4. Store 装 State(WasiCtx + ResourceTable)
+    /// 4. Store 装 State(WasiCtx + ResourceTable + http_client + capabilities)
     /// 5. Component::from_file 读 .wasm
     /// 6. ConnectorWorld::instantiate_async 把 instance bind 到强类型 bindings
-    pub async fn load(wasm_path: &Path) -> Result<Self> {
+    ///
+    /// `capabilities` 是该 connector 在 manifest 申明的 allow-list(`logging` /
+    /// `clock` / `http-client` ...),`http_get` 调用时按此 gate。无 capability
+    /// 的 connector(如 hello-world)传空集合即可。
+    pub async fn load(wasm_path: &Path, capabilities: HashSet<String>) -> Result<Self> {
+        Self::load_with_http(wasm_path, capabilities, default_http_client()).await
+    }
+
+    /// 与 [`load`] 同,但允许注入自定义 reqwest `client`。
+    ///
+    /// **用途**:
+    /// - 测试:注入预配短 timeout 的 Client,避免单测因 30s 默认超时变慢
+    /// - Phase 3:多个 connector 共享一个 WasmRuntime 级 Client(连接池复用)
+    ///
+    /// 注:`capabilities` 字面平移进 `State`,host 实装不复制;`client` 是
+    /// `Arc<Inner>` clone 廉价(reqwest 文档保证)。
+    pub async fn load_with_http(
+        wasm_path: &Path,
+        capabilities: HashSet<String>,
+        client: reqwest::Client,
+    ) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         // wasmtime 46:async_support 已默认开,不要显式调(deprecated)。
@@ -145,6 +218,8 @@ impl WasmConnector {
             State {
                 table: ResourceTable::new(),
                 wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+                http_client: client,
+                allowed_capabilities: capabilities,
             },
         );
 

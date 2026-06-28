@@ -117,7 +117,13 @@ impl WasmRuntime {
                 ));
                 continue;
             }
-            match WasmConnector::load(&wasm_path).await {
+            // Phase 1 G:把 manifest 申明的 capabilities 传入 WasmConnector,
+            // host 端 http_get 按此 allow-list gate(deny by default)。
+            // 无 http-client 能力的 connector(hello-world / k8s-mini)传此值
+            // 后,guest 即便调 get 也会被 host 拒回 Unauthorized。
+            let capabilities: std::collections::HashSet<String> =
+                module.capabilities.iter().cloned().collect();
+            match WasmConnector::load(&wasm_path, capabilities).await {
                 Ok(c) => entries.push(ConnectorEntry {
                     name: module.name.clone(),
                     manifest: module.clone(),

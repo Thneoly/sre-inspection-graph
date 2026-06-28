@@ -46,7 +46,7 @@ async fn loads_and_calls_hello_world_sync() {
         return;
     };
 
-    let mut conn = WasmConnector::load(&wasm_path)
+    let mut conn = WasmConnector::load(&wasm_path, std::collections::HashSet::new())
         .await
         .expect("load hello_world.wasm");
 
@@ -88,7 +88,9 @@ async fn sync_twice_emits_consistent_facts() {
     let Some(wasm_path) = locate_hello_world_wasm() else {
         return;
     };
-    let mut conn = WasmConnector::load(&wasm_path).await.unwrap();
+    let mut conn = WasmConnector::load(&wasm_path, std::collections::HashSet::new())
+        .await
+        .unwrap();
 
     let first = conn.sync("{}").await.unwrap();
     let second = conn.sync("{}").await.unwrap();

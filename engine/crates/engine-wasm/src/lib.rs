@@ -9,6 +9,11 @@
 /// Phase 2 runtime —— 真实 wasmtime Component 加载 + capability 注入。
 pub mod runtime;
 
+/// Phase 1 G —— `http-client` capability 的 host 端纯函数实装
+/// (`http_get` + `HostHttpResponse`/`HostHttpError`)。刻意与 WIT binding
+/// 类型解耦,`runtime.rs::HttpClientHost for State` 是它到 WIT 的薄适配。
+pub mod http_host;
+
 /// 多 connector 编排 —— `WasmRuntime` 持多个 `WasmConnector`,
 /// `sync_all` 一次跑完,`tick_loop` 周期跑。
 pub mod multi;
