@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { TopologyView, type FactDto } from "./views/TopologyView";
 
 /**
- * F — Tauri ↔ engine-wasm 串通的端到端验证页。
+ * F + Phase 1 Step 2 — Tauri ↔ engine-wasm 串通的端到端验证页 + Cytoscape 拓扑视图。
  *
  * 启动时:`get_app_version` + `list_connectors` 各调一次。
- * 用户点「立即同步」→ `sync_all_now` → 渲染 Fact 表 + per-connector 状态。
+ * 用户点「立即同步」→ `sync_all_now`(config 带 `with_topology: true` 让
+ * k8s-mini 吐分层 mock 拓扑)→ 渲染 Cytoscape 视图 + per-connector 表 + Fact 表。
  *
- * 设计:这是 Phase 1 的占位 UI,只用浏览器原生标签 + 朴素 CSS。Phase 2 起从
- * frontend/src/ 把 antd Layout / Cytoscape 等迁进来。
+ * 设计:Phase 1 占位 UI,只用浏览器原生标签 + 朴素 CSS + cytoscape。Phase 2 起
+ * 从 reference/frontend/src/ 把 antd Layout / 多视图组件迁进来。
  */
 
 interface ConnectorInfo {
@@ -17,16 +19,6 @@ interface ConnectorInfo {
   kind: string;
   sync_interval_seconds: number;
   capabilities: string[];
-}
-
-interface FactDto {
-  id: string;
-  kind: string;
-  source: string;
-  resource_id: string;
-  resource_type: string;
-  timestamp: number;
-  attributes_json: string;
 }
 
 interface ConnectorStatusDto {
@@ -63,10 +55,17 @@ export default function App() {
     setSyncing(true);
     setSyncErr(null);
     try {
+      // 给 k8s-mini 传 with_topology=true,让它吐分层 mock(Cluster + Node +
+      // Namespace + Pod + Service);hello-world 不读 config,这段对它无害。
       // Tauri 2.x 自动把 JS camelCase 转 Rust snake_case;此处用 snake 也可,
-      // 显式保险一些
+      // 显式保险一些。
+      const configJson = JSON.stringify({
+        cluster: "demo",
+        namespaces: ["default", "app"],
+        with_topology: true,
+      });
       const s = await invoke<SyncSummaryDto>("sync_all_now", {
-        configJson: "{}",
+        configJson,
       });
       setSummary(s);
     } catch (e) {
@@ -175,6 +174,17 @@ export default function App() {
             </p>
 
             <h3 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>
+              拓扑视图
+            </h3>
+            {summary.facts.length === 0 ? (
+              <p style={{ color: "#666" }}>
+                <em>本轮没有 fact,拓扑空</em>
+              </p>
+            ) : (
+              <TopologyView facts={summary.facts} />
+            )}
+
+            <h3 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>
               Per-connector
             </h3>
             <table style={tableStyle}>
@@ -250,7 +260,8 @@ export default function App() {
           fontSize: "0.875rem",
         }}
       >
-        Phase 2 起从 frontend/src/ 迁入 MainLayout / Views / Graph 组件。
+        Phase 2 起从 reference/frontend/src/ 迁入 MainLayout / 多视图 / 真 K8s
+        connector。
       </p>
     </main>
   );
