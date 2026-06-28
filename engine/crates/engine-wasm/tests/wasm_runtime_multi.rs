@@ -338,3 +338,79 @@ version = "0.1.0"
     assert_eq!(rb.num_rows(), 3);
     assert_eq!(rb.num_columns(), 7);
 }
+
+/// Phase 1 Step 2:`with_topology=true` 触发 k8s-mini 吐分层 mock 拓扑
+/// (Cluster + 2 Node + N Namespace + 2N Pod + N Service)。供桌面 Cytoscape
+/// 视图渲染。N=2 → 1+2+2+4+2 = 11 Fact;N=1 → 1+2+1+2+1 = 7 Fact。
+///
+/// 这里同时验证 `attributes_json` 含 `parent_resource_id` 字段 —— 前端按此
+/// 字段建 edge。约定会被 Phase 2 真 K8s connector 继承。
+#[tokio::test]
+async fn k8s_mini_emits_full_topology_when_with_topology_true() {
+    if !k8s_mini_wasm_built() {
+        eprintln!("skipping: k8s_mini.wasm not built");
+        return;
+    }
+    let toml = r#"
+schema_version = "1"
+
+[[modules]]
+name = "k8s-mini"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/k8s_mini.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock"]
+"#;
+    let manifest = ManifestFile::from_toml_str(toml).expect("parse manifest");
+    let rt = WasmRuntime::from_manifest(&modules_root(), &manifest)
+        .await
+        .expect("from_manifest");
+
+    let cfg = r#"{"cluster":"demo","namespaces":["default","app"],"with_topology":true}"#;
+    let summary = rt.sync_all(cfg).await;
+    let facts = summary.batch.as_slice();
+
+    // 11 = 1 Cluster + 2 Node + 2 Namespace + 4 Pod + 2 Service
+    assert_eq!(facts.len(), 11, "expected 11 hierarchical facts, got {}", facts.len());
+    assert!(summary.per_connector[0].errors.is_empty());
+
+    // 按 resource_type 数一下
+    let mut by_type = std::collections::HashMap::<&str, usize>::new();
+    for f in facts {
+        *by_type.entry(f.resource_type.as_str()).or_default() += 1;
+    }
+    assert_eq!(by_type.get("Cluster").copied().unwrap_or(0), 1);
+    assert_eq!(by_type.get("Node").copied().unwrap_or(0), 2);
+    assert_eq!(by_type.get("Namespace").copied().unwrap_or(0), 2);
+    assert_eq!(by_type.get("Pod").copied().unwrap_or(0), 4);
+    assert_eq!(by_type.get("Service").copied().unwrap_or(0), 2);
+
+    // Cluster 是顶层节点 — 不含 parent_resource_id
+    let cluster = facts.iter().find(|f| f.resource_type == "Cluster").unwrap();
+    assert_eq!(cluster.resource_id, "cluster:demo");
+    assert!(
+        !cluster.attributes_json.contains("parent_resource_id"),
+        "Cluster should be root (no parent_resource_id), got: {}",
+        cluster.attributes_json
+    );
+
+    // Node / Namespace 的 parent 是 cluster
+    for kind in ["Node", "Namespace"] {
+        for f in facts.iter().filter(|f| f.resource_type == kind) {
+            assert!(
+                f.attributes_json.contains(r#""parent_resource_id":"cluster:demo""#),
+                "{} {} should parent cluster:demo, got: {}",
+                kind, f.resource_id, f.attributes_json
+            );
+        }
+    }
+
+    // Pod / Service 的 parent 是 Namespace
+    for f in facts.iter().filter(|f| f.resource_type == "Pod" || f.resource_type == "Service") {
+        assert!(
+            f.attributes_json.contains(r#""parent_resource_id":"ns:demo:"#),
+            "{} {} should parent some ns:demo:*, got: {}",
+            f.resource_type, f.resource_id, f.attributes_json
+        );
+    }
+}
