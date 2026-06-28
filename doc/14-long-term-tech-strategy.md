@@ -127,24 +127,26 @@
 
 每 Phase 末有公开 demo,作为副业项目外部 commitment 机制。
 
-### Phase 0 — 决策固化(T+0,1-2 周) ▶ 进行中
+### Phase 0 — 决策固化(T+0,1-2 周) ✅ 基本完成
 
 - [x] doc/11/12 PRD-005/006 规划
 - [x] doc/13 端到端剧本
 - [x] doc/14(本文,v0.2)+ doc/15 + doc/16 + doc/17 落档
-- [ ] `backend/` → `reference/` 改名,加 DO NOT DEPLOY README
-- [ ] `frontend/` → `desktop/` 改名(留作 Tauri 集成)
-- [ ] 顶层 Cargo workspace 骨架(`engine/` + `modules/`)
+- [x] `backend/` → `reference/` 改名,加 DO NOT DEPLOY README
+- [x] `frontend/` → `desktop/` 改名(留作 Tauri 集成)
+- [x] 顶层 Cargo workspace 骨架(`engine/` + `modules/`)
 - [ ] GitHub project board + Phase milestone 公开
 
-### Phase 1 — Tauri + engine 最小可跑(T+0 → T+1mo)
+### Phase 1 — Tauri + engine 最小可跑(T+0 → T+1mo) ▶ 进行中(增量 G)
 
-- [ ] Tauri 2.x app 骨架,React + AntD + Cytoscape 加载
-- [ ] engine-core + wasmtime hello world,1 个 invoke 调通
-- [ ] WIT 接口完整定义(types / connector / rule / handler)
-- [ ] 第一个 WASM connector:`k8s.wasm` 对照 `reference/app/datasource/connectors/k8s_connector.py` 实现等价逻辑
-- [ ] 1 个最小视图:打开 app 看到 1 张 mock 拓扑图
+- [x] Tauri 2.x app 骨架,React + AntD + Cytoscape 加载
+- [x] engine-core + wasmtime hello world,1 个 invoke 调通(`list_connectors` / `sync_all_now` 已通)
+- [x] WIT 接口完整定义(host / connector / rule / handler 四个 world)
+- [x] 第一个 WASM connector:Phase 1 用 `k8s-mini`(第二条)+ `hello-world`(占位)验证多 connector 编排;**真 `k8s.wasm` 对照 `reference/app/datasource/connectors/k8s_connector.py` 的等价逻辑落 Phase 2**
+- [ ] 1 个最小视图:打开 app 看到 1 张 mock 拓扑图(connector 列表 / sync 已通,拓扑视图未做)
 - [ ] **Demo + Blog Part 1**:"WASM-native SRE Desktop — 引擎骨架"
+
+> 增量 A–G 进展详见 `CLAUDE.md`「Rewrite: Rust + WASM + Tauri」章节。G(http-client capability host 实装)是当前最新落地。
 
 ### Phase 2 — PRD-005 在 Rust 原生 + 真数据(T+1 → T+4mo)
 
@@ -246,6 +248,8 @@
 | 单人 code review 缺失 | 中 | `clippy --deny warnings` + `cargo audit` + `cargo deny`;关键 PR 拉同行 review |
 | 过度设计(无现网压力) | 高 | 强制自用 — 主业 SRE 工作真用,真出问题立刻反馈 |
 | 多平台兼容(尤其 Windows) | 中 | Phase 1-3 macOS+Linux 主用,Windows 在 Phase 4 集中 fix |
+| **PRD-001 审批流在桌面单机语境语义悬空**(申请者 vs 审批者是协作流程) | 中 | Phase 3 复刻时明确决策:本地单机模拟(自用够用)vs 仅 engine-cli 模式启用真协作;不在中间悬空。详见 CLAUDE.md PRD-001 节,`approver_team` 派生 / 24h TTL 在桌面语境需重新定义语义 |
+| **Cytoscape.js 跨三 webview 性能/渲染不一致**(macOS WebKit / Windows WebView2 / Linux WebKitGTK) | 中 | Phase 1 末三平台各验一次大图渲染 + 交互;WebKitGTK 版本碎片化是历史老大难。掉链子即触 §8 退出条件「Phase 1 结束 Tauri 无法稳定跑 → 回退纯 Web」 |
 
 ## 10. 不做(本战略)
 

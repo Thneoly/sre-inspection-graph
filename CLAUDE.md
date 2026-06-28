@@ -2,579 +2,197 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **重要(2026-06)**:本仓正处于 **Python → Rust + WASM + Tauri 重写**的 Phase 1(增量 G)。原 Python 实现(PRD-001/002/003/004,~12.7k LOC + 472 测试)已 100% 完成,**降为 `reference/` read-only oracle**,不接受 feature 改动 —— 本地可跑 FastAPI 对照 Rust 行为。**新代码看「活跃栈」章节**;旧栈细节看「Reference(Python,read-only)」章节,深入查 `reference/` 源码 + `doc/01-13` PRD。
+
 ## Project Overview
 
-SRE 云原生巡检图谱平台 — cloud-native resource inspection graph platform based on a 4-layer Neo4j model with fault simulation, **a recovery action engine (PRD-001) covering 8 actions / dry-run / approval flow / one-click rollback**, **change event tracking with correlated query (PRD-002)**, and **real-data ingestion via 5 OTel-Demo connectors (PRD-004)**.
+SRE 云原生巡检图谱平台 — cloud-native resource inspection graph platform。Phase 1 重写后核心:**Tauri 2.x 桌面应用** +  **Rust engine + WASM connectors** + **WIT/Arrow 契约**。原 Python 栈覆盖 4 层 Neo4j 图模型 + 故障模拟 + 恢复动作引擎(PRD-001)+ 变更追踪(PRD-002)+ 自检报告(PRD-003)+ 5 个 OTel-Demo connector(PRD-004),现作行为参考。
 
-## Architecture
+---
+
+## 活跃栈(Rust + WASM + Tauri,新代码以此为准)
+
+### 战略决策(详见 doc/14 v0.2)
+
+- **Supervised Rewrite**,否决 Strangler Fig(副业不需要零停机,桥接代价不抵)
+- **Tauri 2.x 桌面优先**,不走 SaaS Web 默认(对照 k9s / Lens;数据不出本机)
+- **三层数据契约**:WIT(WASM 边界)+ Tauri commands(UI↔Rust 进程内 IPC)+ Arrow/SQLite/Parquet(存储)。**无 REST / Flight 跨进程 RPC**(headless engine-cli 才用)
+- WASI ABI:**默认 p2**(`wasm32-wasip2` Tier 2 stable),p3(async-native)opt-in 留口子,详见 doc/16 §4.x
+
+### 顶层结构
 
 ```
-L1 Resource Type Graph  →  14 type nodes + 35 relationships (static, in CSV)
-L2 Resource Instance Graph → application/component/Deployment/Pod/middleware instances
-L3 Dynamic Observability → MetricQuery + MetricSnapshot + AlertEvent + ChangeEvent
-L4 Inspection Results → InspectionRun/Rule/Finding
-
-+ Data Source Service (DSS) → in-memory cache layer, decouples fault injection from Neo4j
-+ Recovery Action Engine (PRD-001) → 8 actions / dry-run / approval flow / rollback / 真实 K8s+MySQL+Redis handler + 跨集群编排 / 自动验证 / 动作链 (Phase 2 余项)
-+ Change Event Tracking (PRD-002) → ChangeEvent + correlated query + propagation BFS
-+ Real-data Connectors (PRD-004) → K8s / Prometheus / Jaeger / flagd / K8s-events
-+ Self-Inspection Report (PRD-003) → Jinja2 Markdown 报告 + 3 模板 + 12 模块 + 邮件订阅
+graph_data/
+├── engine/             # Rust workspace — engine 内核 + CLI(10 crate)
+│   └── crates/
+│       ├── engine-core/        # ✅ canonical Fact + Arrow Schema(7 列)+ FactBatch→RecordBatch
+│       ├── engine-wasm/        # ✅ wasmtime host + 多 connector 编排 + capability 注入(含 http-client)
+│       ├── engine-bindings/    # ✅ wasmtime bindgen 出来的 host glue
+│       ├── engine-storage/     # ✅ Storage trait(骨架,Phase 2 上 SQLite/Parquet)
+│       ├── engine-cli/         # ✅ headless binary(tick 子命令)
+│       ├── engine-testkit/     # 骨架
+│       ├── engine-identity/    # 骨架(Phase 2:Identity Resolver)
+│       ├── engine-recovery/    # 骨架(Phase 3:PRD-001 复刻)
+│       ├── engine-changes/     # 骨架(Phase 3:PRD-002 复刻)
+│       └── engine-reports/     # 骨架(Phase 4:PRD-003 复刻)
+├── desktop/            # Tauri 2.x 桌面(React 18 + AntD + Cytoscape)
+│   └── src-tauri/src/
+│       ├── lib.rs              # ✅ 启动 block_on WasmRuntime → .manage() 注入 state
+│       └── commands/           # ✅ wasm.rs(list_connectors / sync_all_now)+ system.rs
+├── modules/            # 独立 WASM workspace(target 隔离,wasm32-wasip2)
+│   ├── manifest.toml           # 引擎启动读的模块清单
+│   ├── sdk/                    # guest 端 WIT bindings
+│   └── connectors/
+│       ├── hello-world/        # ✅ 第一条 connector(WIT 端到端)
+│       └── k8s-mini/           # ✅ 第二条(多 connector 编排验证)
+├── specs/wit/          # ✅ 中立契约:host / connector / rule / handler 4 个 world
+├── reference/          # ★ 旧 Python,read-only oracle(DO NOT DEPLOY)
+└── doc/                # 17 份设计文档(00-17)
 ```
 
-## Tech Stack
+### Phase 1 进展
 
-- **Graph DB**: Neo4j 5 (Docker, bolt://localhost:7687, neo4j/sre-inspection)
-- **Backend**: Python 3.12 + FastAPI + uv (`backend/`)
-- **Frontend**: React 18 + TypeScript + Cytoscape.js + Ant Design 5 + Vite (`frontend/`)
-- **Deployment**: Docker Compose
+| 增量 | 内容 | 状态 |
+|---|---|---|
+| A-B | WIT + toolchain:host-capabilities world + cargo aliases + cargo-component metadata | ✅ |
+| 第一刀 | host wasmtime 真加载 hello_world.wasm 端到端跑通 | ✅ |
+| C+D | WasmRuntime 多 connector 编排 + canonical Fact + Arrow RecordBatch + engine-cli tick | ✅ |
+| E | k8s-mini 第二条 WASM connector + multi-connector 编排验证 | ✅ |
+| F | Tauri ↔ engine-wasm 桥接(`list_connectors` + `sync_all_now` invoke) | ✅ |
+| **G** | **http-client capability host 实装**(reqwest GET + capability allow-list) | ✅ |
 
-## Commands
+### 关键 crate 入口
+
+- **engine-core**(`engine/crates/engine-core/src/`):`Fact`(WIT `connector.fact` 的 host 规范型,7 字段)+ `fact_schema()`(Arrow Schema)+ `FactBatch`(→ `RecordBatch` 零拷贝转储)。所有下游(storage / query / Arrow)只认它
+- **engine-wasm**(`engine/crates/engine-wasm/src/`):
+  - `runtime.rs` — `WasmConnector`(单 connector,持 wasmtime Store)+ host trait impls(`LoggingHost` / `ClockHost` / `HttpClientHost` for `State`)+ `load(path, capabilities)` / `load_with_http(client)` / `sync` / `health_check`
+  - `http_host.rs` — `http-client` capability 纯函数实装(`http_get` + `HostHttpResponse`/`HostHttpError`,刻意与 WIT binding 解耦,可单测)
+  - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest` / `sync_all` / `tick_loop` + `SyncSummary`
+  - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema)+ `WasiVersion`(p2/p3 enum)
+- **engine-cli**(`engine/crates/engine-cli/src/main.rs`):headless binary。`tick` 单次;`tick --loop --interval=30` 持续。`MODULES_ROOT` env 覆盖 manifest 根
+- **desktop/src-tauri**:`lib.rs::run()` 启动 `block_on(WasmRuntime::from_manifest)`(失败 fallback empty,不阻塞 UI)→ `.manage(runtime)` → `commands/wasm.rs` 两个 `#[tauri::command]`:`list_connectors`(同步元信息)/ `sync_all_now`(一次 sync_all 返聚合 Fact + per-connector 状态)
+
+### 常用命令
 
 ```bash
-# First-time setup (uv sync backend + npm install frontend)
-make setup
+# Engine
+cargo build --workspace                      # 一次出 engine binaries + Tauri binary
+cargo test --workspace                       # 全 Rust 单测
+cargo clippy --workspace --all-targets -- -D warnings
+engine-cli tick                              # 加载 manifest + 跑一次 sync_all
+engine-cli tick --loop --interval=30         # 持续 sync(Ctrl-C 退)
 
-# Development
-make infra          # Start Neo4j + run import (depends on mock-data)
-make infra_up       # Restart Neo4j without re-importing data
-make infra_down     # Stop Neo4j only
-make dev-api        # API hot-reload on port 8000 (auto-frees port via dev-api-kill)
-make dev-frontend   # Frontend HMR on port 3000
+# WASM modules(独立 workspace,target 隔离)
+cd modules && cargo wasi-build               # 出 wasm32-wasip2 产物
+MODULES_ROOT=/abs/path engine-cli tick       # 用指定 manifest 根跑
 
-# Full stack
-make up             # Docker Compose start all
-make down           # Stop all
-make clean          # Remove containers + volumes + generated data
-
-# Testing
-make test           # Backend 472 tests + Frontend 71 tests
-make test-cov       # Backend coverage report
-
-# Single test
-cd backend && uv run python -m pytest tests/test_routers.py::test_topology -v -p no:asyncio
-cd backend && uv run python -m pytest tests/ -k "fault" -v -p no:asyncio    # filter by name
-cd backend && uv run python -m pytest tests/ -k "recovery" -v -p no:asyncio # 180 recovery tests
-cd backend && uv run python -m pytest tests/test_sprint23_connectors.py -v -p no:asyncio  # 39 PRD-004 tests
-cd frontend && npm test -- GraphCanvas                                       # vitest substring match
-
-# Mock data
-make mock-data      # Generate CSV + Cypher → scripts/output/
-
-# E2E (Sprint 3 — approval flow + rollback)
-bash scripts/sprint3_e2e_test.sh    # 8 步检查 high_risk 审批流 + 一键回滚
-
-# E2E (PRD-004 — 5 connector live verify against vm cluster)
-bash scripts/otel_demo_e2e.sh       # 7 步检查 K8s/Prom/Jaeger/flagd/k8s_events + scenarios
+# Desktop(Tauri)
+cd desktop && npm run tauri dev              # webview + Rust backend HMR
+cd desktop && npm run tauri build            # 出 .app/.AppImage/.msi
+cd desktop && npm test                       # 前端 vitest
 ```
 
-Note: backend pytest **must** be run with `-p no:asyncio` — the project uses sync FastAPI TestClient and pytest-asyncio's auto-mode otherwise breaks fixture scoping.
+> 注:`make` 顶层入口(doc/16 §10 设计)尚未落 Makefile,当前用裸 cargo/npm。
 
-## Directory Structure
+### 三层数据契约(写新代码前对照 doc/15)
 
-```
-backend/
-├── app/
-│   ├── main.py              # FastAPI entry, CORS, router registration
-│   ├── config.py            # Env vars (NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-│   ├── db/
-│   │   ├── neo4j_client.py  # Singleton Neo4j driver, session-based queries
-│   │   └── queries/         # 6 Cypher view queries (view1..view6)
-│   ├── datasource/          # DSS — Data Source Service
-│   │   ├── models.py        # DataNode, DataEdge, MetricSnapshot, FaultInjection,
-│   │   │                    # RecoveryExecution, ApprovalRequest, ChangeEvent
-│   │   ├── store.py         # In-memory singleton stores
-│   │   ├── loader.py        # Load baseline from Neo4j → DSS
-│   │   ├── fault_injector.py # Fault injection via DSS
-│   │   └── connectors/      # PRD-004 — real-data connectors
-│   │       ├── base.py      # BaseConnector + asyncio polling loop
-│   │       ├── k8s_connector.py / k8s_mapper.py  # K8s topology sync
-│   │       ├── prometheus_connector.py + prometheus_queries.py + health_rules.py
-│   │       ├── jaeger_connector.py + trace_aggregator.py  # CALLS edges
-│   │       ├── flagd_connector.py        # flag diff → ChangeEvent
-│   │       ├── k8s_event_connector.py    # K8s event → ChangeEvent
-│   │       └── sync_orchestrator.py      # ConnectorRegistry singleton
-│   ├── changes/             # PRD-002 — ChangeEvent service
-│   │   ├── event_service.py # record_change + correlated query + timeline
-│   │   └── propagation.py   # Reverse BFS along PROPAGATION_EDGES
-│   ├── recovery/            # PRD-001 Recovery Action Engine
-│   │   ├── action_defs.py   # 8 action templates (single source of truth)
-│   │   ├── cascade.py       # Reverse-cascade BFS for dry-run impact
-│   │   ├── execution.py     # Lifecycle orchestration (low_risk sync /
-│   │   │                    # medium-high → awaiting_approval / rollback)
-│   │   ├── approval.py      # request / approve / reject / 24h TTL /
-│   │   │                    # _derive_approver_team along BELONGS_TO
-│   │   ├── handlers/        # 8 mock handlers (Phase 2 → real K8s/MySQL/Redis)
-│   │   └── scenarios/       # 8 OTel-demo flag → action mappings (PRD-004)
-│   ├── routers/
-│   │   ├── topology.py, access_link.py, node_impact.py, config_impact.py,
-│   │   │   image_risk.py, alert_aggregation.py, health.py
-│   │   ├── recovery.py      # PRD-001 endpoints (actions / dry-run / execute /
-│   │   │                    # executions / approvals / rollback)
-│   │   ├── change_event.py  # PRD-002 endpoints (record / correlated / timeline)
-│   │   ├── connectors.py    # PRD-004 endpoints (status / sync-now)
-│   │   ├── simulation.py    # Legacy fault simulation (direct Neo4j writes)
-│   │   └── datasource.py    # DSS REST API (extraction + injection)
-│   ├── models/              # Pydantic: GraphNode, GraphEdge, GraphResponse, metrics
-│   └── services/            # graph_service.py, metrics_service.py
-└── tests/
-    ├── conftest.py          # Mock Neo4j fixtures + FastAPI TestClient
-    ├── mocks.py             # MockNeo4jNode, MockNeo4jRel, MockNeo4jPath
-    ├── test_services.py, test_queries.py, test_routers.py   # baseline 53
-    ├── test_fault_*.py                                       # fault simulation
-    ├── test_recovery.py                                      # actions / dry-run
-    ├── test_recovery_execute.py                              # Sprint 2 execute
-    └── test_recovery_approval.py                             # Sprint 3 approval + rollback
-
-frontend/src/
-├── components/
-│   ├── Graph/               # GraphCanvas (Cytoscape), NodeDetailPanel, LayerToggle
-│   ├── Views/               # 6 inspection views + SimulationView
-│   ├── Recovery/            # RecoveryActionsSection, DryRunModal,
-│   │                        # ExecutionsView, ApprovalsView (PRD-001)
-│   └── Layout/              # MainLayout (antd Layout + Sider, 8 menu entries)
-├── utils/
-│   ├── graphStyles.ts       # Node shapes, health colors (green/yellow/red), edge styles
-│   ├── layers.ts            # Layer definitions + filterGraphData()
-│   └── resourceIcons.ts     # SVG icons for node types (unused in current design)
-├── api/client.ts            # Axios client + TypeScript types (incl. ApprovalRequest)
-└── __tests__/               # 38 vitest tests
-
-scripts/
-├── generate_all_mock_data.py   # Generate L3/L4 mock CSV + Cypher
-├── generate_l3_mock_data.py    # L3: Pod/Container/Node/MetricQuery/Snapshot
-├── generate_l4_mock_data.py    # L4: InspectionRun/Rule/Finding/AlertEvent
-├── fault_simulation.py         # CLI fault injector (legacy, direct Neo4j)
-├── add_infra_nodes.py          # Add Region/AZ/ELB/Gateway/Nacos/MySQL/Redis/Kafka
-├── sprint3_e2e_test.sh         # Sprint 3 approval + rollback E2E (curl + jq)
-└── output/                     # Generated CSV + Cypher files
-```
-
-## Key Design Decisions
-
-1. **Neo4j 5+ requires string interpolation for path depth** — `*1..5` not `*1..$depth`. Depth validated by FastAPI (ge=1, le=10), safe to interpolate.
-2. **Nodes use property-based labels** — nodes are `ResourceInstance` with a `label` property (e.g., `"Application"`), NOT `:ResourceInstance:Application`.
-3. **Neo4j query returns native Record objects** — use `session.run()` (not `execute_query`) to get Neo4j Path/Node/Relationship objects. Record uses `.get()` not `in` operator.
-4. **DSS decouples fault injection from Neo4j** — faults write to DSS memory, DSS syncs to Neo4j. Production should use DSS endpoints, not simulation endpoints.
-5. **Health = fill color (green/yellow/red), Shape = resource type** — no per-type coloring, shapes differentiate types.
-6. **Uvicorn auto-kill on port 8000** — `make dev-api` runs `dev-api-kill` first.
-
-## Node Visual Rules
-
-- **Shape = resource type**, **fill color = health** (green/yellow/red), **border weight + color = risk level** (thin green = low, medium yellow, thick red = high). No per-type fill coloring.
-- **ellipse**: Pod, Container
-- **diamond**: Service, Ingress, ELB, Gateway, APIG, Nacos
-- **hexagon**: KubernetesCluster, KubernetesNode, ContainerRegistry, Region, AZ
-- **rectangle**: Deployment, Namespace, ContainerImage, MySQL, Redis, Kafka, Dashboard
-- **round-rectangle**: Application, ApplicationComponent, Environment, InspectionRun
-- **parallelogram**: ConfigMap, Secret
-- **triangle**: AlertRule, AlertEvent
-- **tag**: InspectionFinding, InspectionRule
-
-## Inspection Views & Routes
-
-Each view is one router on the backend + one component under `frontend/src/components/Views/` + one Cypher query under `backend/app/db/queries/`.
-
-| Route | Backend router | Purpose |
-|---|---|---|
-| `/topology` | `topology.py` | Full chain Region→AZ→Cluster→NS→Deploy→Pod→Container + middleware |
-| `/access-link` | `access_link.py` | Ingress trace ELB→Ingress→Gateway→Service→Pod |
-| `/node-impact` | `node_impact.py` | KubernetesNode failure blast radius |
-| `/config-impact` | `config_impact.py` | Secret/ConfigMap change impact surface |
-| `/image-risk` | `image_risk.py` | Container image vulnerability propagation |
-| `/alert-aggregation` | `alert_aggregation.py` | Multi-alert rollup by application |
-| `/recovery/approvals` | `recovery.py` | Approval center for medium/high_risk actions |
-| `/recovery/history`   | `recovery.py` | Execution audit history with rollback button |
-| `/simulation` | `simulation.py` + `datasource.py` | Fault simulation (DSS-backed) |
-
-Layer toggles (`frontend/src/utils/layers.ts`) filter the response: 基础拓扑 (default) / 可观测 (MONITORS, VISUALIZES) / 风险巡检 (AFFECTS, FIRED_ON, GENERATED).
-
-## Fault Types (7)
-
-cpu_spike, memory_leak, pod_crashloop, node_disk_pressure, service_no_endpoints, mysql_slow_query, redis_unavailable
-
-- Target validation: fault type must match target node type (e.g. cpu_spike → Pod only)
-- Blast radius: faults affect connected nodes (e.g. node_disk_pressure → all Pods on that Node)
-- Cascade: `blast_propagate_to` chain propagates upstream (Pod→Deployment→Component→Application)
-- Thresholds: each resource type has `degradation_delay`, `warning_at_pct`, `critical_at_pct`, `risk_multiplier`
-- Step always advances 1 stage per click (not time-based). Stage progress visible as "阶段 2/6".
-- Faults persist to Neo4j via `persist_fault()` / `update_fault_in_neo4j()`. `_recover_faults()` on startup.
-
-## Recovery Action Engine — PRD-001
-
-8 actions covering all resource types. Operators click → dry-run preview → (approval if needed) → execute → optional one-click rollback.
-
-| Action | Risk | Target | Approval |
+| 层 | 协议 | 边界 | 现状 |
 |---|---|---|---|
-| `scale_deployment` | low | Deployment | no |
-| `kill_query` | low | MySQL | no |
-| `restart_service` | low | Service | no |
-| `restart_pod` | medium | Pod | yes |
-| `refresh_secret` | medium | Secret | yes |
-| `clear_cache` | medium | Redis | yes |
-| `rollback_deployment` | high | Deployment | yes |
-| `drain_node` | high | KubernetesNode | yes |
+| A | **WIT**(Component Model) | WASM ↔ host | ✅ `specs/wit/` 4 world;host 用 `wasmtime::component::bindgen!`,guest 用 `wit_bindgen::generate!` |
+| B | **Tauri commands**(JSON IPC) | webview ↔ Rust | ✅ `commands/wasm.rs`;Phase 2 起按领域拆 `commands/{topology,recovery,...}.rs` |
+| C | **Arrow RecordBatch** + Parquet + SQLite | engine 内部 | 🔨 engine-core Arrow Schema ✅;engine-storage trait ✅ 但 backend 待 Phase 2 |
 
-**Lifecycle**: `pending → dry_run_ok → awaiting_approval → approved/rejected → executing → succeeded/failed → rolled_back`
+**反模式(不做)**:Tauri 里又起 HTTP server(用 invoke 直接 IPC);desktop/ 写业务逻辑(逻辑在 engine-core,Tauri command 是薄包装);WASM 模块直接 syscall(host 注入 capability,deny by default)。
 
-### Key Design Decisions
+### Capability 设计(http-client 实例,Phase 1 G)
 
-1. **HTTP semantics**: low_risk → 200 (sync done). medium/high → 202 Accepted (awaiting_approval + `approval_id`). Frontend branches on `status` field, not status code.
-2. **`_continue_after_approval`**: approve endpoint atomically marks approved → triggers handler → returns succeeded/failed in same HTTP call. No separate "start execution" click.
-3. **Rollback skips second approval** — `POST /executions/{id}/rollback` runs reverse handler directly even if rollback_action is high_risk. Reasoning: original action was already approved, reverse is "undo" not "new risk".
-4. **`approver_team` derivation**: read `target.owner_team`; for Pod / Service etc. without it, traverse `BELONGS_TO` edges up to Component / Application; default `"platform"`. Soft-record only — no RBAC enforcement.
-5. **24h TTL is read-time** — every list / get approval call sweeps `pending` requests with `expiry_at < now` and marks them `expired`. No background cron.
-6. **Rollback idempotency** — only `succeeded` executions rollback once; `rolled_back` final.
-7. **`ApprovalRequest` not in Neo4j** (runtime-only). `RecoveryExecution` continues dual-write to DSS + Neo4j.
-8. **Mock handlers** — Sprint 3 handlers update DSS node properties to simulate the action (e.g. `restart_count++`, `current_revision--`, `cordoned=True`)。
-9. **Phase 2 真实 handler**(见下)— `RECOVERY_HANDLER_MODE=real` 切真实 K8s/MySQL/Redis API,默认 `mock`(测试安全)。
+- **deny by default**:`manifest.toml` 每个模块 `capabilities = [...]` 显式申明;host 调用时 allow-list 查表,缺则返 `HostHttpError::Unauthorized`
+- **call-time 拒绝(非 link-time)**:共享 Linker,`http_get` 每次查 `HashSet<String>`,简单 + 后续加 URL allow-list 平滑
+- **host 类型与 WIT binding 解耦**:`HostHttpResponse` / `HostHttpError` 在 `http_host.rs` 定义,可单测;`runtime.rs::HttpClientHost::get` 是薄适配做类型平移
+- **状态码映射**:401/403 → `Unauthorized`;404 → `NotFound`;timeout → `Timeout`;其它(含 5xx)透状态码 + body 给 guest 自决
 
-### Phase 2 — 真实 K8s / MySQL / Redis handler
+### 待办
 
-`RECOVERY_HANDLER_MODE` env(`mock` | `real`,默认 `mock`)切换。`mock` = 仅改 DSS 孪生(测试);`real` = 先调真实 API,**成功后**才更新 DSS 孪生(内存图与集群一致),异常 → `success=False` 不动 DSS(避免孪生失真)。dry-run(`cascade.py`)是纯 DSS 图读,两模式都安全。
+- [ ] Phase 1 余项:1 个最小视图(打开 app 看到 mock 拓扑图)+ Blog Part 1
+- [ ] Phase 2:Fact 总线 + Identity Resolver(DataFusion)+ 5 connector WASM 化(对照 `reference/app/datasource/connectors/`)+ SQLite/Parquet 存储 + Tauri 视图迁
+- [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
+- [ ] Phase 4:engine-reports(PRD-003)复刻
 
-**统一 handler 模式**:`execute()` 内 `if settings.recovery_handler_mode == "real": return _execute_real(...)` else `_execute_mock(...)`(原逻辑)。`_execute_real` 严格"先 API 后 DSS"。
+---
 
-| Handler | 真实 API | 降级 / 备注 |
+## Reference(Python,read-only oracle —— DO NOT MODIFY)
+
+> 重写期作行为规约参考。详细实现看 `reference/` 源码 + `doc/01-13`。**不要改 reference/**;Rust 复刻在 `engine/crates/engine-{recovery,changes,reports}/`(目前是骨架)。
+
+### Python 栈快照
+
+- **Backend**:Python 3.12 + FastAPI + uv,`reference/backend/`(原 `backend/`)
+- **Frontend**:React 18 + TypeScript + Cytoscape.js + AntD 5 + Vite,`reference/frontend/`(逻辑复用约 90% 迁 `desktop/`)
+- **Graph DB**:Neo4j 5(Docker,bolt://localhost:7687)
+- **Deployment**:Docker Compose
+- **测试**:472 backend + 71 frontend
+
+### 4 层图模型 + DSS
+
+```
+L1 Resource Type Graph    → 14 type nodes + 35 relationships(静态 CSV)
+L2 Resource Instance      → application/component/Deployment/Pod/middleware instance
+L3 Dynamic Observability  → MetricQuery + MetricSnapshot + AlertEvent + ChangeEvent
+L4 Inspection Results     → InspectionRun/Rule/Finding
++ DSS(in-memory)         → 解耦 fault injection 与 Neo4j 写
+```
+
+### 4 个 PRD 一句话总结(深入查 doc/01-13)
+
+| PRD | 功能 | 关键文件 |
 |---|---|---|
-| `scale_deployment` | `AppsV1Api.patch_namespaced_deployment_scale` | — |
-| `restart_pod` | `CoreV1Api.delete_namespaced_pod`(控制器拉新) | — |
-| `restart_service` | `CoreV1Api.delete_namespaced_endpoints`(controller 重建) | — |
-| `refresh_secret` | `CoreV1Api.patch_namespaced_secret` | **不自动 rollout**(影响面大),仅标 Pod `pending_restart` |
-| `rollback_deployment` | `AppsV1Api.patch_namespaced_deployment`(annotation 触发 rollout) | kubernetes_asyncio 无通用 rollback API,patch annotation 兜底 |
-| `drain_node` | `CoreV1Api.patch_node`(cordon `unschedulable=True`) | **不真删 Pod**(误删生产风险),仅标 `eviction_pending`;真 evict + PDB 留 Phase 3 |
-| `kill_query` | `MySQLClient.kill(conn_id)`(`KILL <id>`,pymysql) | 连接信息优先 DSS 节点 `host`/`port`,缺失走 `MYSQL_*` env |
-| `clear_cache` | `RedisClient.flush_all/flush_db/delete_pattern`(redis-py,SCAN 不用 KEYS) | 同上 `REDIS_*` env |
+| **PRD-001 Recovery Action Engine** | 8 action(scale/restart_pod/refresh_secret/rollback_deployment/drain_node/kill_query/clear_cache/restart_service)+ dry-run + 审批 + 回滚 + 真实 K8s/MySQL/Redis handler(`RECOVERY_HANDLER_MODE=real`)+ 跨集群编排 + 自动验证 + 动作链 | `reference/backend/app/recovery/` |
+| **PRD-002 Change Event** | 4 类变更(configmap/secret/deployment/image)+ correlated query + propagation BFS + Neo4j dual-write + K8s watcher + webhook + YAML diff + 频率告警 + ChangeEvent↔AlertEvent 关联 | `reference/backend/app/changes/` |
+| **PRD-003 Self-Inspection Report** | 3 模板(application_health / cluster_overview / incident_report)+ Jinja2 Markdown + APScheduler 订阅 + SMTP + Neo4j 持久化 | `reference/backend/app/reports/` |
+| **PRD-004 OTel Demo Connectors** | 5 connector(k8s / prometheus / jaeger / flagd / k8s_events)+ AlertEvent + scenario 接入 + Connector UI | `reference/backend/app/datasource/connectors/` |
 
-### Phase 2 关键设计
+### Inspection 视图 6 个
 
-1. **K8s client factory**(`backend/app/datasource/connectors/k8s_client.py`)— recovery handler 专用,**不复用给 connector**(connector 多集群实例级 `_k8s_loaded`,handler 单集群模块级 `_loaded_cluster = active_cluster`,语义不同)。`ensure_kube_loaded` 抽 k8s_connector 认证逻辑;`get_k8s_apps_api`/`get_k8s_core_api` 返回 `(ApiClient, XApi)` 短生命周期;`run_k8s(coro)` 用 `asyncio.run` 同步包装(handler sync def,recovery router 全 sync,FastAPI threadpool 无 running loop);`k8s_ref(target_id)` 从 DSS 节点 properties 读 `(namespace, name)`(mapper 已写入)。
-2. **async/sync 桥** — handler 是 sync `def`,K8s lib 是 async。`run_k8s` 检 `get_running_loop()`:无 loop → `asyncio.run`(正常路径);有 loop → 新线程兜底(recovery 不该走到这)。
-3. **MySQL/Redis 同步客户端** — pymysql / redis-py 原生 sync,无 async 问题。`from_node(node)` 优先 DSS 节点 properties,缺失走 settings 全局默认,都缺 → `ValueError` → handler 返 `success=False`。
-4. **DSS 孪生只在成功后更新** — 真实 API 失败时 DSS 不动,避免内存图与集群失真。这是 real 模式的核心不变量。
-5. **单集群限定** — Phase 2 用 `settings.active_cluster`,多集群 handler dispatch(target cluster_id 路由)留 Phase 3。
-6. **测试隔离** — 现有 104 个 recovery 测试默认 mock 模式零改动;`test_recovery_real_handlers.py` 用 `monkeypatch.setattr(settings, "recovery_handler_mode", "real")` + mock K8s/MySQL/Redis client(handler 模块引用级 patch,`run_k8s` 自然 asyncio.run)。
+`/topology` `/access-link` `/node-impact` `/config-impact` `/image-risk` `/alert-aggregation` —— 各一个 router + Cypher query + Cytoscape 视图,详见 `doc/05-six-views-design.md`。
 
+### Fault Types(7)
 
-### File Map
+cpu_spike / memory_leak / pod_crashloop / node_disk_pressure / service_no_endpoints / mysql_slow_query / redis_unavailable —— 详见 `doc/08-fault-types-and-timeline.md`。
 
-- Action templates + propagation rules: `backend/app/recovery/action_defs.py`
-- Dry-run cascade BFS: `backend/app/recovery/cascade.py`
-- Lifecycle orchestration: `backend/app/recovery/execution.py` — `execute()`, `_continue_after_approval()`, `rollback()`, `_run_handler_and_persist()`
-- Approval flow: `backend/app/recovery/approval.py` — `request_approval()`, `approve()`, `reject()`, `_derive_approver_team()`, `_is_expired()`
-- Mock handlers: `backend/app/recovery/handlers/{scale_deployment, kill_query, restart_service, restart_pod, rollback_deployment, refresh_secret, drain_node, clear_cache}.py`(每含 `_execute_mock` + `_execute_real` 双分支)
-- Phase 2 K8s client factory: `backend/app/datasource/connectors/k8s_client.py` — `ensure_kube_loaded` / `get_k8s_apps_api` / `get_k8s_core_api` / `run_k8s` / `k8s_ref`
-- Phase 2 MySQL/Redis clients: `backend/app/recovery/clients/{mysql_client,redis_client}.py` — `from_node(node)` + 同步 API
-- API endpoints: `backend/app/routers/recovery.py` — actions / dry-run / execute / executions / **approvals/{id}/{approve|reject}** / **executions/{id}/rollback**
-- Frontend components: `frontend/src/components/Recovery/{RecoveryActionsSection, DryRunModal, ExecutionsView, ApprovalsView}.tsx`
-- Tests: 104 recovery tests(mock 模式)in `backend/tests/test_recovery*.py` + **15 real handler tests** in `test_recovery_real_handlers.py`(real 模式 + mock client)+ 16 frontend tests
+### 节点视觉规则(Cytoscape)
 
-### E2E
+**Shape = 资源类型,fill = health(green/yellow/red),border = risk(thin green / medium yellow / thick red)**。无 per-type fill 配色。形状参见 `reference/frontend/src/utils/graphStyles.ts`。
 
-`bash scripts/sprint3_e2e_test.sh` runs 8 curl steps against a live API: high_risk submit → approval list → approve → duplicate-approve 409 → low_risk sync → rollback → original marked rolled_back → duplicate-rollback 409.
+### Python 旧栈命令(read-only,跑 reference)
 
-### Phase 2 余项 — 跨集群编排 + 自动验证 + 动作链
+```bash
+# 一次性 setup
+make setup
+# Neo4j + import baseline
+make infra
+# API hot-reload(8000)+ Frontend HMR(3000)
+make dev-api
+make dev-frontend
+# 测试
+make test                                                       # 472 + 71
+cd reference/backend && uv run python -m pytest -p no:asyncio   # backend pytest 必须 -p no:asyncio
+```
 
-补 PRD §9 列的 3 项原始 Phase 2 范围(此前只补了 handler 真实化技术债)。剩下 2 项(自定义动作脚本沙箱 / LDAP/SSO 审批集成)外部依赖重、安全风险大,Phase 3 再做。
+### 几个关键设计决策(老栈,迁 Rust 时对照)
 
-1. **跨集群恢复编排**:6 个 K8s handler 按 `target.cluster_id` 路由到对应 kubeconfig,而非固定 `active_cluster`。
-   - `k8s_client.py`:`_loaded_cluster` → `_active_cluster` + switch-and-reload(同集群幂等,异集群 reset+reload);`get_k8s_apps_api(cluster_id)` / `get_k8s_core_api(cluster_id)` 接受参数;`resolve_cluster_id(target_id)`(DSS prop 优先 → target_id 第二段兜底 → settings.kubeconfigs 校验);`k8s_ref(target_id)` 返三元组 `(cluster_id, namespace, name)`
-   - 全 6 个 K8s handler:`cluster_id, namespace, name = k8s_ref(target_id); api, ... = await get_k8s_*_api(cluster_id)`;result 加 `cluster_id`
-   - `RecoveryExecution` 加 `cluster_id` 字段,`execute()` / `_do_rollback` 创建时填充;Neo4j SET / serialize 都带
-   - kubernetes_asyncio config 是**全局状态**,故只能 switch-and-reload(~100ms 代价),真并发留 Phase 3 上 per-ApiClient `Configuration`
+1. **Neo4j 5 路径深度需字符串插值** —— `*1..5` 而非 `*1..$depth`(FastAPI ge/le 校验过的)
+2. **节点用 property-based label** —— `ResourceInstance` + `label` property,不是 multi-label
+3. **DSS 是 single source of truth** —— fault 写 DSS,DSS 同步 Neo4j;生产走 DSS 端点不走 simulation
+4. **HTTP 语义**:low_risk → 200(sync done);medium/high → 202(awaiting_approval)。前端按 status 字段分支,不按 HTTP code
+5. **Rollback 跳过二次审批** —— 原始动作已审,反向是"撤销"不是新风险
+6. **K8s client 真实模式**:成功后才更新 DSS 孪生,失败 DSS 不动(避免内存图与集群失真)
+7. **kubernetes_asyncio config 是全局状态** —— 多集群只能 switch-and-reload(Phase 3 上 per-ApiClient `Configuration` 真并发)
 
-2. **动作执行后自动验证**:`recovery/verifiers.py` 平行注册器 `VERIFIERS`,8 个 verifier(scale / restart_pod / restart_service / refresh_secret / rollback_deployment / drain_node + kill_query/clear_cache=not_supported)。每个 verifier 查 DSS predicate,返 `{passed, predicate, actual, expected, message}`。
-   - `_run_handler_and_persist` 单点插桩 `_verify_and_maybe_rollback`,覆盖 execute / `_continue_after_approval` / rollback 三路径
-   - **verify_failed + 有 rollback_action_id → 自动反向回滚**(`_do_rollback(auto_rollback_marker=True)`)。反向 execution 自身 `verify_status=""` 且 `auto_rollback=False`,**双重防递归**
-   - 无 rollback_action_id 的 action verify_failed → 仅 `result.warnings += "manual intervention needed"`,status 保持 succeeded
-   - `RecoveryExecution` 加 `verify_status` / `verify_result` / `verified_at` 字段(verify_status ∈ "" / passed / failed / skipped / not_supported / error)
-   - `POST /api/v1/recovery/executions/{id}/verify` 主动重验,不触发 auto rollback(用户操作不应有副作用)
-   - `ExecuteRequest.verify: bool = True` 可关闭。审批前 verify 偏好暂存在 `input_params.__verify`,`_continue_after_approval` 阶段读出
+---
 
-3. **动作链 / 编排器**:声明式 `CHAIN_TEMPLATES` + `recovery/chains.py`,3 个内置 template:
-   - `safe_rollback_deployment`(rollback_all):scale +2 → rollback → scale -2
-   - `graceful_refresh_secret`(stop):refresh_secret + 重启 USES 反向 Pod
-   - `drain_node_safely`(stop):drain_node 单步
-   - **on_failure 策略**:`stop`(失败即停 → partial) / `rollback_all`(反向 _do_rollback 1..N-1 → rolled_back) / `continue`(失败继续 N+1 → 末尾 partial)
-   - **链级单次审批**:任一步 medium/high → 整链 awaiting_approval(approver_team 取 max_risk step 派生)。审批 reject → chain.failed,无 step 执行。`approval.approve()` / `reject()` 检测 `execution_id` 实际指向 `chain_id` → 调 `chains.continue_chain_after_approval` / 标 chain 状态
-   - step execution 通过 `chain_id` / `chain_step_index` 反向关联;step 自身 `auto_rollback=False`(链 on_failure 单一决策点,不要 step 重复回滚)
-   - `RecoveryChain` dataclass 入 `store.chains`(uvicorn 重启会丢,Phase 3 再上 Neo4j dual-write)
-   - 端点:`GET /chains/templates` / `GET /chains/templates/{id}` / `POST /chains/execute`(202 if approval else 200) / `GET /chains` / `GET /chains/{id}`(expand step) / `POST /chains/{id}/abort`
+## 重写期工作约定
 
-### Phase 2 余项 关键设计
-
-1. **switch-and-reload 不是 per-ApiClient 真并发** —— kubernetes_asyncio config 是全局状态(load_kube_config 写入模块级 Configuration),无法同时持多个 cluster。Phase 2 余项接受 ~100ms 切换代价 + `_active_cluster` 标记;Phase 3 上 `Configuration(host=..., api_key=...)` per-call 真正并发
-2. **VERIFIERS 与 HANDLERS 平行注册器** —— 与 PRD-002 Phase 2 的 `CHANGE_ACTION_SUGGESTIONS` 同构,单一插桩在 `_run_handler_and_persist`。新增 verifier 三步:写函数 → 注册 dict → 测试
-3. **auto rollback 双重防递归** —— rollback execution 自身 verify=False(`_do_rollback(auto_rollback_marker=True)` → `_run_handler_and_persist(verify=not marker)`)+ auto_rollback=False。避免 verify_failed → rollback → rollback verify_failed → ... 死循环
-4. **链级审批合并** —— PRD §9 原描述「动作链」隐含每步可能独立审批,但实操"每步一审"会让链卡死。本期决策:整链一次审批(approver_team 取最高风险 step 派生),审批过 → 整链跑完;reject → chain.failed 无 step 执行
-5. **abort 不做反向 rollback** —— 用户主动 abort 语义是"放弃这串操作",不是"撤销已发生的"。已执行成功的 step 保留 succeeded 状态;chain.status=aborted
-6. **continue 策略循环内处理而非递归** —— `_run_chain_steps` 内部 `if on_failure == "continue": continue`,避免递归 `_handle_step_failure → _run_chain_steps` 导致 `had_failure` 状态丢失
-
-### Phase 2 余项 File Map
-
-- k8s_client 多集群:`backend/app/datasource/connectors/k8s_client.py` — `_active_cluster` / `ensure_kube_loaded(cluster_id)` / `get_k8s_apps_api(cluster_id)` / `get_k8s_core_api(cluster_id)` / `resolve_cluster_id` / `k8s_ref` 返三元组
-- 自动验证:`backend/app/recovery/verifiers.py` — 8 verifier + `VERIFIERS` 注册器 + `get_verifier` / `run_verifier`(异常兜底)
-- 自动回滚 + reverify:`backend/app/recovery/execution.py` — `_run_handler_and_persist(verify, auto_rollback)` + `_verify_and_maybe_rollback` + `_do_rollback(auto_rollback_marker)` + `reverify`
-- 动作链编排器:`backend/app/recovery/chains.py` — `execute_chain` / `continue_chain_after_approval` / `abort_chain` / `_run_chain_steps` / `_run_single_step` / `_handle_step_failure`
-- 模板:`backend/app/recovery/action_defs.py` — `CHAIN_TEMPLATES` + `get_chain_template` + `list_chain_templates`
-- 模型:`backend/app/datasource/models.py` — `RecoveryExecution` 加 cluster_id / verify_* / chain_* 字段;`RecoveryChain` dataclass
-- 存储:`backend/app/datasource/store.py` — `chains` dict + `add_chain` / `get_chain` / `list_chains` / `update_chain`
-- 端点:`backend/app/routers/recovery.py` — `POST /executions/{id}/verify` + `/chains/*` 5 端点 + `_serialize_chain`
-- 审批集成:`backend/app/recovery/approval.py` — `approve()` / `reject()` 检测 chain_id 派发 chain continuation
-- 前端:`frontend/src/components/Recovery/RecoveryChainsView.tsx`(新)+ `ExecutionsView.tsx`(加集群 / 验证列 + 详情段)+ `api/client.ts`(+ Phase 2 字段 + Chain types + 5 函数)+ `App.tsx` / `MainLayout.tsx` 加路由 + 菜单
-- 测试:`backend/tests/test_recovery_multicluster.py`(16)+ `test_recovery_verify.py`(24)+ `test_recovery_chains.py`(14)+ `frontend/src/__tests__/RecoveryChainsView.test.tsx`(3)
-
-## OTel Demo Real-Data Connectors — PRD-004
-
-5 asyncio-based connectors poll the vm cluster (otel-demo namespace, OTel demo Helm chart 0.32.0) every 30s and write to DSS. Frontend untouched in this PRD — verification is curl-only.
-
-| Connector | Source | Writes |
-|---|---|---|
-| `k8s` | kubernetes-asyncio (Deployment/Pod/Service/CM/Secret) | DataNode + DataEdge with `discovery_method=k8s_connector` |
-| `prometheus` | OTel Collector spanmetrics (`duration_milliseconds_*`, `calls_total`) | MetricSnapshot + auto-derives component `health` |
-| `jaeger` | Jaeger HTTP `/api/traces` (ChildOf span refs) | CALLS edges with `call_count_5m`, threshold ≥ 5 |
-| `flagd` | gRPC `/flagd.evaluation.v1.Service/ResolveAll` | ChangeEvent (source=flagd) on flag diff |
-| `k8s_events` | K8s events (ScalingReplicaSet / SuccessfulRescale) | ChangeEvent (deployment_rolled) |
-
-### Key Design Decisions
-
-1. **`discovery_method` property** isolates connector-owned data from baseline. Diff-update only touches nodes/edges with the matching method.
-2. **First-sync baseline** for flagd / k8s_events: snapshot current state but emit zero events (avoids 100+ ChangeEvents on startup).
-3. **Service name normalization**: `_service_to_component_id("cartservice", ...)` → `comp:vm-cluster:otel-demo:cart` (strips "service" suffix). `frauddetectionservice` → `fraud-detection`.
-4. **Health derivation in connector**: `derive_health(snapshots)` returns None if no data (don't refresh), `red` if any critical breach, `yellow` if any warning, else `green`. Critical beats warning across metrics.
-5. **PromQL window 5m**: shorter windows return 0 results because OTel collector pushes spanmetrics at scrape interval too long for `rate()` over 2m.
-6. **Jaeger base-path**: Helm chart 0.32.0 sets `--query.base-path=/jaeger/ui`, so API is at `/jaeger/ui/api/services` not `/api/services` (default `JAEGER_URL` reflects this).
-7. **CALLS edge threshold ≥ 5**: filter noise from one-off cross-service calls. Self-calls excluded.
-8. **8 fault scenarios** (`backend/app/recovery/scenarios/otel_demo_scenarios.py`): map flag name (`productCatalogFailure` / `cartServiceFailure` / etc.) → target component → recommended PRD-001 action (restart_pod / clear_cache / scale_deployment / rollback_deployment / restart_service).
-
-### File Map
-
-- BaseConnector: `backend/app/datasource/connectors/base.py` — abstract `sync_once()`, swallowed exceptions, `status()` for control endpoint
-- K8s: `k8s_connector.py` (kubernetes-asyncio loops + `_index_rs_to_deploy`) + `k8s_mapper.py` (pure-function mapping, `normalize_component_name`, `detect_middleware`, `is_infra`)
-- Prometheus: `prometheus_connector.py` + `prometheus_queries.py` (3 PromQL templates, QueryDef thresholds) + `health_rules.py` (warn/critical → green/yellow/red)
-- Jaeger: `jaeger_connector.py` + `trace_aggregator.py` (counts CHILD_OF span pairs across traces)
-- flagd: `flagd_connector.py` (`_extract_value` for boolValue/doubleValue/stringValue/intValue, `_state_differs` by variant)
-- K8s events: `k8s_event_connector.py` (`INTERESTING_REASONS`, `_event_to_change` with ReplicaSet → Deployment name strip)
-- Orchestrator: `sync_orchestrator.py` (`registry`, `init_connectors`, `start_all_connectors`, `stop_all_connectors`)
-- Tests: `backend/tests/test_sprint23_connectors.py` (39 tests via `asyncio.run()` + `httpx.AsyncClient` patched with AsyncMock)
-
-### Endpoints (`/api/v1/connectors`)
-
-- `GET /status` — list all connectors with `running`, `error_count_24h`, `last_result`
-- `GET /{name}` — single connector status detail
-- `POST /{name}/sync-now` — trigger one sync, return SyncResult
-
-### E2E
-
-`bash scripts/otel_demo_e2e.sh` checks 5 connectors registered → forces sync on each → checks DSS for nodes/edges/metrics/CALLS/ChangeEvents → lists 8 OTel demo scenarios. Requires port-forwards to Prometheus (19090), Jaeger (16686), flagd (8013) and API started with `KUBECONFIGS / PROMETHEUS_URL / JAEGER_URL / FLAGD_URL` env vars.
-
-### Phase 2 — 闭环三件:AlertEvent + scenario 接入 + Connector UI
-
-补齐 PRD §6 验收「connector 检测 critical breach 产 AlertEvent」+ PRD §11 后续项「前端 Connector 健康检查页面」,并贯通 flag→recovery 链。
-
-1. **AlertEvent DSS 模型**(`models.py`)— 镜像 ChangeEvent 模式。`AlertRule`(从 QueryDef 阈值生成,3 query × 2 sev = 6 rule)+ `AlertEvent`(firing/resolved,resource_ref 指向被告警资源)。`store` 加 `alert_rules`/`alert_events` 存储 + 增查改方法。
-2. **AlertRule 生成**(`health_rules.generate_alert_rules` + `sync_alert_rules_to_store`)— 启动时从 QUERIES 的 warning/critical 阈值生成规则,幂等 upsert 到 DSS。`GET /api/v1/alerts/rules` 懒加载。
-3. **connector → AlertEvent**(`prometheus_connector._emit_alerts_if_breached`)— sync_once 推导 health 时,若 snapshot 超 critical 阈值 → `record_alert(critical)`,超 warning → `record_alert(warning)`(critical 优先,不重复产 warning)。去重:同 resource + rule 的 firing 告警不重复。
-4. **alert_service**(`backend/app/alerts/alert_service.py`)— `record_alert`(去重 + Neo4j dual-write,`:AlertEvent:ResourceInstance` + FIRED_ON 边,镜像 simulation.py 结构使 view6 告警归并同时看到 connector 产的告警)+ `resolve_alert`。
-5. **贯通 ChangeEvent**(`alert_correlation._fetch_alerts_in_window`)— 优先从 DSS 读 AlertEvent,Neo4j 兜底,合并去重。PRD-002 的 `correlate_alerts` 现可从 DSS 读,`record_change` 后自动 `correlate_and_persist` 写 CORRELATED_WITH 边。形成 connector critical → AlertEvent ↔ ChangeEvent 双向可查链。
-6. **flagd 接入 scenario_for_flag**(`flagd_connector._try_record` + `_lookup_scenario`)— flag 翻转产 ChangeEvent 时查 OTel demo scenario 映射,若是故障 flag 把 `recommended_action`/`target_component`/`finding_severity`/`expected_metric` 塞进 `diff_summary.scenario` + description 标注。贯通 flag 翻转 → ChangeEvent → PRD-002 recovery-suggestion → PRD-001 恢复动作链。
-7. **前端 Connector 健康检查页面**(`ConnectorsView.tsx`)— 状态表(name/运行/最近同步/同步次数/24h错误/最近产出/最近错误)+ 立即同步按钮(watch 模式 disabled)+ 展开行 notes + watch 快照大小;5s 刷新。菜单「Connector 状态」。
-
-### Phase 2 关键设计
-
-1. **AlertEvent 镜像 ChangeEvent 而非写死 Neo4j** — DSS 主存储 + best-effort dual-write。使 correlate_alerts 可从 DSS 读(不再只依赖 Neo4j),且 AlertEvent 有查询/序列化/端点,与 ChangeEvent 对称。
-2. **critical 优先不重复产 warning** — `_emit_alerts_if_breached` 对单个 snapshot 只产一条(critical 命中就不产 warning),避免告警风暴。
-3. **firing 去重** — 同 resource_ref + rule_id 的 firing 告警不重复产出(connector 30s 轮询不会每次都刷一条)。resolve 后才能再发。
-4. **FIRED_ON 边镜像 simulation.py** — 让 legacy view6 告警归并查询(Cypher `MATCH (alert)-[:FIRED_ON]->(resource)`)同时看到 connector 产的告警,不破坏现有视图。
-5. **scenario 接入是富化不是触发** — flagd_connector 只把 scenario 元信息塞进 ChangeEvent,不主动执行 recovery(那是 PRD-002 recovery-suggestion 的前端一键发起职责)。非故障 flag 不富化(business toggle 不带 scenario 字段)。
-6. **conftest 修复** — `client` fixture 同时 patch `health.check_connection` 本地引用(health.py 用 `from ... import check_connection` 本地绑定,app 被裸导入后 patch n4j.check_connection 失效)。修复 PRD-002 Phase 2 遗留的全套件 health 端点测试污染。
-
-### Phase 2 File Map
-
-- 模型: `backend/app/datasource/models.py` AlertRule + AlertEvent;`backend/app/datasource/store.py` alert_rules/alert_events 存储
-- AlertRule 生成: `backend/app/datasource/connectors/health_rules.py` `generate_alert_rules` + `sync_alert_rules_to_store`
-- AlertEvent 服务: `backend/app/alerts/alert_service.py` `record_alert` + `resolve_alert` + `_persist_alert_event`
-- connector→AlertEvent: `backend/app/datasource/connectors/prometheus_connector.py` `_emit_alerts_if_breached`
-- flagd→scenario: `backend/app/datasource/connectors/flagd_connector.py` `_try_record` + `_lookup_scenario`
-- Alert 关联增强: `backend/app/changes/alert_correlation.py` `_fetch_alerts_in_window`(DSS 优先 + Neo4j 兜底)
-- 端点: `backend/app/routers/alert.py`(POST / GET / GET /rules / GET /{id} / POST /{id}/resolve),注册于 main.py(startup sync rules + 挂 router)
-- 前端: `frontend/src/components/Views/ConnectorsView.tsx`,`frontend/src/api/client.ts`(+connector 类型/函数),`MainLayout.tsx`(+菜单),`App.tsx`(+路由)
-- 测试: `backend/tests/test_alerts_phase2.py`(16:规则 3 + record 5 + resolve 2 + prometheus 3 + 端点 2 + 贯通 1)+ `test_flagd_scenario_phase2.py`(4)+ `frontend/src/__tests__/ConnectorsView.test.tsx`(4)
-
-## Change Event Tracking — PRD-002 Sprint 1 + Sprint 2
-
-ChangeEvent is a typed event recording **what was changed by whom on which resource at what time**. Sprint 1 shipped backend (model + correlated query + propagation BFS); Sprint 2 adds **Neo4j dual-write** (audit survives uvicorn restart) + **frontend timeline** (3 integration points).
-
-- 4 change types: `configmap_updated` / `secret_rotated` / `deployment_rolled` / `image_pushed`
-- Sources: `k8s_api` / `argo_cd` / `gitops` / `manual` / `unknown` / `flagd` (added by PRD-004 Sprint 3)
-- Propagation: `derive_propagation(target_id)` does reverse BFS on PROPAGATION_EDGES (USES, CONTAINS, DEPLOYED_AS, BELONGS_TO, RUNS, SCHEDULED_ON, EXPOSES, ROUTES_TO), capped at depth 4
-- `severity_estimate`: `len(propagated) >= 10` → high, ≥ 5 → medium, else low
-- Endpoints (`/api/v1/change-events`): POST create / GET list with filters / GET `/correlated?target_resource_id=X&window=300` / GET `/{id}/impact` / GET `/timeline?application_id=Y`
-
-### Sprint 2 — Neo4j Dual-Write
-
-`record_change()` writes DSS (主存储) then best-effort dual-writes Neo4j, mirroring the recovery `_persist_execution()` pattern. Neo4j failure → `logger.warning` only, never blocks the API.
-
-- Node: `MERGE (:ChangeEvent:ResourceInstance {node_id: $eid})` (dual-label, keyed by `change_event_id`)
-  - `diff_summary` stored as `diff` (JSON-serialized string, `json.dumps(..., ensure_ascii=False, sort_keys=True)`)
-  - `propagated_to` stored natively as a Neo4j list property + `pc` count for fast indexing
-- Edge: `MERGE (e)-[:RELATES_TO {edge_id:'change_target_'+$eid}]->(t)` with `relationship_type='CHANGED'`. Target matched via `MATCH (t:ResourceInstance {node_id:$tid})` — if absent the edge is skipped (no stub node), only the edge is lost.
-- **No PROPAGATES_TO fan-out edges** (decision): `propagated_to` as a list property is queryable without write amplification on high-severity events.
-
-CSV bulk import: `scripts/import_change_events.py` reads `scripts/output/change_events.csv` (`generate_change_events.py --csv`, ~150 events) and UNWIND-MERGEs nodes + main edges in batches of 200. Run via `cd backend && uv run python ../scripts/import_change_events.py` (needs the uv env for the neo4j driver).
-
-### Sprint 2 — Frontend Timeline (3 integration points)
-
-1. **NodeDetailPanel** — `ChangeTimelineSection` Card after the recovery section: antd `<Timeline>` of the resource's last 50 changes, severity-colored dots (low=green / medium=gold / high=red) + Chinese change-type labels. Drawer widened 380→460.
-2. **`/change-timeline` page** (`ChangeTimelineView`) — application-level timeline with range presets (1h/6h/24h/7d), type checkboxes, `by_type` Tag aggregation, and a detail Drawer rendering the `/{id}/impact` tree via antd `Tree`. Menu entry `变更时间线` (`FieldTimeOutlined`), 5s refetch.
-3. **ConfigImpactView** — right-side `近 24h 变更资源` Card (280px, flex): aggregates 24h changes onto visible graph nodes, top 20 by count, click selects the node.
-
-### Sprint 2.5 — 从变更直接调起恢复动作(集成 PRD-001)
-
-`prd-002 §9` 点名的 Phase 2 项「变更回滚(从此处直接调起 PRD-001 rollback)」。在变更事件抽屉里展示推荐恢复动作 + 一键发起执行,把"看到变更"贯通到"执行恢复"。
-
-- 后端 `CHANGE_ACTION_SUGGESTIONS`(`action_defs.py`)按 `change_type` 推荐动作,镜像 `RULE_ACTION_SUGGESTIONS` 结构:`configmap_updated`→`rollback_deployment` / `secret_rotated`→`refresh_secret`+`rollback_deployment` / `deployment_rolled`→`rollback_deployment` / `image_pushed`→`rollback_deployment`
-- 目标解析 `get_recovery_suggestion(event_id)`(`event_service.py`):事件 target 类型与动作 `target_type` 匹配 → `direct`;否则在已算好的 `propagated_to`(反向 BFS)里找第一个类型匹配节点 → `propagated`(例:ConfigMap 变更 → 找到 USES 它的 Deployment);都不可达 → `unresolved`(`resolved_target_resource_id=null`,前端禁用执行按钮)
-- 端点 `GET /api/v1/change-events/{id}/recovery-suggestion`
-- 前端 `RecoverySuggestionCard`(`ChangeTimelineView.tsx`)挂在事件抽屉底部:展示动作名 / risk / 置信度 / 目标解析 tag + `发起` 按钮调 `postRecoveryExecute`(high_risk → awaiting_approval 提示去审批中心)。unresolved 时按钮 disabled 并提示手动指定
-
-### File Map
-
-- Backend: `backend/app/changes/event_service.py` (`record_change` + `_persist_change_event` + `get_recovery_suggestion`), `backend/app/recovery/action_defs.py` (`CHANGE_ACTION_SUGGESTIONS` + `suggest_for_change`)
-- API: `backend/app/routers/change_event.py`
-- Frontend: `frontend/src/components/Graph/ChangeTimelineSection.tsx`, `frontend/src/components/Views/ChangeTimelineView.tsx` (含 `RecoverySuggestionCard`), `frontend/src/components/Views/ConfigImpactView.tsx`, `frontend/src/components/Graph/NodeDetailPanel.tsx`, `frontend/src/api/client.ts`
-- Tests: `backend/tests/test_change_events.py` (47 tests incl. 3 Neo4j persistence + 7 recovery-suggestion) + `frontend/src/__tests__/{ChangeTimelineSection,ChangeTimelineView}.test.tsx` (10 tests)
-- Mock generator: `scripts/generate_change_events.py` (~150 events across 7 days); bulk import: `scripts/import_change_events.py`
-
-### Phase 2 — 实时变更接入 + 深度关联
-
-补齐 PRD §9 列的 6 项延后能力(跨集群聚合 + 变更审批工作流仍留 Phase 3):
-
-1. **K8s watcher**(`k8s_watch_connector.py`)—— 真 `watch.Watch().stream()` 长连接监听 ConfigMap/Secret/Deployment,**不是** K8sEventConnector 的 30s 轮询。list-then-watch 模式:首次 list bootstrap 建快照 + resource_version,再起 watch 续传。MODIFIED → `compute_yaml_diff` → ChangeEvent(含 `yaml_diff` + `cluster_id`);ADDED 首轮只建快照不发;DELETED 不发;断线 5s 退避重连 + rv 续传,rv Gone → 重建快照。gate `K8S_WATCH_ENABLED`(默认 0,vm 集群才开)。
-2. **Webhook 接收**(`routers/webhook.py`,prefix `/api/v1/webhooks`)—— `POST /argocd` 解析 app_name/revision/images → `deployment_rolled`(commit_sha + git_repo);`POST /harbor` → `image_pushed`。可选 `WEBHOOK_TOKEN` header 校验(空则跳过,PoC 简化,生产必开)。
-3. **Git/CI 关联** —— ChangeEvent 加 `commit_sha`/`pipeline_url`/`git_repo`/`cluster_id`/`yaml_diff` 5 字段。`commit_sha` 是规范字段,优先于 `related_commit`(回退兼容)。
-4. **YAML diff**(`changes/yaml_diff.py`)—— 纯标准库 `yaml`+`difflib` 产 unified diff;默认剔除 K8s 噪声字段(managedFields/resourceVersion/uid/creationTimestamp/generation/annotations),避免元数据变更误报。`summarize_diff` 给 diff_summary 用。
-5. **变更频率告警**(`changes/frequency.py`)—— `check_target_frequency` 单资源窗口计数,`detect_frequent_changes` 全量分桶。`record_change` 写入后调,命中(>阈值,默认 5/1h)→ severity 至少 medium + description 追加「[过频变更:N次/3600s]」。端点 `GET /frequent`。
-6. **ChangeEvent↔AlertEvent CORRELATED_WITH**(`changes/alert_correlation.py`)—— PRD §6 验收里唯一未勾的项。`correlate_alerts`:窗口内 AlertEvent.resource_ref 落在变更影响面(propagated_to ∪ target)→ 命中。`persist_correlation`:best-effort 写 `(ce)-[:CORRELATED_WITH]->(ae)` 边。`record_change` 末尾自动触发 `correlate_and_persist`(Neo4j 离线→0,不阻塞)。端点 `GET /{id}/alerts`。
-
-### Phase 2 关键设计
-
-1. **watch 重写 BaseConnector 生命周期** —— watch 是长连接阻塞,不能按 sync_interval 轮询。`start()`/`_run_loop` 重写为 `_run_watch`,三类资源各起一个 watch task 并发。`sync_once()` 保留作 /sync-now 兜底(走 list)。
-2. **list-then-watch 是 K8s 标准模式** —— 首次无 resource_version 时先 list 建快照 + 拿 rv + 翻 first_sync=False,再起 watch。这样 watch 只收真实后续变更,启动不炸历史 ADDED。
-3. **AlertEvent 在 DSS 无模型** —— `correlate_alerts` 只能走 Neo4j 读 `:AlertEvent`(由 `simulation.py` 写入,resource_ref 属性指向被告警资源)。Neo4j 离线 → alerts 空 + `neo4j_available=false`,不阻塞 API。
-4. **CORRELATED_WITH 单向边** —— `(ChangeEvent)-[:CORRELATED_WITH]->(AlertEvent)`,语义"变更可能是告警诱因"。不做双向,避免写放大。
-5. **频率告警 O(n) 扫** —— `record_change` 每次调 `check_target_frequency` 扫该 target 的所有事件。事件量级 <10k 可接受,Phase 3 上滑动窗口索引。
-6. **_estimate_severity 只升不降** —— propagated + frequent 共同定级。频率命中把 low→medium,但不降 high。现有 47 测试零回归(新字段全可选默认空)。
-
-### Phase 2 File Map
-
-- K8s watcher: `backend/app/datasource/connectors/k8s_watch_connector.py` — `K8sWatchConnector` / `_handle_watch_event`(纯函数可单测)/ `_bootstrap_list` / `_watch_kind`(断线重连)
-- Webhook: `backend/app/routers/webhook.py` — `/argocd` + `/harbor` + `_check_token`
-- YAML diff: `backend/app/changes/yaml_diff.py` — `compute_yaml_diff` + `summarize_diff`
-- 频率告警: `backend/app/changes/frequency.py` — `check_target_frequency` + `detect_frequent_changes`
-- Alert 关联: `backend/app/changes/alert_correlation.py` — `correlate_alerts` + `correlate_changes_for_alert` + `persist_correlation` + `correlate_and_persist`
-- 模型扩展: `backend/app/datasource/models.py` ChangeEvent +5 字段;`backend/app/changes/event_service.py` `record_change` 加 kwargs + `_apply_frequency_check` + 自动 `correlate_and_persist`
-- 端点: `backend/app/routers/change_event.py` 加 `GET /{id}/alerts` + `GET /frequent`
-- Config: `backend/app/config.py` 加 `k8s_watch_enabled` + `webhook_token`
-- 前端: `frontend/src/components/Views/ChangeTimelineView.tsx`(`ChangeAlertsCard` + Git/CI Card + YAML Diff Card + 频率告警横幅),`frontend/src/api/client.ts`(+5 字段 + `fetchChangeEventAlerts`/`fetchFrequentChanges`)
-- Tests: `backend/tests/test_change_events_phase2.py`(21 tests:YAML diff 3 + 新字段 2 + 频率告警 3 + watcher 4 + webhook 3 + Alert 关联 6)+ `frontend/src/__tests__/ChangeTimelineView.test.tsx`(+2)+ fixtures 更新
-
-## Self-Inspection Report — PRD-003 Sprint 1 + Sprint 2
-
-一键生成自检报告(Markdown)。Sprint 1 上线 `application_health` 模板 + 异步生成;**Sprint 2** 加 `cluster_overview` + `incident_report` 模板 + APScheduler cron 订阅 + SMTP 邮件 + Neo4j 订阅持久化。**PDF / matplotlib 图表 / IM 推送 延后**(决策:报告主读者是工程团队,Markdown 够用)。
-
-### 数据源适配(重要)
-
-PRD §3.4 假设复用 `inspection_service` / `alert_service` —— **这两个不存在**。`services/` 只有 `graph_service`(Neo4j 记录格式化器)+ `metrics_service`。View routers 是纯 Neo4j、测试态 mock 返空。→ **报告所有模块全部从 DSS store 采集**。`InspectionFinding`/`AlertEvent` 在 DSS 无对应模型,Health Score 公式从「节点 health_status + 活跃故障」适配(Phase 2 接真实巡检 finding 切回 PRD 原公式)。
-
-### Health Score 适配公式
-
-PRD 原公式(critical Finding -10 / warning -3 / fault Pod -2)→ DSS 适配:
-- `critical = red-health 节点数 + 活跃 fault 目标数` ×10
-- `warning = yellow-health 节点数` ×3
-- `fault_pod = 活跃 fault 中 Pod 类目标数` ×2
-- `score = max(0, 100 - critical*10 - warning*3 - fault_pod*2)`
-- rating:`≥80 健康 / 60-79 健康警告 / 40-59 风险中 / <40 风险高`
-
-### 模板与模块
-
-**`application_health`(Sprint 1)** — 5 模块:health_score / seven_views / risk_list / recommended_actions / historical_trends。scope 必含 `application_id`。
-
-**`cluster_overview`(Sprint 2)** — 4 模块 + 跨应用聚合:
-- `cluster_health` — 列所有 Application,逐个 `compute_health_score`,按 score 升序 + rating 分布
-- `cluster_risk_top_n` — Top-N 风险应用 + 全局活跃故障 + 高危变更计数
-- `cluster_changes` — by_type 变更聚合 + Top-5 受变更资源
-- `cluster_recoveries` — RecoveryExecution status 分布 + 成功率
-- scope 可空(全公司)或 `cluster_id`(L1 模型反向 BFS 不通,简化为 `resource_id` prefix 匹配,Phase 2 重做)
-
-**`incident_report`(Sprint 2)** — 3 模块,围绕单个事件锚点:
-- 锚点解析:`scope.fault_id`(DSS FaultInjection)或 `change_event_id`(DSS ChangeEvent),二选一;失败 → `ValueError` → generator failed 分支
-- `incident_summary` — 锚点元信息 + 反向 BFS 受影响节点(`derive_propagation` 复用 PRD-002)
-- `incident_timeline` — 锚点 ±window_seconds(默认 3600s)内交叉 ChangeEvent + RecoveryExecution,按时间排序(返回 key 用 `events` 不是 `items` — Jinja2 与 dict.items() 冲突)
-- `incident_recoveries` — 已执行恢复 + 推荐后续(change 锚点调 `suggest_for_change`)
-
-### 异步生成
-
-- `generate_report(report_id)` 同步函数:按 `template_id` 路由到 `gatherers_for_template()` 对应表 → 顺序调采集函数(每步更新 progress/current_step)→ Jinja2 渲染 `{template_id}.md` → 落盘 `backend/reports/{id}.md` → completed;异常 → failed + error_message
-- `run_generation_background(report_id)` 包 `threading.Thread`(daemon)。**测试直接调同步 `generate_report` 避免线程 flaky**
-- `report_store` 单例(对标 DSS `store`)hold 所有 ReportTask;uvicorn 重启任务丢失(产物在磁盘)
-
-### 订阅 + 调度(Sprint 2)
-
-- `ReportSubscription` dataclass + `subscription_store` 单例(`backend/app/reports/subscription_store.py`)— 字段:template_id / scope / modules / cron / recipients / enabled / last_run_at / last_status / last_error / last_report_id
-- `ReportScheduler` 包 APScheduler `BackgroundScheduler`(`backend/app/reports/scheduler.py`)— `register_subscription` 用 `CronTrigger.from_crontab` 注册 cron job;`unregister` / `reload_all` / `trigger_now`
-- job 触发 → `_run_subscription_safely(sub_id)`:读 sub → 创建一次性 ReportTask → 同步 `generate_report` → 调 `EmailSender.send(recipients, subject, body=markdown, attachments=[.md])` → 更新 `last_*`
-- `EmailSender` 抽象(`backend/app/reports/email_sender.py`):`InMemoryEmailSender`(默认 / 测试,sent 列表累加)+ `SmtpEmailSender`(stdlib smtplib,`SMTP_HOST` env 切真 SMTP)+ `get_email_sender()` 单例工厂
-- 启动时 `load_subscriptions_from_neo4j()` 反向 hydrate + `report_scheduler.start()` + `reload_all()`(`backend/app/main.py` lifespan)
-
-### Neo4j 订阅持久化(Sprint 2)
-
-`backend/app/reports/persistence.py` 镜像 `_persist_change_event` best-effort 模式:
-- `_persist_subscription(sub)` — `MERGE (:ReportSubscription:ResourceInstance {node_id: $sid})`,scope 用 JSON str(`scope_json`)、modules / recipients 原生 list
-- `_delete_subscription_node(sub_id)` — `DETACH DELETE`
-- `load_subscriptions_from_neo4j()` — `MATCH (:ReportSubscription) RETURN ...` 反向 hydrate;Neo4j 离线 → `logger.warning` 不阻塞启动
-- 失败一律 `logger.warning` 不抛(API / 内存 store 不阻塞)
-
-### 端点(`/api/v1/reports`)
-
-报告:
-- `POST /generate` → 202 + `{report_id, status:"pending"}`(校验 template_id ∈ 3 个、format ∈ {markdown}、按模板校验 modules 子集、application_id / anchor 必填)
-- `GET /{id}/status` → `{status, progress, current_step, error_message}`
-- `GET /{id}/download?format=markdown` → FileResponse(.md),非 completed → 409,非 markdown → 400
-- `GET /` → 列表(过滤 template_id / application_id)
-
-订阅(Sprint 2):
-- `POST /subscriptions`(201)— 校验 cron / recipients / scope → 注册 scheduler → Neo4j dual-write
-- `GET /subscriptions` / `GET /subscriptions/{id}`
-- `PATCH /subscriptions/{id}` — 改 cron / enabled / recipients / modules,自动重注册 scheduler
-- `DELETE /subscriptions/{id}`(204)— scheduler 注销 + Neo4j delete
-- `POST /subscriptions/{id}/trigger` — 同步立即跑(发邮件 + 更新 last_*)
-- `GET /sent-emails` — 仅 InMemoryEmailSender 模式调试,生产 SMTP → 501
-
-### 前端
-
-- `/reports` 页(`ReportsView`)外层 antd `<Tabs>`:
-  - 「报告列表」(`ReportsListPanel`)— Table + 「生成新报告」Modal,模板 Select 切换时动态切换 scope 输入(应用 ID / 集群 ID / fault_id + change_event_id 二选一)+ 同步模块默认值;3s 刷新
-  - 「订阅管理」(`SubscriptionsPanel`)— Table(模板/范围/cron Tag/收件人 Tag/最近运行/启用 Switch/操作) + 「新建订阅」Modal(动态 scope + 4 个 cron 预设按钮 + 收件人逗号分隔输入 + 模块多选 + enabled Switch);行操作:立即运行 / Switch 启停 / 删除(Popconfirm);5s 刷新
-- `NodeDetailPanel` 仅 Application 节点显示「📄 自检报告」Card,一键生成
-- 下载:`utils/download.ts` `downloadBlob`(全项目首个 blob 下载 — createObjectURL + `<a download>` + revoke)
-
-### Key Design Decisions
-
-1. **Markdown-only** —— 不上 weasyprint(PDF 延后)、不上 matplotlib(趋势用文本表格)。原生库已就绪,Phase 2 可平滑切 PDF
-2. **DSS 为唯一数据源** —— view routers 纯 Neo4j 测试态返空,报告必须可测,故全走 DSS。Health Score 适配公式是这一选择的直接后果
-3. **threading + 内存任务表** —— 不引入 Celery;`report_store` 单例对标 DSS。后台线程测试里用同步调用替代
-4. **多模板路由** —— `gatherers_for_template(template_id)` 返回对应 gatherer 字典,延迟 import 避免循环依赖(cluster_modules / incident_modules 反向引用 health_score)
-5. **incident 锚点 fault_id / change_event_id 二选一** —— 没有独立 Incident 模型,复用现有 DSS 资源,失败抛 `ValueError` → generator failed 分支
-6. **EmailSender 抽象 + 单例工厂** —— 默认 InMemoryEmailSender 不污染线上;`SMTP_HOST` env 切真 SMTP;`reset_email_sender()` 测试用
-7. **APScheduler BackgroundScheduler** —— 同步 scheduler 配 FastAPI lifespan 简洁;`trigger_now` 暴露给 API + 测试免起线程
-8. **订阅 Neo4j dual-write** —— uvicorn 重启订阅不丢;失败不阻塞主流程(同 `_persist_change_event` 模式)
-9. **cluster_id prefix 匹配** —— L1 模型 KubernetesCluster 不直接 CONTAINS Application,反向 BFS 走不通;Sprint 2 简化为 `resource_id` 字符串 prefix,Phase 2 重做
-10. **Jinja2 字段名避开 `items`** —— `incident_timeline` 返回 `events` 而非 `items`,避免与 dict.items() 方法冲突
-
-### File Map
-
-- 后端核心:`backend/app/reports/{store,health_score,modules,generator}.py` + `cluster_modules.py` + `incident_modules.py` + `subscription_store.py` + `email_sender.py` + `scheduler.py` + `persistence.py`
-- 模板:`backend/app/reports/templates/{application_health,cluster_overview,incident_report}.md`
-- API:`backend/app/routers/report.py`(报告 4 端点 + 订阅 7 端点),注册于 `backend/app/main.py`(lifespan startup hydrate + scheduler.start)
-- 前端:`frontend/src/components/Views/{ReportsView,SubscriptionsPanel}.tsx`,`frontend/src/components/Graph/NodeDetailPanel.tsx`,`frontend/src/utils/download.ts`,`frontend/src/api/client.ts`
-- 测试:`backend/tests/test_reports.py`(21)+ `test_reports_sprint2.py`(22 — cluster/incident/multi-template)+ `test_reports_sprint2_sub.py`(24 — 订阅 / 邮件 / 调度 / persistence)+ `frontend/src/__tests__/{ReportsView,NodeDetailPanelReport,SubscriptionsPanel}.test.tsx`(14)
+- **新代码进 `engine/` / `desktop/` / `modules/` / `specs/`**;**绝不在 `reference/` 加 feature**
+- **行为参考**:Rust 复刻每个 PRD 时,读 reference 对应模块的源码 + 测试(测试是规约),不是 PRD 文档(可能落后于实现)
+- **Contract test**:Phase 3+ 复刻时,挑 reference 的代表性测试用例,Rust 端跑等价测试,行为偏差需在 commit msg 中明示
+- **doc/14-17** 是技术战略 + 数据契约 + repo 布局 + Tauri 架构 4 份核心文档,写代码前先读

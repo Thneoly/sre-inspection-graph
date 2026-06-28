@@ -91,11 +91,11 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 
 ```
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
-2026 Q2   ▶ 当前 — Phase 0:doc/14-17 战略决策落档
+2026 Q2   ▶ 当前 — Phase 0 ✅ + Phase 1 进行中(增量 G):Rust 重写骨架 + WASM connector + Tauri 桥接已通
   ↓
-2026 Q3   Phase 1:Tauri + engine 最小可跑 + 第一个 WASM connector
-2026 Q4   Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver)
-2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002
+2026 Q3   Phase 1 收尾(mock 拓扑视图 + Blog)→ Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver)
+2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
+2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
 2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
 2027 Q3   Buffer / 社区 / 技术分享
 ```
