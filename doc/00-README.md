@@ -1,6 +1,6 @@
 # 00 — 文档导航
 
-本目录共 17 份文档(含本文件),按"读者动机"分五组。建议新人从对应分组的第一篇看起。
+本目录共 18 份文档(含本文件 + blog/1 篇),按"读者动机"分六组。建议新人从对应分组的第一篇看起。
 
 ## 📁 分组速查
 
@@ -50,6 +50,12 @@
 | 16 | [仓库与代码目录设计](./16-repo-and-codebase-layout.md) | Mono-repo 物理结构:engine/desktop/modules/specs/reference + Bootstrap 步骤 | Phase 1 开工时必读 |
 | 17 | [Tauri 桌面架构](./17-tauri-desktop-architecture.md) | Tauri 2.x commands / IPC / 本地存储 / 跨平台打包 / 安全模型 | 桌面 app 开发前必读 |
 
+### F. 技术博客 / 阶段复盘
+
+| # | 文档 | 一句话 | 何时读 |
+|---|------|--------|--------|
+| blog/01 | [Phase 1 重写复盘](./blog/01-phase1-rewrite-decisions.md) | Python MVP → Rust+WASM+Tauri 的 A→G+最小拓扑视图决策复盘 | 向外介绍项目 / 新人快速理解重写路线 |
+
 ## 🧭 按角色选路
 
 ### 你是新加入的 SRE / 平台工程师
@@ -91,9 +97,9 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 
 ```
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
-2026 Q2   ▶ 当前 — Phase 0 ✅ + Phase 1 进行中(增量 G):Rust 重写骨架 + WASM connector + Tauri 桥接已通
+2026 Q2   ▶ 当前 — Phase 0 ✅ + Phase 1 基本完成:A→G + mock 拓扑视图 + Blog Part 1
   ↓
-2026 Q3   Phase 1 收尾(mock 拓扑视图 + Blog)→ Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver)
+2026 Q3   Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver)
 2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
 2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
 2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
