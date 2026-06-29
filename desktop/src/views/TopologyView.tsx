@@ -56,12 +56,12 @@ const SHAPE_BY_TYPE: Record<string, string> = {
   Service_Account: "tag",
 };
 
-function shapeFor(resourceType: string): string {
+export function shapeFor(resourceType: string): string {
   return SHAPE_BY_TYPE[resourceType] ?? "ellipse";
 }
 
 /** 把 Fact 数组转 Cytoscape elements(nodes + edges)。 */
-function factsToElements(facts: FactDto[]): ElementDefinition[] {
+export function factsToElements(facts: FactDto[]): ElementDefinition[] {
   // dedup by resource_id,保留 timestamp 最新的那条
   const byId = new Map<string, FactDto>();
   for (const f of facts) {
@@ -73,14 +73,18 @@ function factsToElements(facts: FactDto[]): ElementDefinition[] {
 
   const nodes: ElementDefinition[] = [];
   const edges: ElementDefinition[] = [];
+  const orderedFacts = Array.from(byId.values()).sort((a, b) =>
+    a.resource_id.localeCompare(b.resource_id)
+  );
 
-  for (const f of byId.values()) {
+  for (const f of orderedFacts) {
     nodes.push({
       group: "nodes",
       data: {
         id: f.resource_id,
         label: shortLabel(f.resource_id, f.resource_type),
         resourceType: f.resource_type,
+        shape: shapeFor(f.resource_type),
       },
     });
 

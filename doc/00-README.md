@@ -97,14 +97,19 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 
 ```
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
-2026 Q2   ▶ 当前 — Phase 0 ✅ + Phase 1 基本完成:A→G + mock 拓扑视图 + Blog Part 1
+2026 Q2   ✅ Phase 0 + Phase 1 完成:A→G + mock 拓扑视图 + Blog Part 1 + GUI verifier + 首屏 polish
   ↓
-2026 Q3   Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver)
+2026 Q3   ▶ 当前 — Phase 2:PRD-005 在 Rust 原生(Fact 总线 + Identity Resolver + SQLite/Parquet)
 2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
 2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
 2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
 2027 Q3   Buffer / 社区 / 技术分享
 ```
+
+## ✅ 当前验证基线
+
+- Phase 1 桌面 GUI 验证走 `.claude/skills/verifier-tauri-gui/`:强制 `GDK_BACKEND=x11 npm run tauri dev`,点击/激活 `Sync all now`,观察 `k8s-mini sync: cluster=demo namespaces=2 with_topology=true`,并用截图像素确认 Cytoscape 绿色拓扑节点。
+- `desktop/src/views/TopologyView.test.ts` 覆盖 `FactDto[] -> Cytoscape elements` 的稳定排序、去重、父子边、悬空边过滤和 resource_type shape fallback。
 
 ## 📝 文档约定
 

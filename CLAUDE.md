@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **重要(2026-06)**:本仓正处于 **Python → Rust + WASM + Tauri 重写**的 Phase 1(增量 G)。原 Python 实现(PRD-001/002/003/004,~12.7k LOC + 472 测试)已 100% 完成,**降为 `reference/` read-only oracle**,不接受 feature 改动 —— 本地可跑 FastAPI 对照 Rust 行为。**新代码看「活跃栈」章节**;旧栈细节看「Reference(Python,read-only)」章节,深入查 `reference/` 源码 + `doc/01-13` PRD。
+> **重要(2026-06)**:本仓已完成 **Python → Rust + WASM + Tauri 重写**的 Phase 1 纵切片(A→G + 最小拓扑视图 + Blog Part 1),准备进入 Phase 2(实数据 + 持久化 + Identity)。原 Python 实现(PRD-001/002/003/004,~12.7k LOC + 472 测试)已 100% 完成,**降为 `reference/` read-only oracle**,不接受 feature 改动 —— 本地可跑 FastAPI 对照 Rust 行为。**新代码看「活跃栈」章节**;旧栈细节看「Reference(Python,read-only)」章节,深入查 `reference/` 源码 + `doc/01-13` PRD。
 
 ## Project Overview
 
@@ -47,7 +47,7 @@ graph_data/
 │       └── k8s-mini/           # ✅ 第二条(多 connector 编排验证)
 ├── specs/wit/          # ✅ 中立契约:host / connector / rule / handler 4 个 world
 ├── reference/          # ★ 旧 Python,read-only oracle(DO NOT DEPLOY)
-└── doc/                # 17 份设计文档(00-17)
+└── doc/                # 18 份文档(00-17 + blog/1 篇)
 ```
 
 ### Phase 1 进展
@@ -60,6 +60,7 @@ graph_data/
 | E | k8s-mini 第二条 WASM connector + multi-connector 编排验证 | ✅ |
 | F | Tauri ↔ engine-wasm 桥接(`list_connectors` + `sync_all_now` invoke) | ✅ |
 | **G** | **http-client capability host 实装**(reqwest GET + capability allow-list) | ✅ |
+| 收官 | 最小拓扑视图 + GUI verifier + Blog Part 1 + Option A polish | ✅ |
 
 ### 关键 crate 入口
 
@@ -71,6 +72,7 @@ graph_data/
   - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema)+ `WasiVersion`(p2/p3 enum)
 - **engine-cli**(`engine/crates/engine-cli/src/main.rs`):headless binary。`tick` 单次;`tick --loop --interval=30` 持续。`MODULES_ROOT` env 覆盖 manifest 根
 - **desktop/src-tauri**:`lib.rs::run()` 启动 `block_on(WasmRuntime::from_manifest)`(失败 fallback empty,不阻塞 UI)→ `.manage(runtime)` → `commands/wasm.rs` 两个 `#[tauri::command]`:`list_connectors`(同步元信息)/ `sync_all_now`(一次 sync_all 返聚合 Fact + per-connector 状态)
+- **desktop/src/views/TopologyView.tsx**:Phase 1 收官视图。`factsToElements` 把 `FactDto[]` 转 Cytoscape nodes/edges,按 `resource_id` 去重并稳定排序,从 `attributes_json.parent_resource_id` 生成父子边;有 Vitest 覆盖。
 
 ### 常用命令
 
@@ -113,8 +115,9 @@ cd desktop && npm test                       # 前端 vitest
 
 ### 待办
 
-- [ ] Phase 1 余项:1 个最小视图(打开 app 看到 mock 拓扑图)+ Blog Part 1
-- [ ] Phase 2:Fact 总线 + Identity Resolver(DataFusion)+ 5 connector WASM 化(对照 `reference/app/datasource/connectors/`)+ SQLite/Parquet 存储 + Tauri 视图迁
+- [x] Phase 1 收官:最小拓扑视图(打开 app 看到 mock 拓扑图)+ Blog Part 1 + GUI verifier + Option A 首屏 polish
+- [ ] Phase 2 第一刀:SQLite-backed mock topology persistence(`sync_all_now` 写入 storage,重启后 `get_topology` 可从库恢复)
+- [ ] Phase 2 主线:Fact 总线 + Identity Resolver(DataFusion/ChangeSet)+ 5 connector WASM 化(对照 `reference/backend/app/datasource/connectors/`)+ SQLite/Parquet 存储 + Tauri 视图迁
 - [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
 - [ ] Phase 4:engine-reports(PRD-003)复刻
 
