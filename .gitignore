@@ -39,7 +39,9 @@ scripts/output/*.csv
 scripts/output/*.cypher
 
 # ===== Claude =====
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # ===== Misc =====
 *.log
