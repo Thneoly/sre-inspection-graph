@@ -80,7 +80,7 @@ export default function App() {
       style={{
         fontFamily: "system-ui, sans-serif",
         padding: "2rem",
-        maxWidth: "960px",
+        maxWidth: "1120px",
         margin: "0 auto",
         color: "#1f2328",
       }}
@@ -97,85 +97,48 @@ export default function App() {
       )}
       <hr />
 
-      <section>
-        <h2 style={{ marginTop: "1.5rem" }}>
-          已加载 Connector ({connectors.length})
-        </h2>
-        {connectors.length === 0 ? (
-          <div style={emptyHintStyle}>
-            <p style={{ margin: 0 }}>
-              没有 connector 加载。可能是 wasm 还没 build:
-            </p>
-            <pre style={preStyle}>cd modules &amp;&amp; cargo wasi-build</pre>
-            <p
-              style={{ margin: 0, fontSize: "0.875rem", color: "#666" }}
-            >
-              build 完再重启 desktop。
-            </p>
-          </div>
-        ) : (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>name</th>
-                <th style={thStyle}>version</th>
-                <th style={thStyle}>kind</th>
-                <th style={thStyle}>interval (s)</th>
-                <th style={thStyle}>capabilities</th>
-              </tr>
-            </thead>
-            <tbody>
-              {connectors.map((c) => (
-                <tr key={c.name}>
-                  <td style={tdStyle}>
-                    <code>{c.name}</code>
-                  </td>
-                  <td style={tdStyle}>{c.version}</td>
-                  <td style={tdStyle}>{c.kind}</td>
-                  <td style={tdStyle}>{c.sync_interval_seconds}</td>
-                  <td style={tdStyle}>
-                    {c.capabilities.length === 0 ? (
-                      <em>—</em>
-                    ) : (
-                      c.capabilities.join(", ")
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      <section>
-        <h2 style={{ marginTop: "1.5rem" }}>立即同步</h2>
+      <section style={heroSectionStyle}>
+        <div>
+          <h2 style={{ marginTop: 0, marginBottom: "0.5rem" }}>拓扑同步</h2>
+          <p style={{ marginTop: 0, color: "#666" }}>
+            Phase 1 mock:点击后触发 <code>sync_all_now</code>,让 k8s-mini 以{" "}
+            <code>with_topology=true</code> 返回 Cluster / Node / Namespace / Pod / Service。
+          </p>
+        </div>
         <button
           onClick={handleSync}
           disabled={syncing || connectors.length === 0}
           style={{
-            padding: "0.5rem 1rem",
+            padding: "0.6rem 1.1rem",
             fontSize: "1rem",
             cursor: connectors.length === 0 ? "not-allowed" : "pointer",
             opacity: connectors.length === 0 ? 0.5 : 1,
+            whiteSpace: "nowrap",
           }}
         >
           {syncing ? "Syncing..." : "Sync all now"}
         </button>
-        {syncErr && (
-          <p style={{ color: "crimson" }}>sync 错误:{syncErr}</p>
-        )}
+      </section>
+      {syncErr && <p style={{ color: "crimson" }}>sync 错误:{syncErr}</p>}
 
-        {summary && (
-          <div style={{ marginTop: "1rem" }}>
-            <p style={{ marginBottom: "0.5rem" }}>
-              <strong>总览:</strong> {summary.facts.length} fact ·{" "}
-              {summary.per_connector.length} connector · errors{" "}
+      {connectors.length === 0 && (
+        <div style={emptyHintStyle}>
+          <p style={{ margin: 0 }}>没有 connector 加载。可能是 wasm 还没 build:</p>
+          <pre style={preStyle}>cd modules &amp;&amp; cargo wasi-build</pre>
+          <p style={{ margin: 0, fontSize: "0.875rem", color: "#666" }}>
+            build 完再重启 desktop。
+          </p>
+        </div>
+      )}
+
+      <section style={{ marginTop: "1rem" }}>
+        <h2 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>拓扑视图</h2>
+        {summary ? (
+          <>
+            <p style={{ marginTop: 0, marginBottom: "0.75rem", color: "#666" }}>
+              {summary.facts.length} fact · {summary.per_connector.length} connector · errors{" "}
               {summary.total_errors} · {summary.total_duration_ms}ms
             </p>
-
-            <h3 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>
-              拓扑视图
-            </h3>
             {summary.facts.length === 0 ? (
               <p style={{ color: "#666" }}>
                 <em>本轮没有 fact,拓扑空</em>
@@ -183,73 +146,108 @@ export default function App() {
             ) : (
               <TopologyView facts={summary.facts} />
             )}
+          </>
+        ) : (
+          <div style={topologyPlaceholderStyle}>
+            <strong>等待同步</strong>
+            <span>点击 Sync all now 后,这里会渲染 Cytoscape 拓扑图。</span>
+          </div>
+        )}
+      </section>
 
-            <h3 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>
-              Per-connector
-            </h3>
+      <section style={{ marginTop: "1rem" }}>
+        <details>
+          <summary style={summaryStyle}>Connector 诊断 ({connectors.length})</summary>
+          {connectors.length > 0 && (
             <table style={tableStyle}>
               <thead>
                 <tr>
-                  <th style={thStyle}>connector</th>
-                  <th style={thStyle}>facts</th>
-                  <th style={thStyle}>errors</th>
+                  <th style={thStyle}>name</th>
+                  <th style={thStyle}>version</th>
+                  <th style={thStyle}>kind</th>
+                  <th style={thStyle}>interval (s)</th>
+                  <th style={thStyle}>capabilities</th>
                 </tr>
               </thead>
               <tbody>
-                {summary.per_connector.map((s) => (
-                  <tr key={s.name}>
+                {connectors.map((c) => (
+                  <tr key={c.name}>
                     <td style={tdStyle}>
-                      <code>{s.name}</code>
+                      <code>{c.name}</code>
                     </td>
-                    <td style={tdStyle}>{s.fact_count}</td>
-                    <td style={tdStyle}>
-                      {s.errors.length === 0 ? (
-                        <em>—</em>
-                      ) : (
-                        s.errors.join("; ")
-                      )}
-                    </td>
+                    <td style={tdStyle}>{c.version}</td>
+                    <td style={tdStyle}>{c.kind}</td>
+                    <td style={tdStyle}>{c.sync_interval_seconds}</td>
+                    <td style={tdStyle}>{c.capabilities.length === 0 ? <em>—</em> : c.capabilities.join(", ")}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+        </details>
 
-            <h3 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>
-              Facts
-            </h3>
-            {summary.facts.length === 0 ? (
-              <p style={{ color: "#666" }}>
-                <em>no facts</em>
-              </p>
-            ) : (
+        {summary && (
+          <>
+            <details style={{ marginTop: "0.75rem" }} open>
+              <summary style={summaryStyle}>Per-connector sync status</summary>
               <table style={tableStyle}>
                 <thead>
                   <tr>
-                    <th style={thStyle}>id</th>
-                    <th style={thStyle}>source</th>
-                    <th style={thStyle}>resource_type</th>
-                    <th style={thStyle}>resource_id</th>
-                    <th style={thStyle}>ts</th>
+                    <th style={thStyle}>connector</th>
+                    <th style={thStyle}>facts</th>
+                    <th style={thStyle}>errors</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {summary.facts.map((f) => (
-                    <tr key={f.id}>
+                  {summary.per_connector.map((s) => (
+                    <tr key={s.name}>
                       <td style={tdStyle}>
-                        <code>{f.id}</code>
+                        <code>{s.name}</code>
                       </td>
-                      <td style={tdStyle}>{f.source}</td>
-                      <td style={tdStyle}>{f.resource_type}</td>
-                      <td style={tdStyle}>
-                        <code>{f.resource_id}</code>
-                      </td>
-                      <td style={tdStyle}>{f.timestamp}</td>
+                      <td style={tdStyle}>{s.fact_count}</td>
+                      <td style={tdStyle}>{s.errors.length === 0 ? <em>—</em> : s.errors.join("; ")}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
+            </details>
+
+            <details style={{ marginTop: "0.75rem" }}>
+              <summary style={summaryStyle}>Facts ({summary.facts.length})</summary>
+              {summary.facts.length === 0 ? (
+                <p style={{ color: "#666" }}>
+                  <em>no facts</em>
+                </p>
+              ) : (
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>id</th>
+                      <th style={thStyle}>source</th>
+                      <th style={thStyle}>resource_type</th>
+                      <th style={thStyle}>resource_id</th>
+                      <th style={thStyle}>ts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.facts.map((f) => (
+                      <tr key={f.id}>
+                        <td style={tdStyle}>
+                          <code>{f.id}</code>
+                        </td>
+                        <td style={tdStyle}>{f.source}</td>
+                        <td style={tdStyle}>{f.resource_type}</td>
+                        <td style={tdStyle}>
+                          <code>{f.resource_id}</code>
+                        </td>
+                        <td style={tdStyle}>{f.timestamp}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </details>
+          </>
         )}
       </section>
 
@@ -266,6 +264,37 @@ export default function App() {
     </main>
   );
 }
+
+const heroSectionStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "1rem",
+  marginTop: "1rem",
+  padding: "1rem",
+  border: "1px solid #d0d7de",
+  borderRadius: "8px",
+  background: "#f6f8fa",
+};
+
+const topologyPlaceholderStyle: React.CSSProperties = {
+  height: "480px",
+  border: "1px dashed #d0d7de",
+  borderRadius: "6px",
+  background: "#fafbfc",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.4rem",
+  color: "#6e7781",
+};
+
+const summaryStyle: React.CSSProperties = {
+  cursor: "pointer",
+  fontWeight: 600,
+  padding: "0.5rem 0",
+};
 
 const tableStyle: React.CSSProperties = {
   width: "100%",
