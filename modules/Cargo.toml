@@ -4,6 +4,7 @@ members = [
     "sdk",
     "connectors/hello-world",
     "connectors/k8s-mini",
+    "connectors/prometheus",
 ]
 
 [workspace.package]

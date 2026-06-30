@@ -142,6 +142,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus"
+version = "0.1.0"
+dependencies = [
+ "module-sdk",
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"

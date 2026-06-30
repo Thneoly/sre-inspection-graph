@@ -35,5 +35,20 @@ sync_interval_seconds = 30
 wasi_version = "p2"
 sha256 = ""
 
-# Phase 3+ 起在这里追加 prometheus / jaeger / flagd / k8s-events real connector
-# 以及 8 个 PRD-001 handler。
+# Phase 2.6 — prometheus,首个消费 http-client capability 的真实 connector。
+# GET {prometheus_url}/api/v1/query 跑 PromQL,解析 Prom JSON 产 metric Fact。
+# capabilities 必须含 "http-client",host 端 deny-by-default 才放行网络调用。
+# config_json 需带 prometheus_url(空则跳过,见 connector 文档)。
+[[modules]]
+name = "prometheus"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/prometheus.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "http-client"]
+sync_interval_seconds = 30
+wasi_version = "p2"
+sha256 = ""
+
+# Phase 3+ 起在这里追加 jaeger / flagd / k8s-events real connector
+# 以及 8 个 PRD-001 handler。真实 K8s API connector(bearer/TLS/owner-ref
+# mapper)留 2.6b。

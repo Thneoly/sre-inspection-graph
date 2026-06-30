@@ -44,7 +44,8 @@ graph_data/
 │   ├── sdk/                    # guest 端 WIT bindings
 │   └── connectors/
 │       ├── hello-world/        # ✅ 第一条 connector(WIT 端到端)
-│       └── k8s-mini/           # ✅ 第二条(多 connector 编排验证)
+│       ├── k8s-mini/           # ✅ 第二条(多 connector 编排验证)
+│       └── prometheus/         # ✅ 第三条(首个消费 http-client capability,GET /api/v1/query)
 ├── specs/wit/          # ✅ 中立契约:host / connector / rule / handler 4 个 world
 ├── reference/          # ★ 旧 Python,read-only oracle(DO NOT DEPLOY)
 └── doc/                # 18 份文档(00-17 + blog/1 篇)
@@ -71,7 +72,8 @@ graph_data/
 | 2.3 | `get_topology` command + 前端启动从 SQLite 恢复拓扑(重启不 sync 也能渲染)| ✅ |
 | 2.4 | GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`,对齐 reference `GraphResponse`)| ✅ |
 | 2.5 | engine-identity ChangeSet resolver v0(`resolve`/`diff`/`topology_to_graph`)+ materialized `topology_nodes`/`topology_edges` 表 | ✅ |
-| 2.6 | 真实 K8s / Prometheus connector WASM 化 | ⏳ |
+| 2.6 | Prometheus connector WASM 化(首个消费 `http-client` capability:GET `/api/v1/query` → 解析 Prom JSON → metric Fact)| ✅ |
+| 2.6b | 真实 K8s API connector(bearer/TLS/owner-ref mapper)WASM 化 | ⏳ |
 
 ### 关键 crate 入口
 
@@ -126,6 +128,7 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - **call-time 拒绝(非 link-time)**:共享 Linker,`http_get` 每次查 `HashSet<String>`,简单 + 后续加 URL allow-list 平滑
 - **host 类型与 WIT binding 解耦**:`HostHttpResponse` / `HostHttpError` 在 `http_host.rs` 定义,可单测;`runtime.rs::HttpClientHost::get` 是薄适配做类型平移
 - **状态码映射**:401/403 → `Unauthorized`;404 → `NotFound`;timeout → `Timeout`;其它(含 5xx)透状态码 + body 给 guest 自决
+- **首个消费方(Phase 2.6)**:`modules/connectors/prometheus` —— `bindings::sre::inspection::http_client::get(url, [])` 发 GET,manifest `capabilities=["logging","clock","http-client"]`。缺 `http-client` 时 host 返 `Unauthorized`,guest 整轮 0 fact + error note(`tests/prometheus_http_e2e.rs` 两个 case:mock Prom server 放行 + deny-by-default 拒绝,均覆盖)
 
 ### 待办
 
@@ -133,7 +136,8 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - [x] Phase 2 第一刀:SQLite-backed mock topology persistence(`sync_all_now` 写入 SQLite,重启后 `get_topology` 从库恢复;GUI X11 验证通过)
 - [x] Phase 2.4:GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`;boot 从 SQLite 恢复并成图渲染,GUI X11 验证通过)
 - [x] Phase 2.5:Identity Resolver v0(engine-identity `resolve`/`diff`/`topology_to_graph` + engine-storage materialized `topology_nodes`/`topology_edges` + Tauri sync 维护 + `get_graph` 改读 materialized;headless `dump_topology` 验证 + 全栈 cargo/vitest 绿)
-- [ ] Phase 2.6:真实 K8s / Prometheus connector WASM 化(对照 `reference/backend/app/datasource/connectors/`)+ Tauri 视图迁
+- [x] Phase 2.6:Prometheus connector WASM 化(`modules/connectors/prometheus` 首个消费 http-client capability;GET `/api/v1/query` → Prom JSON → metric Fact;mock-server e2e + deny-by-default 验证)
+- [ ] Phase 2.6b:真实 K8s API connector WASM 化(bearer/TLS/owner-ref mapper,对照 `reference/app/datasource/connectors/k8s_connector.py`)+ metric→topology health 合并(需 Identity Resolver field-ownership,见 doc/11 §4.3)+ Tauri 视图迁
 - [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
 - [ ] Phase 4:engine-reports(PRD-003)复刻
 
