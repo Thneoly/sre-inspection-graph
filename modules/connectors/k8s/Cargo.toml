@@ -1,0 +1,24 @@
+[package]
+name = "k8s"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Real K8s connector — lists otel-demo resources via kubectl-proxy http and emits topology Facts"
+
+[lib]
+# cdylib 出 wasm32-wasip2 二进制;rlib 让 host 端单测可链接 —— **mapper 逻辑
+# 不在 cfg(wasm32) 内**,故 host `cargo test` 能直接测纯函数 map_cluster()。
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.component]
+package = "sre:inspection-k8s@0.1.0"
+
+[package.metadata.component.target]
+path  = "../../../specs/wit"
+world = "connector-world"
+
+[dependencies]
+module-sdk  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+wit-bindgen = { workspace = true }

@@ -99,7 +99,7 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
 2026 Q2   ✅ Phase 0 + Phase 1 完成:A→G + mock 拓扑视图 + Blog Part 1 + GUI verifier + 首屏 polish
   ↓
-2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅ + 2.4 GraphResponse DTO ✅ + 2.5 Identity Resolver v0(ChangeSet + materialized 表)✅ + 2.6 Prometheus connector(首个 http-client capability 消费方)✅;余项 2.6b 真实 K8s API connector
+2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅ + 2.4 GraphResponse DTO ✅ + 2.5 Identity Resolver v0(ChangeSet + materialized 表)✅ + 2.6 Prometheus connector(首个 http-client capability 消费方)✅ + 2.6b 真实 K8s connector(via kubectl proxy,真集群验证)✅
 2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
 2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
 2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
@@ -114,6 +114,7 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 - Phase 2.5 Identity Resolver v0 验证:`engine-identity` 8 单测(`resolve` 去重+派生边、attributes canonical 排序、`topology_to_graph` 与 `facts_to_graph` 等价、summary 重算)+ `engine-storage` `materialized_topology_round_trips_resolve_diff_apply`(对真实 SQLite 跑 resolve→diff→apply→回读 + remove 分支);GUI-less 端到端:seed materialized `topology_nodes`/`topology_edges` → `cargo run --example dump_topology` 走 `get_graph` 读路径(`materialized_topology` + `topology_to_graph`)产出 `GraphResponse{nodes:7,edges:6, risk{high:1,low:4,medium:2}, health{critical:1,normal:4,warning:2}}`,字段对齐 reference。注:本环境沙箱拦截 GUI 进程伴随 capture 的启动(exit 144),无法新截图,故新读路径走 headless 验证 + 2.4 GUI 基线传递性覆盖(`topology_to_graph(resolve(f)) == facts_to_graph(f)` 已单测,前端 `graphToElements` 与 2.4 字节一致)。
 - `desktop/src/views/TopologyView.test.ts` 覆盖 `graphToElements`(GraphResponse → Cytoscape elements:nodes-first 顺序、type→shape、`type\nlabel` 标签、edge `edgeType` 透传、空图);`engine-core` `graph.rs` 8 个单测覆盖去重/父子边/悬空过滤/label 优先级/risk·health 固定桶统计/非 topology 忽略/serde 字段名;`engine-identity` 8 单测;`engine-storage` 7 个 SQLite 单测覆盖 migrate/upsert/latest_topology/materialized 往返。
 - Phase 2.6 Prometheus connector 验证:`modules/connectors/prometheus`(首个消费 `http-client` capability 的 guest)`cargo wasi-build` 出 `prometheus.wasm`;host e2e `engine/crates/engine-wasm/tests/prometheus_http_e2e.rs` 两 case —— (1) mock Prom HTTP server 返 canned JSON + 申明 `http-client` → guest GET `/api/v1/query` 拿 bytes → 解析两条 sample 成 metric Fact(`service:local:otel-demo:cartservice` value=42.5 / `frontend` value=7);(2) 不申明 `http-client` → host deny-by-default 返 `Unauthorized`,guest 0 fact + error note。`engine-cli tick` 确认 3 connector 全加载、prometheus 空 url 优雅跳过。
+- Phase 2.6b 真实 K8s connector 验证:`modules/connectors/k8s`(经本地 `kubectl proxy` 明文 HTTP 拉 API server,TLS+认证留 proxy)。纯 mapper 7 个 host 单测(canned K8s JSON:owner 链 Pod→RS→Deploy、悬空 owner 退化 namespace、health normal/warning/critical、Node Ready 条件、全层级 parent);**真集群 e2e**(`tests/k8s_live_e2e.rs`,env `K8S_PROXY_BASE` gated)对真实 otel-demo:`kubectl proxy --port=8001` → sync 拉 **71 fact / 0 error**(Node=3 / Deployment=22 / Pod=22 / Service=22 + cluster + ns),pod parent 全解析无悬空;再走 `engine_core::facts_to_graph` 成 `GraphResponse{nodes:71, edges:70, risk{high:1,medium:4,low:66}, health{critical:1,warning:4,normal:66}}` —— crashloop 的 cartservice 真实显示 critical。
 
 ## 📝 文档约定
 

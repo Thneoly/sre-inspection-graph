@@ -45,7 +45,8 @@ graph_data/
 │   └── connectors/
 │       ├── hello-world/        # ✅ 第一条 connector(WIT 端到端)
 │       ├── k8s-mini/           # ✅ 第二条(多 connector 编排验证)
-│       └── prometheus/         # ✅ 第三条(首个消费 http-client capability,GET /api/v1/query)
+│       ├── prometheus/         # ✅ 第三条(首个消费 http-client capability,GET /api/v1/query)
+│       └── k8s/                # ✅ 第四条(真实 K8s API via kubectl proxy,真集群验证)
 ├── specs/wit/          # ✅ 中立契约:host / connector / rule / handler 4 个 world
 ├── reference/          # ★ 旧 Python,read-only oracle(DO NOT DEPLOY)
 └── doc/                # 18 份文档(00-17 + blog/1 篇)
@@ -73,7 +74,7 @@ graph_data/
 | 2.4 | GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`,对齐 reference `GraphResponse`)| ✅ |
 | 2.5 | engine-identity ChangeSet resolver v0(`resolve`/`diff`/`topology_to_graph`)+ materialized `topology_nodes`/`topology_edges` 表 | ✅ |
 | 2.6 | Prometheus connector WASM 化(首个消费 `http-client` capability:GET `/api/v1/query` → 解析 Prom JSON → metric Fact)| ✅ |
-| 2.6b | 真实 K8s API connector(bearer/TLS/owner-ref mapper)WASM 化 | ⏳ |
+| 2.6b | 真实 K8s API connector WASM 化(`modules/connectors/k8s` via 本地 kubectl proxy;Deployment/Pod/Service/Node → topology Fact + owner 链 + health;真集群 otel-demo 验证)| ✅ |
 
 ### 关键 crate 入口
 
@@ -137,7 +138,8 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - [x] Phase 2.4:GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`;boot 从 SQLite 恢复并成图渲染,GUI X11 验证通过)
 - [x] Phase 2.5:Identity Resolver v0(engine-identity `resolve`/`diff`/`topology_to_graph` + engine-storage materialized `topology_nodes`/`topology_edges` + Tauri sync 维护 + `get_graph` 改读 materialized;headless `dump_topology` 验证 + 全栈 cargo/vitest 绿)
 - [x] Phase 2.6:Prometheus connector WASM 化(`modules/connectors/prometheus` 首个消费 http-client capability;GET `/api/v1/query` → Prom JSON → metric Fact;mock-server e2e + deny-by-default 验证)
-- [ ] Phase 2.6b:真实 K8s API connector WASM 化(bearer/TLS/owner-ref mapper,对照 `reference/app/datasource/connectors/k8s_connector.py`)+ metric→topology health 合并(需 Identity Resolver field-ownership,见 doc/11 §4.3)+ Tauri 视图迁
+- [x] Phase 2.6b:真实 K8s API connector WASM 化(`modules/connectors/k8s` 经本地 `kubectl proxy` 明文 HTTP 拉 API;纯 mapper 把 Deployment/ReplicaSet/Pod/Service/Node 映射成 topology Fact —— owner 链 Pod→RS→Deploy、health 由 phase/ready 推导、parent 层级;真集群 otel-demo 验证:71 fact / GraphResponse nodes=71 edges=70 health{critical:1,warning:4})。**架构**:WASM 只用 http-client,TLS+认证留 kubectl proxy,不碰凭据、不加 capability
+- [ ] Phase 2.7(可选):metric→topology health 合并(需 Identity Resolver field-ownership,见 doc/11 §4.3)+ desktop 托管 kubectl proxy 生命周期 + Tauri 视图迁真集群拓扑
 - [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
 - [ ] Phase 4:engine-reports(PRD-003)复刻
 

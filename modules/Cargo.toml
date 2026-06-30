@@ -5,6 +5,7 @@ members = [
     "connectors/hello-world",
     "connectors/k8s-mini",
     "connectors/prometheus",
+    "connectors/k8s",
 ]
 
 [workspace.package]
