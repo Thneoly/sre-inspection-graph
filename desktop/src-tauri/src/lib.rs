@@ -9,7 +9,7 @@
 //!    —— Tauri 2.x 内置 tokio runtime,在 builder 之前同步等待加载
 //! 4. **失败不阻塞 UI** —— wasm 没 build / manifest 缺失 → 用空 WasmRuntime
 //!    fallback + log warn,前端列表为空时引导用户运行 `cd modules && cargo wasi-build`
-//! 5. `.manage(runtime)` 注入 Tauri state,wasm command 通过 `State<WasmRuntime>` 拿
+//! 5. 初始化 SQLite storage 并 `.manage(AppState)` 注入 Tauri state
 //!
 //! Phase 2 起按 doc/17 §4.2 拆分 `commands/{topology, recovery, change_events,
 //! reports, connectors, fault_simulation}.rs`。
@@ -18,9 +18,12 @@ pub mod commands;
 
 use std::path::PathBuf;
 
+use engine_storage::SqliteStorage;
 use engine_wasm::{ManifestFile, WasmRuntime};
+use tauri::Manager;
 
 use commands::system::get_app_version;
+use commands::topology::get_topology;
 use commands::wasm::{list_connectors, sync_all_now};
 
 /// 解析 modules/ 根目录。
@@ -38,6 +41,19 @@ fn resolve_modules_root() -> PathBuf {
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir).join("../../modules")
+}
+
+fn resolve_storage_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Ok(v) = std::env::var("SRE_GRAPH_DB_PATH") {
+        return Ok(PathBuf::from(v));
+    }
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolve app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create app data dir {}: {e}", dir.display()))?;
+    Ok(dir.join("sre-graph.sqlite"))
 }
 
 /// 在 builder 之前同步加载 WasmRuntime。
@@ -94,6 +110,14 @@ fn load_wasm_runtime() -> WasmRuntime {
     }
 }
 
+/// Tauri shared state.
+pub struct AppState {
+    /// WASM connector runtime.
+    pub runtime: WasmRuntime,
+    /// Local SQLite storage.
+    pub storage: SqliteStorage,
+}
+
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
 pub fn run() {
     // tracing-subscriber 失败(已被初始化)不致命,可忽略
@@ -108,11 +132,27 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(runtime)
+        .setup(move |app| {
+            let storage_path = resolve_storage_path(app.handle())?;
+            let storage = tauri::async_runtime::block_on(async {
+                let storage = SqliteStorage::connect(&storage_path)
+                    .await
+                    .map_err(|e| format!("connect sqlite {}: {e}", storage_path.display()))?;
+                storage
+                    .migrate()
+                    .await
+                    .map_err(|e| format!("migrate sqlite {}: {e}", storage_path.display()))?;
+                Ok::<_, String>(storage)
+            })?;
+            tracing::info!(path = %storage_path.display(), "sqlite storage ready");
+            app.manage(AppState { runtime, storage });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_version,
             list_connectors,
             sync_all_now,
+            get_topology,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

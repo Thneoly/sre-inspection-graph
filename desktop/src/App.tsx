@@ -39,6 +39,7 @@ export default function App() {
   const [bootErr, setBootErr] = useState<string | null>(null);
   const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
   const [summary, setSummary] = useState<SyncSummaryDto | null>(null);
+  const [topologyFacts, setTopologyFacts] = useState<FactDto[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [syncErr, setSyncErr] = useState<string | null>(null);
 
@@ -49,6 +50,9 @@ export default function App() {
     invoke<ConnectorInfo[]>("list_connectors")
       .then(setConnectors)
       .catch((e) => setBootErr(`list_connectors: ${e}`));
+    invoke<FactDto[]>("get_topology")
+      .then(setTopologyFacts)
+      .catch((e) => setBootErr(`get_topology: ${e}`));
   }, []);
 
   async function handleSync() {
@@ -68,6 +72,7 @@ export default function App() {
         configJson,
       });
       setSummary(s);
+      setTopologyFacts(s.facts);
     } catch (e) {
       setSyncErr(String(e));
     } finally {
@@ -133,24 +138,27 @@ export default function App() {
 
       <section style={{ marginTop: "1rem" }}>
         <h2 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>拓扑视图</h2>
-        {summary ? (
+        {topologyFacts.length > 0 ? (
           <>
             <p style={{ marginTop: 0, marginBottom: "0.75rem", color: "#666" }}>
-              {summary.facts.length} fact · {summary.per_connector.length} connector · errors{" "}
-              {summary.total_errors} · {summary.total_duration_ms}ms
+              {topologyFacts.length} persisted topology fact
+              {summary && (
+                <>
+                  {" "}· {summary.per_connector.length} connector · errors {summary.total_errors} ·{" "}
+                  {summary.total_duration_ms}ms
+                </>
+              )}
             </p>
-            {summary.facts.length === 0 ? (
-              <p style={{ color: "#666" }}>
-                <em>本轮没有 fact,拓扑空</em>
-              </p>
-            ) : (
-              <TopologyView facts={summary.facts} />
-            )}
+            <TopologyView facts={topologyFacts} />
           </>
+        ) : summary ? (
+          <p style={{ color: "#666" }}>
+            <em>本轮没有 fact,拓扑空</em>
+          </p>
         ) : (
           <div style={topologyPlaceholderStyle}>
             <strong>等待同步</strong>
-            <span>点击 Sync all now 后,这里会渲染 Cytoscape 拓扑图。</span>
+            <span>点击 Sync all now 后,这里会渲染 Cytoscape 拓扑图;重启后会从 SQLite 恢复。</span>
           </div>
         )}
       </section>

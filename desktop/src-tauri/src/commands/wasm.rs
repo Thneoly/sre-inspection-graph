@@ -17,9 +17,10 @@
 //! 3. **错误透出为 String** —— Tauri command 默认 `Result<T, E: Serialize>`,
 //!    `anyhow::Error` 不 Serialize,所以全部 `.map_err(|e| e.to_string())`
 
-use engine_wasm::WasmRuntime;
 use serde::Serialize;
 use tauri::State;
+
+use crate::AppState;
 
 /// 单个 connector 的静态元信息(给前端列表展示用)。
 #[derive(Debug, Clone, Serialize)]
@@ -89,8 +90,10 @@ pub struct SyncSummaryDto {
 ///
 /// 不调 wasm,只读 state.entries 元信息,可以走 sync command(无 await)。
 #[tauri::command]
-pub fn list_connectors(rt: State<'_, WasmRuntime>) -> Vec<ConnectorInfo> {
-    rt.entries
+pub fn list_connectors(state: State<'_, AppState>) -> Vec<ConnectorInfo> {
+    state
+        .runtime
+        .entries
         .iter()
         .map(|e| ConnectorInfo {
             name: e.name.clone(),
@@ -108,11 +111,16 @@ pub fn list_connectors(rt: State<'_, WasmRuntime>) -> Vec<ConnectorInfo> {
 /// 每 connector 各自的 config 注入留 Phase 3(manifest 加 `[modules.config]`)。
 #[tauri::command]
 pub async fn sync_all_now(
-    rt: State<'_, WasmRuntime>,
+    state: State<'_, AppState>,
     config_json: Option<String>,
 ) -> Result<SyncSummaryDto, String> {
     let cfg = config_json.as_deref().unwrap_or("{}");
-    let summary = rt.sync_all(cfg).await;
+    let summary = state.runtime.sync_all(cfg).await;
+    state
+        .storage
+        .upsert_facts(summary.batch.as_slice())
+        .await
+        .map_err(|e| e.to_string())?;
     let facts: Vec<FactDto> = summary.batch.as_slice().iter().map(FactDto::from).collect();
     let per_connector = summary
         .per_connector

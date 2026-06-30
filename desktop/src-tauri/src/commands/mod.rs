@@ -10,4 +10,5 @@
 //! - `fault_simulation` — 故障注入
 
 pub mod system;
+pub mod topology;
 pub mod wasm;
