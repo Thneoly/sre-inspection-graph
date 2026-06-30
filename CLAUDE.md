@@ -28,17 +28,17 @@ graph_data/
 │       ├── engine-core/        # ✅ canonical Fact + Arrow Schema(7 列)+ FactBatch→RecordBatch
 │       ├── engine-wasm/        # ✅ wasmtime host + 多 connector 编排 + capability 注入(含 http-client)
 │       ├── engine-bindings/    # ✅ wasmtime bindgen 出来的 host glue
-│       ├── engine-storage/     # ✅ Storage trait(骨架,Phase 2 上 SQLite/Parquet)
+│       ├── engine-storage/     # ✅ Storage trait + SqliteStorage(raw Fact 落库,Phase 2.1)
 │       ├── engine-cli/         # ✅ headless binary(tick 子命令)
 │       ├── engine-testkit/     # 骨架
-│       ├── engine-identity/    # 骨架(Phase 2:Identity Resolver)
+│       ├── engine-identity/    # 骨架(Phase 2.5:Identity Resolver)
 │       ├── engine-recovery/    # 骨架(Phase 3:PRD-001 复刻)
 │       ├── engine-changes/     # 骨架(Phase 3:PRD-002 复刻)
 │       └── engine-reports/     # 骨架(Phase 4:PRD-003 复刻)
 ├── desktop/            # Tauri 2.x 桌面(React 18 + AntD + Cytoscape)
 │   └── src-tauri/src/
-│       ├── lib.rs              # ✅ 启动 block_on WasmRuntime → .manage() 注入 state
-│       └── commands/           # ✅ wasm.rs(list_connectors / sync_all_now)+ system.rs
+│       ├── lib.rs              # ✅ 启动 WasmRuntime + SqliteStorage → .manage(AppState)
+│       └── commands/           # ✅ wasm.rs(list_connectors / sync_all_now)+ topology.rs(get_topology)+ system.rs
 ├── modules/            # 独立 WASM workspace(target 隔离,wasm32-wasip2)
 │   ├── manifest.toml           # 引擎启动读的模块清单
 │   ├── sdk/                    # guest 端 WIT bindings
@@ -62,17 +62,29 @@ graph_data/
 | **G** | **http-client capability host 实装**(reqwest GET + capability allow-list) | ✅ |
 | 收官 | 最小拓扑视图 + GUI verifier + Blog Part 1 + Option A polish | ✅ |
 
+### Phase 2 进展
+
+| 增量 | 内容 | 状态 |
+|---|---|---|
+| 2.1 | engine-storage SqliteStorage(raw Fact 落库 + `latest_topology_facts` 去重)| ✅ |
+| 2.2 | Tauri `AppState { runtime, storage }`,`sync_all_now` sync 后 upsert 到 SQLite | ✅ |
+| 2.3 | `get_topology` command + 前端启动从 SQLite 恢复拓扑(重启不 sync 也能渲染)| ✅ |
+| 2.4 | GraphResponse DTO(为 reference 多视图迁移准备)| ⏳ |
+| 2.5 | engine-identity ChangeSet resolver v0 + materialized topology_nodes/edges | ⏳ |
+| 2.6 | 真实 K8s / Prometheus connector WASM 化 | ⏳ |
+
 ### 关键 crate 入口
 
 - **engine-core**(`engine/crates/engine-core/src/`):`Fact`(WIT `connector.fact` 的 host 规范型,7 字段)+ `fact_schema()`(Arrow Schema)+ `FactBatch`(→ `RecordBatch` 零拷贝转储)。所有下游(storage / query / Arrow)只认它
+- **engine-storage**(`engine/crates/engine-storage/src/`):`Storage` trait + `sqlite::SqliteStorage`(feature `sqlite`)。`connect` / `connect_in_memory` / `migrate` / `upsert_facts`(按 `Fact.id` 幂等)/ `latest_topology_facts`(按 `resource_id` 取最新 `topology-node`)。`StorageError` 统一错误。Parquet/Neo4j 仍待后续
 - **engine-wasm**(`engine/crates/engine-wasm/src/`):
   - `runtime.rs` — `WasmConnector`(单 connector,持 wasmtime Store)+ host trait impls(`LoggingHost` / `ClockHost` / `HttpClientHost` for `State`)+ `load(path, capabilities)` / `load_with_http(client)` / `sync` / `health_check`
   - `http_host.rs` — `http-client` capability 纯函数实装(`http_get` + `HostHttpResponse`/`HostHttpError`,刻意与 WIT binding 解耦,可单测)
-  - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest` / `sync_all` / `tick_loop` + `SyncSummary`
+  - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest` / `sync_all` / `tick_loop` + `SyncSummary`。**保持 storage-agnostic**,持久化在 orchestration 层(Tauri/CLI)做
   - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema)+ `WasiVersion`(p2/p3 enum)
 - **engine-cli**(`engine/crates/engine-cli/src/main.rs`):headless binary。`tick` 单次;`tick --loop --interval=30` 持续。`MODULES_ROOT` env 覆盖 manifest 根
-- **desktop/src-tauri**:`lib.rs::run()` 启动 `block_on(WasmRuntime::from_manifest)`(失败 fallback empty,不阻塞 UI)→ `.manage(runtime)` → `commands/wasm.rs` 两个 `#[tauri::command]`:`list_connectors`(同步元信息)/ `sync_all_now`(一次 sync_all 返聚合 Fact + per-connector 状态)
-- **desktop/src/views/TopologyView.tsx**:Phase 1 收官视图。`factsToElements` 把 `FactDto[]` 转 Cytoscape nodes/edges,按 `resource_id` 去重并稳定排序,从 `attributes_json.parent_resource_id` 生成父子边;有 Vitest 覆盖。
+- **desktop/src-tauri**:`lib.rs::run()` 启动 `WasmRuntime` + 在 `setup` 里初始化 `SqliteStorage`(路径取 `SRE_GRAPH_DB_PATH` 或 app data dir,migrate)→ `.manage(AppState { runtime, storage })`。command:`list_connectors` / `sync_all_now`(sync 后 upsert 到 SQLite)/ `get_topology`(从 SQLite 读 latest topology facts)
+- **desktop/src/views/TopologyView.tsx**:Phase 1 收官视图。`factsToElements` 把 `FactDto[]` 转 Cytoscape nodes/edges,按 `resource_id` 去重并稳定排序,从 `attributes_json.parent_resource_id` 生成父子边;有 Vitest 覆盖。`App.tsx` 启动调 `get_topology` 恢复拓扑
 
 ### 常用命令
 
@@ -92,6 +104,7 @@ MODULES_ROOT=/abs/path engine-cli tick       # 用指定 manifest 根跑
 cd desktop && npm run tauri dev              # webview + Rust backend HMR
 cd desktop && npm run tauri build            # 出 .app/.AppImage/.msi
 cd desktop && npm test                       # 前端 vitest
+SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默认 app data dir)
 ```
 
 > 注:`make` 顶层入口(doc/16 §10 设计)尚未落 Makefile,当前用裸 cargo/npm。
@@ -101,8 +114,8 @@ cd desktop && npm test                       # 前端 vitest
 | 层 | 协议 | 边界 | 现状 |
 |---|---|---|---|
 | A | **WIT**(Component Model) | WASM ↔ host | ✅ `specs/wit/` 4 world;host 用 `wasmtime::component::bindgen!`,guest 用 `wit_bindgen::generate!` |
-| B | **Tauri commands**(JSON IPC) | webview ↔ Rust | ✅ `commands/wasm.rs`;Phase 2 起按领域拆 `commands/{topology,recovery,...}.rs` |
-| C | **Arrow RecordBatch** + Parquet + SQLite | engine 内部 | 🔨 engine-core Arrow Schema ✅;engine-storage trait ✅ 但 backend 待 Phase 2 |
+| B | **Tauri commands**(JSON IPC) | webview ↔ Rust | ✅ `commands/wasm.rs` + `commands/topology.rs`(get_topology);Phase 2+ 继续拆 `commands/{recovery,...}.rs` |
+| C | **Arrow RecordBatch** + Parquet + SQLite | engine 内部 | 🔨 engine-core Arrow Schema ✅;engine-storage SQLite raw Fact backend ✅(Phase 2.1);Parquet 归档 + materialized topology 表待 Phase 2.5 |
 
 **反模式(不做)**:Tauri 里又起 HTTP server(用 invoke 直接 IPC);desktop/ 写业务逻辑(逻辑在 engine-core,Tauri command 是薄包装);WASM 模块直接 syscall(host 注入 capability,deny by default)。
 
@@ -116,8 +129,10 @@ cd desktop && npm test                       # 前端 vitest
 ### 待办
 
 - [x] Phase 1 收官:最小拓扑视图(打开 app 看到 mock 拓扑图)+ Blog Part 1 + GUI verifier + Option A 首屏 polish
-- [ ] Phase 2 第一刀:SQLite-backed mock topology persistence(`sync_all_now` 写入 storage,重启后 `get_topology` 可从库恢复)
-- [ ] Phase 2 主线:Fact 总线 + Identity Resolver(DataFusion/ChangeSet)+ 5 connector WASM 化(对照 `reference/backend/app/datasource/connectors/`)+ SQLite/Parquet 存储 + Tauri 视图迁
+- [x] Phase 2 第一刀:SQLite-backed mock topology persistence(`sync_all_now` 写入 SQLite,重启后 `get_topology` 从库恢复;GUI X11 验证通过)
+- [ ] Phase 2.4:GraphResponse DTO(为 reference 多视图迁移准备)
+- [ ] Phase 2.5:Identity Resolver(ChangeSet + SQLite UPSERT + materialized topology_nodes/edges)
+- [ ] Phase 2.6:真实 K8s / Prometheus connector WASM 化(对照 `reference/backend/app/datasource/connectors/`)+ Tauri 视图迁
 - [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
 - [ ] Phase 4:engine-reports(PRD-003)复刻
 
