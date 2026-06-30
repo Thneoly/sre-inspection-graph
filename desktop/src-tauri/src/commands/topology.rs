@@ -22,15 +22,18 @@ pub async fn get_topology(state: State<'_, AppState>) -> Result<Vec<FactDto>, St
 
 /// Return the latest persisted topology as a rendered [`GraphResponse`].
 ///
-/// 三层契约 B 层:`storage.latest_topology_facts()` + `engine_core::facts_to_graph`
-/// 的薄包装。去重 / parent_resource_id 连边 / 悬空过滤 / risk·health 统计全在
-/// engine-core 完成,前端只把 `nodes`/`edges` 映射成 Cytoscape element。
+/// 三层契约 B 层。**Phase 2.5 起读 materialized topology**(`topology_nodes` /
+/// `topology_edges`,由 `sync_all_now` 的 resolve→diff→apply 维护),经
+/// `engine_identity::topology_to_graph` 成图 —— 不再每次从 raw facts 重算。
+///
+/// 注:首次升级到 2.5 的旧库 materialized 表为空,需先 `sync_all_now` 跑一次
+/// resolve 才有数据(raw facts 仍在,sync 即回填)。
 #[tauri::command]
 pub async fn get_graph(state: State<'_, AppState>) -> Result<GraphResponse, String> {
-    let facts = state
+    let topology = state
         .storage
-        .latest_topology_facts()
+        .materialized_topology()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(engine_core::facts_to_graph(&facts))
+    Ok(engine_identity::topology_to_graph(&topology))
 }

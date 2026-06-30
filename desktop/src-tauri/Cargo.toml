@@ -33,9 +33,10 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # engine path deps(按 doc/16 §3 配置)
-engine-core    = { path = "../../engine/crates/engine-core" }
-engine-storage = { path = "../../engine/crates/engine-storage" }
-engine-wasm    = { path = "../../engine/crates/engine-wasm" }
+engine-core     = { path = "../../engine/crates/engine-core" }
+engine-identity = { path = "../../engine/crates/engine-identity" }
+engine-storage  = { path = "../../engine/crates/engine-storage" }
+engine-wasm     = { path = "../../engine/crates/engine-wasm" }
 
 [features]
 default = ["custom-protocol"]

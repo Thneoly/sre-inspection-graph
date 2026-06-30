@@ -13,7 +13,8 @@ parquet = []
 neo4j   = []
 
 [dependencies]
-engine-core = { workspace = true }
+engine-core     = { workspace = true }
+engine-identity = { workspace = true }
 serde       = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
@@ -22,3 +23,4 @@ sqlx        = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+serde_json = { workspace = true }

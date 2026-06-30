@@ -30,11 +30,19 @@ interface ConnectorStatusDto {
   errors: string[];
 }
 
+interface ChangeSummaryDto {
+  nodes_upserted: number;
+  nodes_removed: number;
+  edges_upserted: number;
+  edges_removed: number;
+}
+
 interface SyncSummaryDto {
   facts: FactDto[];
   per_connector: ConnectorStatusDto[];
   total_errors: number;
   total_duration_ms: number;
+  changes: ChangeSummaryDto;
 }
 
 export default function App() {
@@ -150,7 +158,9 @@ export default function App() {
               {summary && (
                 <>
                   {" "}· {summary.per_connector.length} connector · errors {summary.total_errors} ·{" "}
-                  {summary.total_duration_ms}ms
+                  {summary.total_duration_ms}ms · Δ +{summary.changes.nodes_upserted}n/
+                  {summary.changes.edges_upserted}e −{summary.changes.nodes_removed}n/
+                  {summary.changes.edges_removed}e
                 </>
               )}
             </p>

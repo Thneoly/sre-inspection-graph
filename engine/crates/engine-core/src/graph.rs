@@ -127,26 +127,8 @@ pub fn facts_to_graph(facts: &[Fact]) -> GraphResponse {
     let mut nodes: Vec<GraphNode> = Vec::with_capacity(ordered.len());
     let mut edges: Vec<GraphEdge> = Vec::new();
 
-    // 原始计数器:用 raw value 累计,summary 时只读固定 key(reference 同款)
-    let mut risk_counter: HashMap<String, usize> = HashMap::new();
-    let mut health_counter: HashMap<String, usize> = HashMap::new();
-
     for f in &ordered {
         let props = parse_props(&f.attributes_json);
-
-        // risk / health —— 缺失计 unknown;意外值进各自 raw key(上报时被丢)
-        let risk = props
-            .get("risk_level")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        *risk_counter.entry(risk).or_insert(0) += 1;
-        let health = props
-            .get("health_status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        *health_counter.entry(health).or_insert(0) += 1;
 
         // 派生父子边
         if let Some(parent) = props.get(PARENT_KEY).and_then(Value::as_str) {
@@ -169,7 +151,45 @@ pub fn facts_to_graph(facts: &[Fact]) -> GraphResponse {
         });
     }
 
-    let summary = GraphSummary {
+    let summary = summarize(&nodes, &edges);
+
+    GraphResponse {
+        nodes,
+        edges,
+        summary,
+    }
+}
+
+/// 从已成型的节点 / 边算 [`GraphSummary`] —— 唯一的统计入口。
+///
+/// `facts_to_graph`(facts→graph)与 `engine-identity::topology_to_graph`
+/// (materialized topology→graph)共用此函数,保证两条路径的 summary 语义
+/// 不漂移。每个节点读 `properties.risk_level` / `properties.health_status`:
+///
+/// - 缺失 → 计入 `unknown`;
+/// - **意外值**(非固定桶 key)被丢弃 —— 与 reference `Counter.get(key, 0)` 一致。
+pub fn summarize(nodes: &[GraphNode], edges: &[GraphEdge]) -> GraphSummary {
+    let mut risk_counter: HashMap<String, usize> = HashMap::new();
+    let mut health_counter: HashMap<String, usize> = HashMap::new();
+
+    for n in nodes {
+        let risk = n
+            .properties
+            .get("risk_level")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        *risk_counter.entry(risk).or_insert(0) += 1;
+        let health = n
+            .properties
+            .get("health_status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        *health_counter.entry(health).or_insert(0) += 1;
+    }
+
+    GraphSummary {
         total_nodes: nodes.len(),
         total_edges: edges.len(),
         risk_counts: fixed_counts(&risk_counter, &["high", "medium", "low", "unknown"]),
@@ -177,12 +197,6 @@ pub fn facts_to_graph(facts: &[Fact]) -> GraphResponse {
             &health_counter,
             &["normal", "warning", "critical", "unknown"],
         ),
-    };
-
-    GraphResponse {
-        nodes,
-        edges,
-        summary,
     }
 }
 

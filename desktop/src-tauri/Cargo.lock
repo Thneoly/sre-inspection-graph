@@ -1498,11 +1498,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-identity"
+version = "0.1.0"
+dependencies = [
+ "engine-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "engine-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "engine-core",
+ "engine-identity",
  "serde",
  "sqlx",
  "thiserror 2.0.18",
@@ -4792,6 +4804,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "engine-core",
+ "engine-identity",
  "engine-storage",
  "engine-wasm",
  "serde",

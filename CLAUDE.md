@@ -31,7 +31,7 @@ graph_data/
 │       ├── engine-storage/     # ✅ Storage trait + SqliteStorage(raw Fact 落库,Phase 2.1)
 │       ├── engine-cli/         # ✅ headless binary(tick 子命令)
 │       ├── engine-testkit/     # 骨架
-│       ├── engine-identity/    # 骨架(Phase 2.5:Identity Resolver)
+│       ├── engine-identity/    # ✅ Identity Resolver v0(resolve/diff/topology_to_graph)
 │       ├── engine-recovery/    # 骨架(Phase 3:PRD-001 复刻)
 │       ├── engine-changes/     # 骨架(Phase 3:PRD-002 复刻)
 │       └── engine-reports/     # 骨架(Phase 4:PRD-003 复刻)
@@ -70,21 +70,22 @@ graph_data/
 | 2.2 | Tauri `AppState { runtime, storage }`,`sync_all_now` sync 后 upsert 到 SQLite | ✅ |
 | 2.3 | `get_topology` command + 前端启动从 SQLite 恢复拓扑(重启不 sync 也能渲染)| ✅ |
 | 2.4 | GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`,对齐 reference `GraphResponse`)| ✅ |
-| 2.5 | engine-identity ChangeSet resolver v0 + materialized topology_nodes/edges | ⏳ |
+| 2.5 | engine-identity ChangeSet resolver v0(`resolve`/`diff`/`topology_to_graph`)+ materialized `topology_nodes`/`topology_edges` 表 | ✅ |
 | 2.6 | 真实 K8s / Prometheus connector WASM 化 | ⏳ |
 
 ### 关键 crate 入口
 
-- **engine-core**(`engine/crates/engine-core/src/`):`Fact`(WIT `connector.fact` 的 host 规范型,7 字段)+ `fact_schema()`(Arrow Schema)+ `FactBatch`(→ `RecordBatch` 零拷贝转储)。所有下游(storage / query / Arrow)只认它。`graph.rs` — `GraphResponse { nodes, edges, summary }`(对齐 reference `app/models/graph.py`)+ `facts_to_graph(&[Fact])`:topology-node 去重(newest)、`parent_resource_id` 派生 `CONTAINS` 边、悬空过滤、risk/health summary 统计。**领域逻辑在此,Tauri command 只薄包装**
-- **engine-storage**(`engine/crates/engine-storage/src/`):`Storage` trait + `sqlite::SqliteStorage`(feature `sqlite`)。`connect` / `connect_in_memory` / `migrate` / `upsert_facts`(按 `Fact.id` 幂等)/ `latest_topology_facts`(按 `resource_id` 取最新 `topology-node`)。`StorageError` 统一错误。Parquet/Neo4j 仍待后续
+- **engine-core**(`engine/crates/engine-core/src/`):`Fact`(WIT `connector.fact` 的 host 规范型,7 字段)+ `fact_schema()`(Arrow Schema)+ `FactBatch`(→ `RecordBatch` 零拷贝转储)。所有下游(storage / query / Arrow)只认它。`graph.rs` — `GraphResponse { nodes, edges, summary }`(对齐 reference `app/models/graph.py`)+ `facts_to_graph(&[Fact])`:topology-node 去重(newest)、`parent_resource_id` 派生 `CONTAINS` 边、悬空过滤;+ `summarize(&[GraphNode], &[GraphEdge])`(risk/health 固定桶统计的**唯一入口**,`facts_to_graph` 与 engine-identity `topology_to_graph` 共用,不漂移)。**领域逻辑在此,Tauri command 只薄包装**
+- **engine-identity**(`engine/crates/engine-identity/src/`):Identity Resolver **v0**(`resource_id` 直接当 canonical 身份键,不做 correlation-key 合并 / 仲裁 —— 见 doc/11 §4-5 完整版)。`topology.rs` — `Topology { nodes: ResolvedNode[], edges: ResolvedEdge[] }`(持久化形态;`attributes_json` 存 canonical 字符串)+ `resolve(&[Fact])`(复用 `engine_core::facts_to_graph` 派生,再平移)+ `topology_to_graph(&Topology)`(反建前端 `GraphResponse`,summary 复用 `engine_core::summarize`)。`changeset.rs` — `ChangeSet { nodes_upserted, nodes_removed, edges_upserted, edges_removed }` + `ChangeSummary`(计数)+ `diff(current, next)`(身份键 + 内容相等判增删改)。**I/O-free 纯领域逻辑,可单测**;持久化在 engine-storage
+- **engine-storage**(`engine/crates/engine-storage/src/`):`Storage` trait + `sqlite::SqliteStorage`(feature `sqlite`)。`connect` / `connect_in_memory` / `migrate` / `upsert_facts`(按 `Fact.id` 幂等)/ `latest_topology_facts`(按 `resource_id` 取最新 `topology-node`);**Phase 2.5** 加 `topology_nodes`/`topology_edges` materialized 表 + `materialized_topology()`(读当前拓扑)+ `apply_change_set(&ChangeSet)`(单 tx upsert + delete stale)。`StorageError` 统一错误;`examples/dump_topology.rs` 是 GUI-less 验证 `get_graph` 读路径的小工具。Parquet/Neo4j 仍待后续
 - **engine-wasm**(`engine/crates/engine-wasm/src/`):
   - `runtime.rs` — `WasmConnector`(单 connector,持 wasmtime Store)+ host trait impls(`LoggingHost` / `ClockHost` / `HttpClientHost` for `State`)+ `load(path, capabilities)` / `load_with_http(client)` / `sync` / `health_check`
   - `http_host.rs` — `http-client` capability 纯函数实装(`http_get` + `HostHttpResponse`/`HostHttpError`,刻意与 WIT binding 解耦,可单测)
   - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest` / `sync_all` / `tick_loop` + `SyncSummary`。**保持 storage-agnostic**,持久化在 orchestration 层(Tauri/CLI)做
   - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema)+ `WasiVersion`(p2/p3 enum)
 - **engine-cli**(`engine/crates/engine-cli/src/main.rs`):headless binary。`tick` 单次;`tick --loop --interval=30` 持续。`MODULES_ROOT` env 覆盖 manifest 根
-- **desktop/src-tauri**:`lib.rs::run()` 启动 `WasmRuntime` + 在 `setup` 里初始化 `SqliteStorage`(路径取 `SRE_GRAPH_DB_PATH` 或 app data dir,migrate)→ `.manage(AppState { runtime, storage })`。command:`list_connectors` / `sync_all_now`(sync 后 upsert 到 SQLite)/ `get_topology`(读 latest topology facts,raw `FactDto[]`,留诊断用)/ `get_graph`(读 latest topology facts → `facts_to_graph` → `GraphResponse`,前端拓扑渲染走这条)
-- **desktop/src/views/TopologyView.tsx**:Phase 2.4 视图,吃 `GraphResponse`。`graphToElements(graph)` 把 `{nodes,edges}` 纯映射成 Cytoscape elements(去重/连边/悬空过滤已在 Rust `facts_to_graph` 完成,前端不再解 JSON);有 Vitest 覆盖。`App.tsx` 启动 + sync 后均调 `get_graph` 拉成图的 `GraphResponse` 渲染
+- **desktop/src-tauri**:`lib.rs::run()` 启动 `WasmRuntime` + 在 `setup` 里初始化 `SqliteStorage`(路径取 `SRE_GRAPH_DB_PATH` 或 app data dir,migrate)→ `.manage(AppState { runtime, storage })`。command:`list_connectors` / `sync_all_now`(sync → upsert raw facts → **resolve+diff+apply_change_set** 维护 materialized 拓扑,返回 `changes` 增量计数)/ `get_topology`(读 latest topology facts,raw `FactDto[]`,留诊断用)/ `get_graph`(**Phase 2.5 起**读 materialized 拓扑 → `engine_identity::topology_to_graph` → `GraphResponse`,前端拓扑渲染走这条)
+- **desktop/src/views/TopologyView.tsx**:Phase 2.4 视图,吃 `GraphResponse`。`graphToElements(graph)` 把 `{nodes,edges}` 纯映射成 Cytoscape elements(去重/连边/悬空过滤已在 Rust 完成,前端不再解 JSON);有 Vitest 覆盖。`App.tsx` 启动 + sync 后均调 `get_graph` 拉成图渲染;sync 后 header 显示 `changes` 增量(`Δ +Nn/Me −Kn/Le`)
 
 ### 常用命令
 
@@ -115,7 +116,7 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 |---|---|---|---|
 | A | **WIT**(Component Model) | WASM ↔ host | ✅ `specs/wit/` 4 world;host 用 `wasmtime::component::bindgen!`,guest 用 `wit_bindgen::generate!` |
 | B | **Tauri commands**(JSON IPC) | webview ↔ Rust | ✅ `commands/wasm.rs` + `commands/topology.rs`(get_topology / get_graph→`GraphResponse`);Phase 2+ 继续拆 `commands/{recovery,...}.rs` |
-| C | **Arrow RecordBatch** + Parquet + SQLite | engine 内部 | 🔨 engine-core Arrow Schema ✅;engine-storage SQLite raw Fact backend ✅(Phase 2.1);Parquet 归档 + materialized topology 表待 Phase 2.5 |
+| C | **Arrow RecordBatch** + Parquet + SQLite | engine 内部 | 🔨 engine-core Arrow Schema ✅;engine-storage SQLite raw Fact backend ✅(Phase 2.1)+ materialized `topology_nodes`/`topology_edges` 表 ✅(Phase 2.5);Parquet 归档待后续 |
 
 **反模式(不做)**:Tauri 里又起 HTTP server(用 invoke 直接 IPC);desktop/ 写业务逻辑(逻辑在 engine-core,Tauri command 是薄包装);WASM 模块直接 syscall(host 注入 capability,deny by default)。
 
@@ -131,7 +132,7 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - [x] Phase 1 收官:最小拓扑视图(打开 app 看到 mock 拓扑图)+ Blog Part 1 + GUI verifier + Option A 首屏 polish
 - [x] Phase 2 第一刀:SQLite-backed mock topology persistence(`sync_all_now` 写入 SQLite,重启后 `get_topology` 从库恢复;GUI X11 验证通过)
 - [x] Phase 2.4:GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`;boot 从 SQLite 恢复并成图渲染,GUI X11 验证通过)
-- [ ] Phase 2.5:Identity Resolver(ChangeSet + SQLite UPSERT + materialized topology_nodes/edges)
+- [x] Phase 2.5:Identity Resolver v0(engine-identity `resolve`/`diff`/`topology_to_graph` + engine-storage materialized `topology_nodes`/`topology_edges` + Tauri sync 维护 + `get_graph` 改读 materialized;headless `dump_topology` 验证 + 全栈 cargo/vitest 绿)
 - [ ] Phase 2.6:真实 K8s / Prometheus connector WASM 化(对照 `reference/backend/app/datasource/connectors/`)+ Tauri 视图迁
 - [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
 - [ ] Phase 4:engine-reports(PRD-003)复刻

@@ -9,5 +9,6 @@ description = "Identity Resolver — DataFusion SQL over Arrow facts"
 [dependencies]
 engine-core = { workspace = true }
 serde       = { workspace = true }
+serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }

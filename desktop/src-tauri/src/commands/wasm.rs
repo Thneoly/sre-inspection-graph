@@ -84,6 +84,32 @@ pub struct SyncSummaryDto {
     pub total_errors: u64,
     /// guest 自报的总耗时(毫秒)。
     pub total_duration_ms: u64,
+    /// 本次 resolve→diff 相对上次 materialized 拓扑的增量(Phase 2.5)。
+    pub changes: ChangeSummaryDto,
+}
+
+/// materialized 拓扑增量计数 —— `engine_identity::ChangeSummary` 的 serde 镜像。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ChangeSummaryDto {
+    /// upsert 的节点数(新增 + 属性变化)。
+    pub nodes_upserted: usize,
+    /// 删除的节点数。
+    pub nodes_removed: usize,
+    /// upsert 的边数。
+    pub edges_upserted: usize,
+    /// 删除的边数。
+    pub edges_removed: usize,
+}
+
+impl From<engine_identity::ChangeSummary> for ChangeSummaryDto {
+    fn from(s: engine_identity::ChangeSummary) -> Self {
+        Self {
+            nodes_upserted: s.nodes_upserted,
+            nodes_removed: s.nodes_removed,
+            edges_upserted: s.edges_upserted,
+            edges_removed: s.edges_removed,
+        }
+    }
 }
 
 /// 列出当前 runtime 加载的 connector。
@@ -116,11 +142,34 @@ pub async fn sync_all_now(
 ) -> Result<SyncSummaryDto, String> {
     let cfg = config_json.as_deref().unwrap_or("{}");
     let summary = state.runtime.sync_all(cfg).await;
+
+    // 1. raw facts 落 append-only 真相源
     state
         .storage
         .upsert_facts(summary.batch.as_slice())
         .await
         .map_err(|e| e.to_string())?;
+
+    // 2. Identity Resolver v0:resolve(最新 topology facts)→ diff(当前 materialized)
+    //    → apply。materialized 表是 get_graph 的读源。
+    let facts = state
+        .storage
+        .latest_topology_facts()
+        .await
+        .map_err(|e| e.to_string())?;
+    let next = engine_identity::resolve(&facts);
+    let current = state
+        .storage
+        .materialized_topology()
+        .await
+        .map_err(|e| e.to_string())?;
+    let change_set = engine_identity::diff(&current, &next);
+    state
+        .storage
+        .apply_change_set(&change_set)
+        .await
+        .map_err(|e| e.to_string())?;
+
     let facts: Vec<FactDto> = summary.batch.as_slice().iter().map(FactDto::from).collect();
     let per_connector = summary
         .per_connector
@@ -136,6 +185,7 @@ pub async fn sync_all_now(
         per_connector,
         total_errors: summary.total_errors,
         total_duration_ms: summary.total_duration_ms,
+        changes: change_set.summary().into(),
     })
 }
 
@@ -187,6 +237,12 @@ mod tests {
             }],
             total_errors: 1,
             total_duration_ms: 42,
+            changes: ChangeSummaryDto {
+                nodes_upserted: 2,
+                nodes_removed: 1,
+                edges_upserted: 1,
+                edges_removed: 0,
+            },
         };
         let j = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(j["total_errors"], 1);
@@ -194,5 +250,9 @@ mod tests {
         assert_eq!(j["per_connector"][0]["name"], "k8s-mini");
         assert_eq!(j["per_connector"][0]["fact_count"], 3);
         assert_eq!(j["per_connector"][0]["errors"][0], "nope");
+        assert_eq!(j["changes"]["nodes_upserted"], 2);
+        assert_eq!(j["changes"]["nodes_removed"], 1);
+        assert_eq!(j["changes"]["edges_upserted"], 1);
+        assert_eq!(j["changes"]["edges_removed"], 0);
     }
 }

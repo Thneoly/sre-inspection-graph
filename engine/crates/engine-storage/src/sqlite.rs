@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use engine_core::Fact;
+use engine_identity::{ChangeSet, ResolvedEdge, ResolvedNode, Topology};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -89,6 +90,37 @@ impl SqliteStorage {
             r#"
             CREATE INDEX IF NOT EXISTS idx_facts_source_timestamp
               ON facts(source, timestamp DESC)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 2.5 — materialized topology(Identity Resolver 的落地表)。
+        // raw facts 是 append-only 真相源;这两张表是 resolve+diff 后的当前视图,
+        // get_graph 读它(不再每次从 facts 重算)。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS topology_nodes (
+              resource_id TEXT PRIMARY KEY,
+              resource_type TEXT NOT NULL,
+              label TEXT NOT NULL,
+              attributes_json TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS topology_edges (
+              id TEXT PRIMARY KEY,
+              source TEXT NOT NULL,
+              target TEXT NOT NULL,
+              edge_type TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
             "#,
         )
         .execute(&self.pool)
@@ -201,6 +233,130 @@ impl SqliteStorage {
                 })
             })
             .collect()
+    }
+
+    /// Read the current materialized [`Topology`] (resolved nodes + edges).
+    ///
+    /// This is the read source for the desktop graph view since Phase 2.5:
+    /// `get_graph` reads here instead of re-deriving from raw facts.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if either query fails.
+    pub async fn materialized_topology(&self) -> Result<Topology, StorageError> {
+        let node_rows = sqlx::query(
+            r#"
+            SELECT resource_id, resource_type, label, attributes_json
+            FROM topology_nodes
+            ORDER BY resource_id ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let nodes = node_rows
+            .into_iter()
+            .map(|row| {
+                Ok(ResolvedNode {
+                    resource_id: row.try_get("resource_id")?,
+                    resource_type: row.try_get("resource_type")?,
+                    label: row.try_get("label")?,
+                    attributes_json: row.try_get("attributes_json")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+
+        let edge_rows = sqlx::query(
+            r#"
+            SELECT id, source, target, edge_type
+            FROM topology_edges
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let edges = edge_rows
+            .into_iter()
+            .map(|row| {
+                Ok(ResolvedEdge {
+                    id: row.try_get("id")?,
+                    source: row.try_get("source")?,
+                    target: row.try_get("target")?,
+                    edge_type: row.try_get("edge_type")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+
+        Ok(Topology { nodes, edges })
+    }
+
+    /// Apply a [`ChangeSet`] to the materialized topology tables in one tx.
+    ///
+    /// UPSERTs changed nodes/edges and DELETEs removed ones — the minimal write
+    /// computed by `engine_identity::diff`. Idempotent: re-applying an empty
+    /// change set is a no-op commit.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if SQLite rejects any statement; the tx rolls
+    /// back so the materialized view never lands half-applied.
+    pub async fn apply_change_set(&self, change_set: &ChangeSet) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let updated_at = now_unix_seconds()?;
+
+        for node in &change_set.nodes_upserted {
+            sqlx::query(
+                r#"
+                INSERT INTO topology_nodes (resource_id, resource_type, label, attributes_json, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(resource_id) DO UPDATE SET
+                    resource_type = excluded.resource_type,
+                    label = excluded.label,
+                    attributes_json = excluded.attributes_json,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(&node.resource_id)
+            .bind(&node.resource_type)
+            .bind(&node.label)
+            .bind(&node.attributes_json)
+            .bind(updated_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for resource_id in &change_set.nodes_removed {
+            sqlx::query("DELETE FROM topology_nodes WHERE resource_id = ?1")
+                .bind(resource_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        for edge in &change_set.edges_upserted {
+            sqlx::query(
+                r#"
+                INSERT INTO topology_edges (id, source, target, edge_type, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(id) DO UPDATE SET
+                    source = excluded.source,
+                    target = excluded.target,
+                    edge_type = excluded.edge_type,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(&edge.id)
+            .bind(&edge.source)
+            .bind(&edge.target)
+            .bind(&edge.edge_type)
+            .bind(updated_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for id in &change_set.edges_removed {
+            sqlx::query("DELETE FROM topology_edges WHERE id = ?1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -374,5 +530,90 @@ mod tests {
             .expect("query latest topology facts");
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].attributes_json, "not-json");
+    }
+
+    #[tokio::test]
+    async fn materialized_topology_round_trips_resolve_diff_apply() {
+        let store = migrated_store().await;
+        // 第一次 sync:cluster → ns → pod
+        store
+            .upsert_facts(&[
+                fact("c", "cluster:demo", "Cluster", 1, "{}"),
+                fact(
+                    "n",
+                    "ns:demo:default",
+                    "Namespace",
+                    2,
+                    r#"{"parent_resource_id":"cluster:demo"}"#,
+                ),
+                fact(
+                    "p",
+                    "pod:demo:default:web-0",
+                    "Pod",
+                    3,
+                    r#"{"parent_resource_id":"ns:demo:default"}"#,
+                ),
+            ])
+            .await
+            .expect("upsert facts");
+
+        // resolve(latest facts) → diff(materialized=empty) → apply
+        let facts = store.latest_topology_facts().await.expect("latest facts");
+        let next = engine_identity::resolve(&facts);
+        let current = store.materialized_topology().await.expect("read empty");
+        assert!(current.is_empty());
+        let cs = engine_identity::diff(&current, &next);
+        assert_eq!(cs.summary().nodes_upserted, 3);
+        assert_eq!(cs.summary().edges_upserted, 2);
+        store.apply_change_set(&cs).await.expect("apply");
+
+        // materialized 现与 resolve 结果一致
+        let materialized = store.materialized_topology().await.expect("read materialized");
+        assert_eq!(materialized, next);
+
+        // 二次 sync:pod 消失,ns 属性变 → diff 只动 ns(upsert)+ pod(remove)
+        store
+            .upsert_facts(&[fact(
+                "n2",
+                "ns:demo:default",
+                "Namespace",
+                10,
+                r#"{"parent_resource_id":"cluster:demo","risk_level":"high"}"#,
+            )])
+            .await
+            .expect("upsert ns update");
+        // 模拟 pod 被删:这里用一条新 cluster-only 视图不现实,改为直接构造 next2
+        // 真实链路 pod 不再出现在 facts 即消失;此处验证 diff/apply 的 remove 分支:
+        let next2 = engine_identity::Topology {
+            nodes: materialized
+                .nodes
+                .iter()
+                .filter(|n| n.resource_id != "pod:demo:default:web-0")
+                .cloned()
+                .map(|mut n| {
+                    if n.resource_id == "ns:demo:default" {
+                        n.attributes_json =
+                            r#"{"parent_resource_id":"cluster:demo","risk_level":"high"}"#.into();
+                    }
+                    n
+                })
+                .collect(),
+            edges: materialized
+                .edges
+                .iter()
+                .filter(|e| e.target != "pod:demo:default:web-0")
+                .cloned()
+                .collect(),
+        };
+        let cs2 = engine_identity::diff(&materialized, &next2);
+        assert_eq!(cs2.nodes_removed, vec!["pod:demo:default:web-0"]);
+        assert_eq!(cs2.edges_removed, vec!["ns:demo:default->pod:demo:default:web-0"]);
+        assert_eq!(cs2.summary().nodes_upserted, 1); // 仅 ns
+        store.apply_change_set(&cs2).await.expect("apply cs2");
+
+        let after = store.materialized_topology().await.expect("read after");
+        assert_eq!(after, next2);
+        assert_eq!(after.nodes.len(), 2); // cluster + ns
+        assert_eq!(after.edges.len(), 1); // cluster->ns
     }
 }

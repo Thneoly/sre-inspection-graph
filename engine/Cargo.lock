@@ -1052,6 +1052,7 @@ version = "0.1.0"
 dependencies = [
  "engine-core",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -1088,7 +1089,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "engine-core",
+ "engine-identity",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
