@@ -23,7 +23,7 @@ use engine_wasm::{ManifestFile, WasmRuntime};
 use tauri::Manager;
 
 use commands::system::get_app_version;
-use commands::topology::get_topology;
+use commands::topology::{get_graph, get_topology};
 use commands::wasm::{list_connectors, sync_all_now};
 
 /// 解析 modules/ 根目录。
@@ -153,6 +153,7 @@ pub fn run() {
             list_connectors,
             sync_all_now,
             get_topology,
+            get_graph,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

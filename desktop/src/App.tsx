@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TopologyView, type FactDto } from "./views/TopologyView";
+import { TopologyView, type FactDto, type GraphResponse } from "./views/TopologyView";
 
 /**
- * F + Phase 1 Step 2 — Tauri ↔ engine-wasm 串通的端到端验证页 + Cytoscape 拓扑视图。
+ * F + Phase 1 Step 2 + Phase 2.4 — Tauri ↔ engine-wasm 端到端 + Cytoscape 拓扑视图。
  *
- * 启动时:`get_app_version` + `list_connectors` 各调一次。
- * 用户点「立即同步」→ `sync_all_now`(config 带 `with_topology: true` 让
- * k8s-mini 吐分层 mock 拓扑)→ 渲染 Cytoscape 视图 + per-connector 表 + Fact 表。
+ * 启动时:`get_app_version` + `list_connectors` + `get_graph`(从 SQLite 恢复拓扑)。
+ * 用户点「立即同步」→ `sync_all_now`(config 带 `with_topology: true`,sync 后
+ * upsert 到 SQLite)→ 再 `get_graph` 拉成图的 GraphResponse 渲染 Cytoscape。
+ *
+ * 2.4 起拓扑渲染走 `get_graph`(后端 `facts_to_graph` 已去重 / 连边 / 统计),
+ * 前端不再 client 端解 Fact JSON。`get_topology` 仍保留供诊断。
  *
  * 设计:Phase 1 占位 UI,只用浏览器原生标签 + 朴素 CSS + cytoscape。Phase 2 起
  * 从 reference/frontend/src/ 把 antd Layout / 多视图组件迁进来。
@@ -39,7 +42,7 @@ export default function App() {
   const [bootErr, setBootErr] = useState<string | null>(null);
   const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
   const [summary, setSummary] = useState<SyncSummaryDto | null>(null);
-  const [topologyFacts, setTopologyFacts] = useState<FactDto[]>([]);
+  const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncErr, setSyncErr] = useState<string | null>(null);
 
@@ -50,9 +53,9 @@ export default function App() {
     invoke<ConnectorInfo[]>("list_connectors")
       .then(setConnectors)
       .catch((e) => setBootErr(`list_connectors: ${e}`));
-    invoke<FactDto[]>("get_topology")
-      .then(setTopologyFacts)
-      .catch((e) => setBootErr(`get_topology: ${e}`));
+    invoke<GraphResponse>("get_graph")
+      .then(setGraph)
+      .catch((e) => setBootErr(`get_graph: ${e}`));
   }, []);
 
   async function handleSync() {
@@ -72,7 +75,9 @@ export default function App() {
         configJson,
       });
       setSummary(s);
-      setTopologyFacts(s.facts);
+      // sync_all_now 已把 facts upsert 到 SQLite;回读成图的 GraphResponse 渲染。
+      const g = await invoke<GraphResponse>("get_graph");
+      setGraph(g);
     } catch (e) {
       setSyncErr(String(e));
     } finally {
@@ -138,10 +143,10 @@ export default function App() {
 
       <section style={{ marginTop: "1rem" }}>
         <h2 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>拓扑视图</h2>
-        {topologyFacts.length > 0 ? (
+        {graph && graph.nodes.length > 0 ? (
           <>
             <p style={{ marginTop: 0, marginBottom: "0.75rem", color: "#666" }}>
-              {topologyFacts.length} persisted topology fact
+              {graph.summary.total_nodes} node · {graph.summary.total_edges} edge
               {summary && (
                 <>
                   {" "}· {summary.per_connector.length} connector · errors {summary.total_errors} ·{" "}
@@ -149,7 +154,7 @@ export default function App() {
                 </>
               )}
             </p>
-            <TopologyView facts={topologyFacts} />
+            <TopologyView graph={graph} />
           </>
         ) : summary ? (
           <p style={{ color: "#666" }}>

@@ -2,35 +2,36 @@ import { useEffect, useRef } from "react";
 import cytoscape, { Core, ElementDefinition, StylesheetCSS } from "cytoscape";
 
 /**
- * Phase 1 Step 2 — 最小拓扑视图。
+ * Phase 2.4 — 拓扑视图(吃 GraphResponse 契约)。
  *
- * 把 `sync_all_now` 返的 FactDto[] 转 Cytoscape `{nodes, edges}`,渲染 DAG。
+ * Phase 1 时这里自己解 `FactDto[]`(去重 / parent_resource_id 连边 / 悬空过滤)。
+ * 2.4 起这套领域逻辑回收到 Rust(`engine_core::facts_to_graph`),前端只把后端
+ * 已成图的 `GraphResponse { nodes, edges, summary }` 映射成 Cytoscape element。
+ * 契约对齐 `reference/app/models/graph.py::GraphResponse`,为 Phase 2.6+ 多视图
+ * 迁移铺路。
+ *
  * 设计要点:
  *
  * 1. **节点视觉规则** 对照 reference/frontend/src/utils/graphStyles.ts:
- *    - shape = resource_type(Cluster=hexagon / Node=octagon / Namespace=
- *      round-rectangle / Pod=ellipse / Service=diamond / 其它=ellipse)
+ *    - shape = type(Cluster=hexagon / Node=octagon / Namespace=round-rectangle
+ *      / Pod=ellipse / Service=diamond / 其它=ellipse)
  *    - fill = health → 本期固定 green(Phase 2 接 metric 后改真值)
  *    - border = risk → 本期固定 thin green
  *
- * 2. **edge 来源**:Fact.attributes_json 解 JSON 找 `parent_resource_id`,
- *    存在则连一条 source=parent → target=self 的有向边。k8s-mini
- *    with_topology=true 的 Fact 全部带此字段(除 Cluster 是根)。
+ * 2. **edge**:直接用 `GraphResponse.edges`(后端已派生 + 过滤悬空),不再
+ *    client 端解 JSON。
  *
- * 3. **dedup**:Fact 按 resource_id 去重(同一资源多 connector 报多次只画一次)。
- *    去重后取最新 timestamp 的那条作 canonical(stable sort)。
+ * 3. **layout**:内置 `breadthfirst`(从无入边节点起 BFS 分层),CONTAINS 父子边
+ *    形成的层级正好对得上 K8s 拓扑(cluster → ns → pod)。
  *
- * 4. **layout**:用内置 `breadthfirst`(从无入边节点起按 BFS 分层),
- *    parent_resource_id 形成的层级正好对得上 K8s 拓扑(cluster → ns → pod)。
+ * 4. **生命周期**:cytoscape Core 一次创建,graph 变化时 `cy.elements()` 全量
+ *    替换(节点量 ~20 内,全替成本可忽略);卸载时 `cy.destroy()`。
  *
- * 5. **生命周期**:cytoscape Core 一次创建,facts 变化时 `cy.elements()`
- *    全量替换(本期 Fact 量在 ~20 以内,全替成本可忽略);组件卸载时
- *    `cy.destroy()`,避免 DOM ref 泄露。
- *
- * Phase 2 改造:接入 health/risk 真值;布局换 fcose;支持点击节点抽屉
- * 显示 attributes_json。
+ * Phase 2 后续:接入 health/risk 真值上色;布局换 fcose;点击节点抽屉显示
+ * properties。
  */
 
+/** engine_core::Fact 的 serde 镜像 —— 诊断表 / get_topology 仍用。 */
 export interface FactDto {
   id: string;
   kind: string;
@@ -42,7 +43,7 @@ export interface FactDto {
 }
 
 interface Props {
-  facts: FactDto[];
+  graph: GraphResponse;
 }
 
 // resource_type → cytoscape shape。无 fallback 时给 ellipse(K8s 原生类型外的兜底)
@@ -60,71 +61,64 @@ export function shapeFor(resourceType: string): string {
   return SHAPE_BY_TYPE[resourceType] ?? "ellipse";
 }
 
-/** 把 Fact 数组转 Cytoscape elements(nodes + edges)。 */
-export function factsToElements(facts: FactDto[]): ElementDefinition[] {
-  // dedup by resource_id,保留 timestamp 最新的那条
-  const byId = new Map<string, FactDto>();
-  for (const f of facts) {
-    const prev = byId.get(f.resource_id);
-    if (!prev || f.timestamp > prev.timestamp) {
-      byId.set(f.resource_id, f);
-    }
-  }
-
-  const nodes: ElementDefinition[] = [];
-  const edges: ElementDefinition[] = [];
-  const orderedFacts = Array.from(byId.values()).sort((a, b) =>
-    a.resource_id.localeCompare(b.resource_id)
-  );
-
-  for (const f of orderedFacts) {
-    nodes.push({
-      group: "nodes",
-      data: {
-        id: f.resource_id,
-        label: shortLabel(f.resource_id, f.resource_type),
-        resourceType: f.resource_type,
-        shape: shapeFor(f.resource_type),
-      },
-    });
-
-    // 解 attributes_json 找 parent_resource_id;失败静默忽略(根节点无 parent)
-    let parent: string | undefined;
-    try {
-      const attrs = JSON.parse(f.attributes_json);
-      if (typeof attrs.parent_resource_id === "string") {
-        parent = attrs.parent_resource_id;
-      }
-    } catch {
-      // attributes_json 不是合法 JSON — 当作没 parent,继续渲染节点
-    }
-
-    if (parent && parent !== f.resource_id) {
-      edges.push({
-        group: "edges",
-        data: {
-          id: `${parent}->${f.resource_id}`,
-          source: parent,
-          target: f.resource_id,
-        },
-      });
-    }
-  }
-
-  // 过滤掉指向未知节点的 edge(防止悬空边)—— 父节点没在本批 Fact 里出现时跳过
-  const nodeIds = new Set(nodes.map((n) => n.data.id as string));
-  const validEdges = edges.filter(
-    (e) => nodeIds.has(e.data.source as string) && nodeIds.has(e.data.target as string)
-  );
-
-  return [...nodes, ...validEdges];
+/** GraphResponse 节点 —— 对齐 engine_core::GraphNode(JSON key `type`)。 */
+export interface GraphNodeDto {
+  id: string;
+  label: string;
+  type: string;
+  properties: Record<string, unknown>;
 }
 
-/** `cluster:demo` → `demo` / `pod:demo:default:app-0-0` → `app-0-0` 用作节点标签。 */
-function shortLabel(resourceId: string, resourceType: string): string {
-  const parts = resourceId.split(":");
-  const name = parts[parts.length - 1] || resourceId;
-  return `${resourceType}\n${name}`;
+/** GraphResponse 边 —— 对齐 engine_core::GraphEdge。 */
+export interface GraphEdgeDto {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  properties: Record<string, unknown>;
+}
+
+/** GraphResponse summary —— 对齐 engine_core::GraphSummary。 */
+export interface GraphSummaryDto {
+  total_nodes: number;
+  total_edges: number;
+  risk_counts: Record<string, number>;
+  health_counts: Record<string, number>;
+}
+
+/** 三层契约 B 层图响应 —— 对齐 engine_core::GraphResponse。 */
+export interface GraphResponse {
+  nodes: GraphNodeDto[];
+  edges: GraphEdgeDto[];
+  summary: GraphSummaryDto;
+}
+
+/**
+ * 把后端 GraphResponse 映射成 Cytoscape elements。
+ *
+ * 纯映射 —— 去重 / 连边 / 悬空过滤都已在 Rust(`facts_to_graph`)完成,这里
+ * 不做任何图逻辑,只做 node→shape + label 拼装。
+ */
+export function graphToElements(graph: GraphResponse): ElementDefinition[] {
+  const nodes: ElementDefinition[] = graph.nodes.map((n) => ({
+    group: "nodes",
+    data: {
+      id: n.id,
+      label: `${n.type}\n${n.label}`,
+      resourceType: n.type,
+      shape: shapeFor(n.type),
+    },
+  }));
+  const edges: ElementDefinition[] = graph.edges.map((e) => ({
+    group: "edges",
+    data: {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      edgeType: e.type,
+    },
+  }));
+  return [...nodes, ...edges];
 }
 
 const STYLE: StylesheetCSS[] = [
@@ -179,7 +173,7 @@ const STYLE: StylesheetCSS[] = [
   },
 ];
 
-export function TopologyView({ facts }: Props) {
+export function TopologyView({ graph }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
 
@@ -200,12 +194,12 @@ export function TopologyView({ facts }: Props) {
     };
   }, []);
 
-  // facts 变化 → 全量替换 elements + 重跑 layout
+  // graph 变化 → 全量替换 elements + 重跑 layout
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     cy.elements().remove();
-    const elements = factsToElements(facts);
+    const elements = graphToElements(graph);
     if (elements.length === 0) return;
     cy.add(elements);
     cy.layout({
@@ -216,7 +210,7 @@ export function TopologyView({ facts }: Props) {
       avoidOverlap: true,
     }).run();
     cy.fit(undefined, 30);
-  }, [facts]);
+  }, [graph]);
 
   return (
     <div

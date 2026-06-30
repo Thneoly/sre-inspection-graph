@@ -99,7 +99,7 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
 2026 Q2   ✅ Phase 0 + Phase 1 完成:A→G + mock 拓扑视图 + Blog Part 1 + GUI verifier + 首屏 polish
   ↓
-2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅;余项 2.4 GraphResponse / 2.5 Identity Resolver / 2.6 真实 connector
+2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅ + 2.4 GraphResponse DTO ✅;余项 2.5 Identity Resolver / 2.6 真实 connector
 2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
 2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
 2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
@@ -110,7 +110,8 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 
 - Phase 1 桌面 GUI 验证走 `.claude/skills/verifier-tauri-gui/`:强制 `GDK_BACKEND=x11 npm run tauri dev`,点击/激活 `Sync all now`,观察 `k8s-mini sync: cluster=demo namespaces=2 with_topology=true`,并用截图像素确认 Cytoscape 绿色拓扑节点。
 - Phase 2.1 持久化验证:`SRE_GRAPH_DB_PATH=/tmp/x.sqlite` fresh 启动拓扑空 → sync 后写入 SQLite(34 facts / 12 resources)→ 重启同一 DB 不再 sync,`get_topology` 从库恢复拓扑(日志无新 `sync invoked`,绿色节点仍渲染)。
-- `desktop/src/views/TopologyView.test.ts` 覆盖 `FactDto[] -> Cytoscape elements` 的稳定排序、去重、父子边、悬空边过滤和 resource_type shape fallback;`engine-storage` 6 个 SQLite 单测覆盖 migrate/upsert/latest_topology。
+- Phase 2.4 GraphResponse 验证:seed SQLite 一棵 K8s 拓扑(Cluster/Node/2×Namespace/2×Pod/Service)→ 重启 app,boot 调 `get_graph`(`facts_to_graph` → `GraphResponse{nodes:7,edges:6,summary}`)→ 前端 `graphToElements` 成图,Cytoscape 渲染层级拓扑(hexagon→octagon/round-rect→ellipse/diamond,9.2k 绿色像素,header 显示「7 node · 6 edge」),全程不 sync。
+- `desktop/src/views/TopologyView.test.ts` 覆盖 `graphToElements`(GraphResponse → Cytoscape elements:nodes-first 顺序、type→shape、`type\nlabel` 标签、edge `edgeType` 透传、空图);`engine-core` `graph.rs` 7 个单测覆盖去重/父子边/悬空过滤/label 优先级/risk·health 固定桶统计/非 topology 忽略/serde 字段名;`engine-storage` 6 个 SQLite 单测覆盖 migrate/upsert/latest_topology。
 
 ## 📝 文档约定
 

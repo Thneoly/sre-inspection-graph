@@ -16,8 +16,10 @@
 #![warn(missing_docs)]
 
 mod fact;
+mod graph;
 
 pub use fact::{fact_schema, Fact, FactBatch, FactError};
+pub use graph::{facts_to_graph, GraphEdge, GraphNode, GraphResponse, GraphSummary};
 
 use serde::{Deserialize, Serialize};
 
