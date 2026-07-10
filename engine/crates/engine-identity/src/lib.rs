@@ -14,14 +14,24 @@
 //!   保持 **I/O-free 纯领域逻辑**,可单测。
 //!
 //! Phase 2.6+ 再上 DataFusion SQL / correlation-key 合并 / Unknown Dep Queue。
+//!
+//! ## Phase 2.7 - metric -> topology health 合并(doc/11 §4.3)
+//!
+//! [`health_merge`] 把 prometheus `metric` Fact 按阈值推成 health,按 field-ownership
+//! (v0:最严重胜出)合进 [`Topology`] 节点的 `health` 字段。orchestration 层在
+//! [`resolve`] 之后、[`diff`] 之前调 [`health_merge::merge_metric_health`]。
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 mod changeset;
+mod health_merge;
 mod topology;
 
 pub use changeset::{diff, ChangeSet, ChangeSummary};
+pub use health_merge::{
+    derive_metric_health, merge_metric_health, DerivedHealth, HealthThreshold, HealthThresholds,
+};
 pub use topology::{resolve, topology_to_graph, ResolvedEdge, ResolvedNode, Topology};
 
 /// Crate version.

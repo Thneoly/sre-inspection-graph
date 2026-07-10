@@ -235,6 +235,50 @@ impl SqliteStorage {
             .collect()
     }
 
+    /// Return the metric facts from the most recent metric sync.
+    ///
+    /// Prometheus connector emits all its `kind="metric"` facts at a single
+    /// `timestamp` (one `clock::now_seconds()` call per sync). This returns every
+    /// metric fact whose `timestamp` equals the max metric timestamp -- i.e. the
+    /// latest sync's full metric set, used by `engine_identity::merge_metric_health`
+    /// to overlay metric-derived health onto topology nodes.
+    ///
+    /// If no metric facts exist, returns an empty vec.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the query fails or a stored timestamp cannot
+    /// be represented as `u64`.
+    pub async fn latest_metric_facts(&self) -> Result<Vec<Fact>, StorageError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, kind, source, resource_id, resource_type, timestamp, attributes_json
+            FROM facts
+            WHERE kind = 'metric'
+              AND timestamp = (SELECT MAX(timestamp) FROM facts WHERE kind = 'metric')
+            ORDER BY resource_id ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let timestamp: i64 = row.try_get("timestamp")?;
+                let timestamp = u64::try_from(timestamp)
+                    .map_err(|_| StorageError::NegativeTimestamp { value: timestamp })?;
+                Ok(Fact {
+                    id: row.try_get("id")?,
+                    kind: row.try_get("kind")?,
+                    source: row.try_get("source")?,
+                    resource_id: row.try_get("resource_id")?,
+                    resource_type: row.try_get("resource_type")?,
+                    timestamp,
+                    attributes_json: row.try_get("attributes_json")?,
+                })
+            })
+            .collect()
+    }
+
     /// Read the current materialized [`Topology`] (resolved nodes + edges).
     ///
     /// This is the read source for the desktop graph view since Phase 2.5:
@@ -530,6 +574,77 @@ mod tests {
             .expect("query latest topology facts");
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].attributes_json, "not-json");
+    }
+
+    #[tokio::test]
+    async fn latest_metric_facts_returns_only_latest_sync() {
+        let store = migrated_store().await;
+        // 第一次 metric sync(ts=10):两条 metric fact
+        store
+            .upsert_facts(&[
+                Fact::new(
+                    "m1",
+                    "metric",
+                    "prometheus",
+                    "svc:a",
+                    "Service",
+                    10,
+                    r#"{"metric":"span_p99_ms","value":400.0}"#,
+                ),
+                Fact::new(
+                    "m2",
+                    "metric",
+                    "prometheus",
+                    "svc:b",
+                    "Service",
+                    10,
+                    r#"{"metric":"span_error_rate_pct","value":2.0}"#,
+                ),
+            ])
+            .await
+            .expect("upsert first metric sync");
+        // 第二次 metric sync(ts=20):只 svc:a 有新值(svc:b 这轮没数据)
+        store
+            .upsert_facts(&[Fact::new(
+                "m3",
+                "metric",
+                "prometheus",
+                "svc:a",
+                "Service",
+                20,
+                r#"{"metric":"span_p99_ms","value":1200.0}"#,
+            )])
+            .await
+            .expect("upsert second metric sync");
+        // 一条 topology-node fact(ts=30)不应影响 metric 查询
+        store
+            .upsert_facts(&[fact("t1", "svc:a", "Service", 30, r#"{}"#)])
+            .await
+            .expect("upsert topology fact");
+
+        let latest = store
+            .latest_metric_facts()
+            .await
+            .expect("query latest metric facts");
+        // 只回最新 metric sync(ts=20)的 fact -> 仅 m3
+        let ids: Vec<&str> = latest.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["m3"]);
+        assert_eq!(latest[0].timestamp, 20);
+    }
+
+    #[tokio::test]
+    async fn latest_metric_facts_empty_when_no_metrics() {
+        let store = migrated_store().await;
+        // 只有 topology-node fact -> metric 查询返空
+        store
+            .upsert_facts(&[fact("c", "cluster:demo", "Cluster", 1, "{}")])
+            .await
+            .expect("upsert topology fact");
+        let latest = store
+            .latest_metric_facts()
+            .await
+            .expect("query latest metric facts");
+        assert!(latest.is_empty());
     }
 
     #[tokio::test]

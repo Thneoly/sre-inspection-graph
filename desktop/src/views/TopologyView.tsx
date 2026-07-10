@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import cytoscape, { Core, ElementDefinition, StylesheetCSS } from "cytoscape";
 
 /**
- * Phase 2.4 — 拓扑视图(吃 GraphResponse 契约)。
+ * Phase 2.4 + 2.7 - 拓扑视图(吃 GraphResponse 契约)。
  *
  * Phase 1 时这里自己解 `FactDto[]`(去重 / parent_resource_id 连边 / 悬空过滤)。
  * 2.4 起这套领域逻辑回收到 Rust(`engine_core::facts_to_graph`),前端只把后端
@@ -12,26 +12,27 @@ import cytoscape, { Core, ElementDefinition, StylesheetCSS } from "cytoscape";
  *
  * 设计要点:
  *
- * 1. **节点视觉规则** 对照 reference/frontend/src/utils/graphStyles.ts:
+ * 1. **节点视觉规则** 对照 reference/frontend/src/utils/graphStyles.ts(CLAUDE.md
+ *    「节点视觉规则」):**shape = 资源类型,fill = health,border = risk**。
  *    - shape = type(Cluster=hexagon / Node=octagon / Namespace=round-rectangle
- *      / Pod=ellipse / Service=diamond / 其它=ellipse)
- *    - fill = health → 本期固定 green(Phase 2 接 metric 后改真值)
- *    - border = risk → 本期固定 thin green
+ *      / Pod=ellipse / Service=diamond / Deployment=round-octagon / 其它=ellipse)
+ *    - fill = health(normal=green / warning=yellow / critical=red / unknown=gray)
+ *    - border = risk(high=thick red / medium=yellow / low=thin green / unknown=gray)
+ *    Phase 2.7 起用真值:engine-identity merge 后 health 含 prometheus metric 信号。
  *
  * 2. **edge**:直接用 `GraphResponse.edges`(后端已派生 + 过滤悬空),不再
  *    client 端解 JSON。
  *
  * 3. **layout**:内置 `breadthfirst`(从无入边节点起 BFS 分层),CONTAINS 父子边
- *    形成的层级正好对得上 K8s 拓扑(cluster → ns → pod)。
+ *    形成的层级正好对得上 K8s 拓扑(cluster -> ns -> pod)。
  *
  * 4. **生命周期**:cytoscape Core 一次创建,graph 变化时 `cy.elements()` 全量
- *    替换(节点量 ~20 内,全替成本可忽略);卸载时 `cy.destroy()`。
+ *    替换;卸载时 `cy.destroy()`。
  *
- * Phase 2 后续:接入 health/risk 真值上色;布局换 fcose;点击节点抽屉显示
- * properties。
+ * Phase 2 后续:布局换 fcose;点击节点抽屉显示 properties。
  */
 
-/** engine_core::Fact 的 serde 镜像 —— 诊断表 / get_topology 仍用。 */
+/** engine_core::Fact 的 serde 镜像 -- 诊断表 / get_topology 仍用。 */
 export interface FactDto {
   id: string;
   kind: string;
@@ -46,7 +47,7 @@ interface Props {
   graph: GraphResponse;
 }
 
-// resource_type → cytoscape shape。无 fallback 时给 ellipse(K8s 原生类型外的兜底)
+// resource_type -> cytoscape shape。无 fallback 时给 ellipse(K8s 原生类型外的兜底)
 const SHAPE_BY_TYPE: Record<string, string> = {
   Cluster: "hexagon",
   Node: "octagon",
@@ -61,7 +62,37 @@ export function shapeFor(resourceType: string): string {
   return SHAPE_BY_TYPE[resourceType] ?? "ellipse";
 }
 
-/** GraphResponse 节点 —— 对齐 engine_core::GraphNode(JSON key `type`)。 */
+/** health_status -> 节点填充色(对齐 reference graphStyles)。unknown/缺省 -> gray。 */
+export function healthFill(health: string | undefined | null): string {
+  switch (health) {
+    case "normal":
+      return "#3fb950"; // green
+    case "warning":
+      return "#d29922"; // yellow
+    case "critical":
+      return "#f85149"; // red
+    default:
+      return "#8b949e"; // gray = unknown / missing
+  }
+}
+
+/** risk_level -> 节点边框 {color, width}(对齐 reference graphStyles)。unknown/缺省 -> gray thin。 */
+export function riskBorder(
+  risk: string | undefined | null
+): { color: string; width: string } {
+  switch (risk) {
+    case "high":
+      return { color: "#f85149", width: "3px" }; // thick red
+    case "medium":
+      return { color: "#d29922", width: "2px" }; // medium yellow
+    case "low":
+      return { color: "#238636", width: "1px" }; // thin green
+    default:
+      return { color: "#8b949e", width: "1px" }; // gray = unknown / missing
+  }
+}
+
+/** GraphResponse 节点 -- 对齐 engine_core::GraphNode(JSON key `type`)。 */
 export interface GraphNodeDto {
   id: string;
   label: string;
@@ -69,7 +100,7 @@ export interface GraphNodeDto {
   properties: Record<string, unknown>;
 }
 
-/** GraphResponse 边 —— 对齐 engine_core::GraphEdge。 */
+/** GraphResponse 边 -- 对齐 engine_core::GraphEdge。 */
 export interface GraphEdgeDto {
   id: string;
   source: string;
@@ -78,7 +109,7 @@ export interface GraphEdgeDto {
   properties: Record<string, unknown>;
 }
 
-/** GraphResponse summary —— 对齐 engine_core::GraphSummary。 */
+/** GraphResponse summary -- 对齐 engine_core::GraphSummary。 */
 export interface GraphSummaryDto {
   total_nodes: number;
   total_edges: number;
@@ -86,7 +117,7 @@ export interface GraphSummaryDto {
   health_counts: Record<string, number>;
 }
 
-/** 三层契约 B 层图响应 —— 对齐 engine_core::GraphResponse。 */
+/** 三层契约 B 层图响应 -- 对齐 engine_core::GraphResponse。 */
 export interface GraphResponse {
   nodes: GraphNodeDto[];
   edges: GraphEdgeDto[];
@@ -96,19 +127,30 @@ export interface GraphResponse {
 /**
  * 把后端 GraphResponse 映射成 Cytoscape elements。
  *
- * 纯映射 —— 去重 / 连边 / 悬空过滤都已在 Rust(`facts_to_graph`)完成,这里
- * 不做任何图逻辑,只做 node→shape + label 拼装。
+ * 纯映射 -- 去重 / 连边 / 悬空过滤都已在 Rust(`facts_to_graph`)完成,这里
+ * 不做任何图逻辑,只做 node->shape/health/risk + label 拼装。health/risk 走
+ * `data(fill)` / `data(borderColor)` / `data(borderWidth)` mapper 上色。
  */
 export function graphToElements(graph: GraphResponse): ElementDefinition[] {
-  const nodes: ElementDefinition[] = graph.nodes.map((n) => ({
-    group: "nodes",
-    data: {
-      id: n.id,
-      label: `${n.type}\n${n.label}`,
-      resourceType: n.type,
-      shape: shapeFor(n.type),
-    },
-  }));
+  const nodes: ElementDefinition[] = graph.nodes.map((n) => {
+    const health = String(n.properties.health_status ?? "");
+    const risk = String(n.properties.risk_level ?? "");
+    const border = riskBorder(risk);
+    return {
+      group: "nodes",
+      data: {
+        id: n.id,
+        label: `${n.type}\n${n.label}`,
+        resourceType: n.type,
+        shape: shapeFor(n.type),
+        health,
+        risk,
+        fill: healthFill(health),
+        borderColor: border.color,
+        borderWidth: border.width,
+      },
+    };
+  });
   const edges: ElementDefinition[] = graph.edges.map((e) => ({
     group: "edges",
     data: {
@@ -130,12 +172,13 @@ const STYLE: StylesheetCSS[] = [
       "text-valign": "center",
       "text-halign": "center",
       "font-size": "10px",
-      "background-color": "#3fb950", // green = healthy(本期固定)
-      "border-color": "#238636", // thin green border = low risk
-      "border-width": "1px",
+      // fill = health / border = risk -- 经 data(...) mapper 从 node data 取色
+      "background-color": "data(fill)",
+      "border-color": "data(borderColor)",
+      "border-width": "data(borderWidth)",
       color: "#fff",
-      "text-outline-color": "#1f6b30",
-      "text-outline-width": "1px",
+      "text-outline-color": "#1f2328",
+      "text-outline-width": "2px",
       width: "70px",
       height: "70px",
     },
@@ -159,6 +202,10 @@ const STYLE: StylesheetCSS[] = [
   {
     selector: "node[resourceType='Service']",
     css: { shape: "diamond", width: "75px", height: "75px" },
+  },
+  {
+    selector: "node[resourceType='Deployment']",
+    css: { shape: "round-octagon", width: "80px", height: "80px" },
   },
   {
     selector: "edge",
@@ -194,7 +241,7 @@ export function TopologyView({ graph }: Props) {
     };
   }, []);
 
-  // graph 变化 → 全量替换 elements + 重跑 layout
+  // graph 变化 -> 全量替换 elements + 重跑 layout
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;

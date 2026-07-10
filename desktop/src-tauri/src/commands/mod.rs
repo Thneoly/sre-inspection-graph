@@ -12,3 +12,4 @@
 pub mod system;
 pub mod topology;
 pub mod wasm;
+pub mod proxy;

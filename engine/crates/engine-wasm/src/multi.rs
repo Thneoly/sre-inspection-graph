@@ -32,6 +32,18 @@ use tokio::sync::Mutex;
 use crate::runtime::{SyncOutcome, WasmConnector};
 use crate::{ManifestFile, ModuleManifest};
 
+/// 选某 connector 的 sync config:manifest `config` 优先,缺则回退全局 broadcast。
+///
+/// Phase 2.7 起每个 connector 可在 manifest 自带 per-connector config
+/// (k8s 拿 `{api_base,...}`、prometheus 拿 `{prometheus_url,...}`),[`WasmRuntime::sync_all`]
+/// 据此逐 connector 分发而非一刀切广播。无 manifest config 的 connector 回退调用方传入的
+/// `global`,向后兼容(老调用方传 `"{}"` 仍工作)。
+pub fn select_config(manifest_config: Option<&serde_json::Value>, global: &str) -> String {
+    manifest_config
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| global.to_string())
+}
+
 /// 单个已加载 connector 的运行时条目。
 ///
 /// `manifest` 字段用 `ModuleManifest` 平移,方便 `sync_all` 拿 name / sync_interval
@@ -109,6 +121,12 @@ impl WasmRuntime {
                 // Phase 2 只跑 connector,rule/handler 各自有独立 world 待补
                 continue;
             }
+            if !module.enabled {
+                // manifest 显式 enabled=false -> 跳过(scaffolding connector 在真集群
+                // 阶段禁用,不删条目以便后续复测)。不进 load_errors。
+                tracing::debug!(name = %module.name, "module disabled in manifest, skipping");
+                continue;
+            }
             let wasm_path = modules_root.join(&module.wasm_path);
             if !wasm_path.exists() {
                 load_errors.push((
@@ -166,8 +184,8 @@ impl WasmRuntime {
 
     /// 顺序跑所有 connector 的 sync,聚合 Fact 进单一 [`FactBatch`]。
     ///
-    /// `config_json` 是 connector 共享的 sync 入参(Phase 3 起改成 per-connector
-    /// 从 manifest 读 `[modules.config]` 段)。返回:
+    /// `config_json` 是**全局兜底** sync 入参:每 connector 优先用 manifest 自带
+    /// per-connector `config`(见 [`select_config`]),无则回退到 `config_json`。返回:
     ///
     /// - `batch` —— 全部 connector 产出的 [`engine_core::Fact`] 聚合后的批,可直接
     ///   `.to_record_batch()` 走 Arrow
@@ -179,7 +197,8 @@ impl WasmRuntime {
         let mut total_duration_ms: u64 = 0;
 
         for entry in &self.entries {
-            let outcome = entry.run_sync(config_json).await;
+            let cfg = select_config(entry.manifest.config.as_ref(), config_json);
+            let outcome = entry.run_sync(&cfg).await;
             total_duration_ms = total_duration_ms.saturating_add(outcome.duration_ms);
             total_errors = total_errors.saturating_add(outcome.errors.len() as u64);
 

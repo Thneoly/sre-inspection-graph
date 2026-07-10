@@ -99,7 +99,7 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
 2026 Q2   ✅ Phase 0 + Phase 1 完成:A→G + mock 拓扑视图 + Blog Part 1 + GUI verifier + 首屏 polish
   ↓
-2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅ + 2.4 GraphResponse DTO ✅ + 2.5 Identity Resolver v0(ChangeSet + materialized 表)✅ + 2.6 Prometheus connector(首个 http-client capability 消费方)✅ + 2.6b 真实 K8s connector(via kubectl proxy,真集群验证)✅
+2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅ + 2.4 GraphResponse DTO ✅ + 2.5 Identity Resolver v0(ChangeSet + materialized 表)✅ + 2.6 Prometheus connector(首个 http-client capability 消费方)✅ + 2.6b 真实 K8s connector(via kubectl proxy,真集群验证)✅ + 2.7 metric->topology health 合并(engine-identity field-ownership v0)+ desktop 托管 kubectl proxy + per-connector manifest config + 真集群拓扑真色(fill=health/border=risk)✅
 2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
 2027 Q1   Phase 3:PRD-006 + 复刻 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
 2027 Q2   Phase 4:复刻 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
@@ -115,6 +115,8 @@ PRD-005 实施时遵循 doc/14 的 Rust+WASM 路径 + doc/15 的三层契约。
 - `desktop/src/views/TopologyView.test.ts` 覆盖 `graphToElements`(GraphResponse → Cytoscape elements:nodes-first 顺序、type→shape、`type\nlabel` 标签、edge `edgeType` 透传、空图);`engine-core` `graph.rs` 8 个单测覆盖去重/父子边/悬空过滤/label 优先级/risk·health 固定桶统计/非 topology 忽略/serde 字段名;`engine-identity` 8 单测;`engine-storage` 7 个 SQLite 单测覆盖 migrate/upsert/latest_topology/materialized 往返。
 - Phase 2.6 Prometheus connector 验证:`modules/connectors/prometheus`(首个消费 `http-client` capability 的 guest)`cargo wasi-build` 出 `prometheus.wasm`;host e2e `engine/crates/engine-wasm/tests/prometheus_http_e2e.rs` 两 case —— (1) mock Prom HTTP server 返 canned JSON + 申明 `http-client` → guest GET `/api/v1/query` 拿 bytes → 解析两条 sample 成 metric Fact(`service:local:otel-demo:cartservice` value=42.5 / `frontend` value=7);(2) 不申明 `http-client` → host deny-by-default 返 `Unauthorized`,guest 0 fact + error note。`engine-cli tick` 确认 3 connector 全加载、prometheus 空 url 优雅跳过。
 - Phase 2.6b 真实 K8s connector 验证:`modules/connectors/k8s`(经本地 `kubectl proxy` 明文 HTTP 拉 API server,TLS+认证留 proxy)。纯 mapper 7 个 host 单测(canned K8s JSON:owner 链 Pod→RS→Deploy、悬空 owner 退化 namespace、health normal/warning/critical、Node Ready 条件、全层级 parent);**真集群 e2e**(`tests/k8s_live_e2e.rs`,env `K8S_PROXY_BASE` gated)对真实 otel-demo:`kubectl proxy --port=8001` → sync 拉 **71 fact / 0 error**(Node=3 / Deployment=22 / Pod=22 / Service=22 + cluster + ns),pod parent 全解析无悬空;再走 `engine_core::facts_to_graph` 成 `GraphResponse{nodes:71, edges:70, risk{high:1,medium:4,low:66}, health{critical:1,warning:4,normal:66}}` —— crashloop 的 cartservice 真实显示 critical。
+
+- Phase 2.7 metric->topology health 合并 + kubectl proxy 托管 + 真集群拓扑验证:(1) `engine-identity` `health_merge` 8 单测(metric 阈值边界、worst-severity 合并、不降级 k8s critical、多 metric 取最严重、attributes canonical 重排);(2) `engine-storage` `latest_metric_facts`(最新 sync 的 metric)+ `select_config`(per-connector manifest config 分发)单测;(3) `commands/proxy.rs` 5 单测(kubectl 路径解析 + TCP 就绪探测 mock);(4) TopologyView vitest 7(`healthFill`/`riskBorder` + `data(fill)`/`data(borderColor)` mapper 上色);(5) **真集群 headless**:`kubectl proxy --port=8001` -> `K8S_PROXY_BASE=http://127.0.0.1:8001 cargo test k8s_live_e2e` 71 fact/0 error(Node=3/Deploy=22/Pod=22/Svc=22,health{normal:67,warning:4});`engine-cli tick` 用真实 manifest 经 per-connector config(api_base 从 manifest,非 CLI)拉 k8s **71 fact**,prometheus OOM 0 fact(符合预期,merge no-op)。GUI 渲染(真色)由用户 X11 验。
 
 ## 📝 文档约定
 

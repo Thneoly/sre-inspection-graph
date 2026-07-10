@@ -18,7 +18,7 @@ pub mod http_host;
 /// `sync_all` 一次跑完,`tick_loop` 周期跑。
 pub mod multi;
 
-pub use multi::{ConnectorEntry, SyncSummary, WasmRuntime};
+pub use multi::{select_config, ConnectorEntry, SyncSummary, WasmRuntime};
 pub use runtime::{HostFact, SyncOutcome, WasmConnector};
 
 /// 模块声明使用的 WASI ABI 版本。
@@ -80,10 +80,30 @@ pub struct ModuleManifest {
     /// 走 [`default_sync_interval_seconds`]。
     #[serde(default = "default_sync_interval_seconds")]
     pub sync_interval_seconds: u64,
+    /// 该模块是否启用加载。
+    ///
+    /// 缺省 `true`。设 `false` -> [`WasmRuntime::from_manifest`] 跳过该模块(不加载、
+    /// 不进 load_errors)。用于在不删 manifest 条目的前提下禁用 scaffolding connector
+    /// (如 hello-world / k8s-mini),让真集群阶段只跑 k8s / prometheus。
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// 该 connector 的 per-connector sync config(TOML inline table -> JSON object)。
+    ///
+    /// 缺省 `None` -> `sync_all` 回退到调用方传入的全局 broadcast config(向后兼容)。
+    /// 设值后 [`WasmRuntime::sync_all`] 走 [`select_config`] 把它序列化成 JSON 字符串
+    /// 单独喂给该 connector,而不是一刀切广播。这样 k8s connector 拿 `{api_base,...}`,
+    /// prometheus 拿 `{prometheus_url,...}`,互不串扰。
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
     /// 二进制 sha256(可选)。Phase 2 起对 enabled 模块强制校验,
     /// Phase 1 留空即可。
     #[serde(default)]
     pub sha256: String,
+}
+
+/// `enabled` 缺省值 -- `true`(不写就是启用)。
+pub fn default_enabled() -> bool {
+    true
 }
 
 /// `sync_interval_seconds` 缺省值 —— 30s,与 PRD-004 connector 现网默认一致。
@@ -127,6 +147,8 @@ mod tests {
             capabilities: vec![],
             wasi_version: WasiVersion::P2,
             sync_interval_seconds: 30,
+            enabled: true,
+            config: None,
             sha256: String::new(),
         };
         let s = serde_json::to_string(&m).unwrap();
@@ -134,6 +156,43 @@ mod tests {
         assert_eq!(back.name, "hello-world");
         assert_eq!(back.wasi_version, WasiVersion::P2);
         assert_eq!(back.sync_interval_seconds, 30);
+        assert!(back.enabled);
+        assert!(back.config.is_none());
+    }
+
+    #[test]
+    fn parses_enabled_false_and_per_connector_config() {
+        let toml = r#"
+schema_version = "1"
+
+[[modules]]
+name = "k8s"
+type = "connector"
+wasm_path = "x.wasm"
+version = "0.1.0"
+capabilities = ["http-client"]
+enabled = false
+config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo" }
+"#;
+        let parsed = ManifestFile::from_toml_str(toml).expect("should parse");
+        let m = &parsed.modules[0];
+        assert!(!m.enabled);
+        let cfg = m.config.as_ref().expect("config present");
+        assert_eq!(cfg["api_base"], "http://127.0.0.1:8001");
+        assert_eq!(cfg["cluster"], "vm-cluster");
+        assert_eq!(cfg["namespace"], "otel-demo");
+    }
+
+    #[test]
+    fn select_config_prefers_manifest_over_global() {
+        // manifest config -> 序列化成 JSON 字符串
+        let cfg = serde_json::json!({ "api_base": "http://127.0.0.1:8001" });
+        assert_eq!(
+            select_config(Some(&cfg), "{}"),
+            r#"{"api_base":"http://127.0.0.1:8001"}"#
+        );
+        // 无 manifest config -> 回退全局 broadcast
+        assert_eq!(select_config(None, r#"{"cluster":"demo"}"#), r#"{"cluster":"demo"}"#);
     }
 
     #[test]

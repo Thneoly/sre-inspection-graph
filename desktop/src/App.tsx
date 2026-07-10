@@ -45,6 +45,15 @@ interface SyncSummaryDto {
   changes: ChangeSummaryDto;
 }
 
+/** desktop 托管的 kubectl proxy 状态(Phase 2.7)。 */
+interface ProxyStatusDto {
+  running: boolean;
+  port: number;
+  api_base: string;
+  pid: number | null;
+  message: string;
+}
+
 export default function App() {
   const [version, setVersion] = useState<string>("loading...");
   const [bootErr, setBootErr] = useState<string | null>(null);
@@ -53,6 +62,9 @@ export default function App() {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncErr, setSyncErr] = useState<string | null>(null);
+  const [proxy, setProxy] = useState<ProxyStatusDto | null>(null);
+  const [proxyBusy, setProxyBusy] = useState(false);
+  const [proxyErr, setProxyErr] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<string>("get_app_version")
@@ -64,32 +76,67 @@ export default function App() {
     invoke<GraphResponse>("get_graph")
       .then(setGraph)
       .catch((e) => setBootErr(`get_graph: ${e}`));
+    invoke<ProxyStatusDto>("proxy_status")
+      .then(setProxy)
+      .catch((e) => setBootErr(`proxy_status: ${e}`));
   }, []);
+
+  async function refreshGraph() {
+    const g = await invoke<GraphResponse>("get_graph");
+    setGraph(g);
+  }
 
   async function handleSync() {
     setSyncing(true);
     setSyncErr(null);
     try {
-      // 给 k8s-mini 传 with_topology=true,让它吐分层 mock(Cluster + Node +
-      // Namespace + Pod + Service);hello-world 不读 config,这段对它无害。
-      // Tauri 2.x 自动把 JS camelCase 转 Rust snake_case;此处用 snake 也可,
-      // 显式保险一些。
-      const configJson = JSON.stringify({
-        cluster: "demo",
-        namespaces: ["default", "app"],
-        with_topology: true,
-      });
+      // Phase 2.7 起 per-connector config 在 manifest 里(k8s 拿 api_base、prom 拿
+      // prometheus_url),这里传 "{}" 作全局兜底。无 manifest config 的 connector
+      // 才回退用它。
+      const configJson = "{}";
       const s = await invoke<SyncSummaryDto>("sync_all_now", {
         configJson,
       });
       setSummary(s);
-      // sync_all_now 已把 facts upsert 到 SQLite;回读成图的 GraphResponse 渲染。
-      const g = await invoke<GraphResponse>("get_graph");
-      setGraph(g);
+      // sync_all_now 已把 facts upsert + resolve(+merge)->diff->apply 到 SQLite;
+      // 回读成图的 GraphResponse 渲染。
+      await refreshGraph();
     } catch (e) {
       setSyncErr(String(e));
     } finally {
       setSyncing(false);
+    }
+  }
+
+  /** 启动 desktop 托管的 kubectl proxy,成功后顺手 sync 一次拉真集群拓扑。 */
+  async function handleConnect() {
+    setProxyBusy(true);
+    setProxyErr(null);
+    try {
+      const p = await invoke<ProxyStatusDto>("start_kubectl_proxy", {
+        port: 8001,
+      });
+      setProxy(p);
+      if (p.running) {
+        await handleSync();
+      }
+    } catch (e) {
+      setProxyErr(String(e));
+    } finally {
+      setProxyBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setProxyBusy(true);
+    setProxyErr(null);
+    try {
+      const p = await invoke<ProxyStatusDto>("stop_kubectl_proxy");
+      setProxy(p);
+    } catch (e) {
+      setProxyErr(String(e));
+    } finally {
+      setProxyBusy(false);
     }
   }
 
@@ -105,7 +152,7 @@ export default function App() {
     >
       <h1 style={{ margin: 0 }}>SRE Inspection Graph</h1>
       <p style={{ color: "#666", marginTop: "0.25rem" }}>
-        Phase 1 — Tauri ↔ engine-wasm 桥接
+        Phase 2.7 — 真集群拓扑 + kubectl proxy 托管 + metric health 合并
       </p>
       <p style={{ color: "#888", fontSize: "0.875rem" }}>
         engine-core 版本: <code>{version}</code>
@@ -117,22 +164,66 @@ export default function App() {
 
       <section style={heroSectionStyle}>
         <div>
+          <h2 style={{ marginTop: 0, marginBottom: "0.5rem" }}>集群连接</h2>
+          <p style={{ marginTop: 0, color: "#666" }}>
+            desktop 托管 <code>kubectl proxy --port=8001</code>(TLS+认证留 kubeconfig)。
+            连接后 k8s connector 经 <code>api_base</code> 拉真集群拓扑,自动 sync 一次。
+          </p>
+          {proxy && (
+            <p style={{ margin: 0, fontSize: "0.875rem" }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "0.6rem",
+                  height: "0.6rem",
+                  borderRadius: "50%",
+                  background: proxy.running ? "#3fb950" : "#8b949e",
+                  marginRight: "0.4rem",
+                  verticalAlign: "middle",
+                }}
+              />
+              {proxy.running
+                ? `running · ${proxy.api_base} (pid ${proxy.pid ?? "?"})`
+                : "not running"}
+            </p>
+          )}
+          {proxyErr && (
+            <p style={{ margin: "0.25rem 0 0", color: "crimson", fontSize: "0.85rem" }}>
+              {proxyErr}
+            </p>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button
+            onClick={handleConnect}
+            disabled={proxyBusy || (proxy?.running ?? false)}
+            style={btnStyle(proxyBusy || (proxy?.running ?? false))}
+          >
+            {proxyBusy ? "..." : "Connect"}
+          </button>
+          <button
+            onClick={handleDisconnect}
+            disabled={proxyBusy || !(proxy?.running ?? false)}
+            style={btnStyle(proxyBusy || !(proxy?.running ?? false))}
+          >
+            Disconnect
+          </button>
+        </div>
+      </section>
+
+      <section style={{ ...heroSectionStyle, marginTop: "0.75rem" }}>
+        <div>
           <h2 style={{ marginTop: 0, marginBottom: "0.5rem" }}>拓扑同步</h2>
           <p style={{ marginTop: 0, color: "#666" }}>
-            Phase 1 mock:点击后触发 <code>sync_all_now</code>,让 k8s-mini 以{" "}
-            <code>with_topology=true</code> 返回 Cluster / Node / Namespace / Pod / Service。
+            点击触发 <code>sync_all_now</code>:各 connector 按 manifest per-connector
+            config 采集(k8s / prometheus),resolve + metric-health 合并后落 materialized
+            拓扑,前端回读渲染。配色:shape=类型 / fill=health / border=risk。
           </p>
         </div>
         <button
           onClick={handleSync}
           disabled={syncing || connectors.length === 0}
-          style={{
-            padding: "0.6rem 1.1rem",
-            fontSize: "1rem",
-            cursor: connectors.length === 0 ? "not-allowed" : "pointer",
-            opacity: connectors.length === 0 ? 0.5 : 1,
-            whiteSpace: "nowrap",
-          }}
+          style={btnStyle(syncing || connectors.length === 0)}
         >
           {syncing ? "Syncing..." : "Sync all now"}
         </button>
@@ -281,8 +372,8 @@ export default function App() {
           fontSize: "0.875rem",
         }}
       >
-        Phase 2 起从 reference/frontend/src/ 迁入 MainLayout / 多视图 / 真 K8s
-        connector。
+        Phase 2.7:真集群拓扑已通(kubectl proxy 托管 + per-connector config +
+        metric health 合并)。后续从 reference/frontend/src/ 迁入 MainLayout / 多视图。
       </p>
     </main>
   );
@@ -299,6 +390,17 @@ const heroSectionStyle: React.CSSProperties = {
   borderRadius: "8px",
   background: "#f6f8fa",
 };
+
+/** 按钮统一样式;disabled 时灰化 + not-allowed。 */
+function btnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: "0.6rem 1.1rem",
+    fontSize: "1rem",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+    whiteSpace: "nowrap",
+  };
+}
 
 const topologyPlaceholderStyle: React.CSSProperties = {
   height: "480px",

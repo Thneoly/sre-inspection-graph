@@ -69,26 +69,28 @@ graph_data/
 | 增量 | 内容 | 状态 |
 |---|---|---|
 | 2.1 | engine-storage SqliteStorage(raw Fact 落库 + `latest_topology_facts` 去重)| ✅ |
-| 2.2 | Tauri `AppState { runtime, storage }`,`sync_all_now` sync 后 upsert 到 SQLite | ✅ |
+| 2.2 | Tauri `AppState { runtime, storage, proxy }`,`sync_all_now` sync 后 upsert 到 SQLite | ✅ |
 | 2.3 | `get_topology` command + 前端启动从 SQLite 恢复拓扑(重启不 sync 也能渲染)| ✅ |
 | 2.4 | GraphResponse DTO(engine-core `facts_to_graph` + Tauri `get_graph` + 前端改吃 `{nodes,edges,summary}`,对齐 reference `GraphResponse`)| ✅ |
 | 2.5 | engine-identity ChangeSet resolver v0(`resolve`/`diff`/`topology_to_graph`)+ materialized `topology_nodes`/`topology_edges` 表 | ✅ |
 | 2.6 | Prometheus connector WASM 化(首个消费 `http-client` capability:GET `/api/v1/query` → 解析 Prom JSON → metric Fact)| ✅ |
 | 2.6b | 真实 K8s API connector WASM 化(`modules/connectors/k8s` via 本地 kubectl proxy;Deployment/Pod/Service/Node → topology Fact + owner 链 + health;真集群 otel-demo 验证)| ✅ |
 
+| 2.7 | metric->topology health 合并(engine-identity `health_merge`,doc/11 §4.3 field-ownership v0:最严重胜出)+ desktop 托管 kubectl proxy(`commands/proxy.rs`)+ per-connector manifest config(`select_config` + `enabled`)+ Tauri 真集群拓扑(shape=type/fill=health/border=risk 真色);真集群 headless 验证:engine-cli tick k8s 经 manifest api_base 拉 71 fact | ✅ |
+
 ### 关键 crate 入口
 
 - **engine-core**(`engine/crates/engine-core/src/`):`Fact`(WIT `connector.fact` 的 host 规范型,7 字段)+ `fact_schema()`(Arrow Schema)+ `FactBatch`(→ `RecordBatch` 零拷贝转储)。所有下游(storage / query / Arrow)只认它。`graph.rs` — `GraphResponse { nodes, edges, summary }`(对齐 reference `app/models/graph.py`)+ `facts_to_graph(&[Fact])`:topology-node 去重(newest)、`parent_resource_id` 派生 `CONTAINS` 边、悬空过滤;+ `summarize(&[GraphNode], &[GraphEdge])`(risk/health 固定桶统计的**唯一入口**,`facts_to_graph` 与 engine-identity `topology_to_graph` 共用,不漂移)。**领域逻辑在此,Tauri command 只薄包装**
-- **engine-identity**(`engine/crates/engine-identity/src/`):Identity Resolver **v0**(`resource_id` 直接当 canonical 身份键,不做 correlation-key 合并 / 仲裁 —— 见 doc/11 §4-5 完整版)。`topology.rs` — `Topology { nodes: ResolvedNode[], edges: ResolvedEdge[] }`(持久化形态;`attributes_json` 存 canonical 字符串)+ `resolve(&[Fact])`(复用 `engine_core::facts_to_graph` 派生,再平移)+ `topology_to_graph(&Topology)`(反建前端 `GraphResponse`,summary 复用 `engine_core::summarize`)。`changeset.rs` — `ChangeSet { nodes_upserted, nodes_removed, edges_upserted, edges_removed }` + `ChangeSummary`(计数)+ `diff(current, next)`(身份键 + 内容相等判增删改)。**I/O-free 纯领域逻辑,可单测**;持久化在 engine-storage
+- **engine-identity**(`engine/crates/engine-identity/src/`):Identity Resolver **v0**(`resource_id` 直接当 canonical 身份键,不做 correlation-key 合并 / 仲裁 —— 见 doc/11 §4-5 完整版)。`topology.rs` — `Topology { nodes: ResolvedNode[], edges: ResolvedEdge[] }`(持久化形态;`attributes_json` 存 canonical 字符串)+ `resolve(&[Fact])`(复用 `engine_core::facts_to_graph` 派生,再平移)+ `topology_to_graph(&Topology)`(反建前端 `GraphResponse`,summary 复用 `engine_core::summarize`)。`changeset.rs` — `ChangeSet { nodes_upserted, nodes_removed, edges_upserted, edges_removed }` + `ChangeSummary`(计数)+ `diff(current, next)`(身份键 + 内容相等判增删改)。**I/O-free 纯领域逻辑,可单测**;持久化在 engine-storage。**Phase 2.7** `health_merge.rs` - `HealthThresholds`(内置 prometheus 3 metric 阈值)+ `derive_metric_health(&Fact)`(metric value -> health)+ `merge_metric_health(&Topology, &[metric Fact])`(doc/11 §4.3 field-ownership **v0:最严重胜出** critical>warning>normal,把 prometheus metric health 合进 topology 节点;orchestration 在 resolve 后、diff 前调)
 - **engine-storage**(`engine/crates/engine-storage/src/`):`Storage` trait + `sqlite::SqliteStorage`(feature `sqlite`)。`connect` / `connect_in_memory` / `migrate` / `upsert_facts`(按 `Fact.id` 幂等)/ `latest_topology_facts`(按 `resource_id` 取最新 `topology-node`);**Phase 2.5** 加 `topology_nodes`/`topology_edges` materialized 表 + `materialized_topology()`(读当前拓扑)+ `apply_change_set(&ChangeSet)`(单 tx upsert + delete stale)。`StorageError` 统一错误;`examples/dump_topology.rs` 是 GUI-less 验证 `get_graph` 读路径的小工具。Parquet/Neo4j 仍待后续
 - **engine-wasm**(`engine/crates/engine-wasm/src/`):
   - `runtime.rs` — `WasmConnector`(单 connector,持 wasmtime Store)+ host trait impls(`LoggingHost` / `ClockHost` / `HttpClientHost` for `State`)+ `load(path, capabilities)` / `load_with_http(client)` / `sync` / `health_check`
   - `http_host.rs` — `http-client` capability 纯函数实装(`http_get` + `HostHttpResponse`/`HostHttpError`,刻意与 WIT binding 解耦,可单测)
-  - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest` / `sync_all` / `tick_loop` + `SyncSummary`。**保持 storage-agnostic**,持久化在 orchestration 层(Tauri/CLI)做
-  - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema)+ `WasiVersion`(p2/p3 enum)
+  - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest`(跳过 `enabled=false`)/ `sync_all` / `tick_loop` + `SyncSummary` + `select_config`(Phase 2.7:per-connector `config` 优先,无则回退全局 broadcast)。**保持 storage-agnostic**,持久化在 orchestration 层(Tauri/CLI)做
+  - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema;Phase 2.7 加 `enabled: bool` + `config: Option<serde_json::Value>`)+ `WasiVersion`(p2/p3 enum)
 - **engine-cli**(`engine/crates/engine-cli/src/main.rs`):headless binary。`tick` 单次;`tick --loop --interval=30` 持续。`MODULES_ROOT` env 覆盖 manifest 根
-- **desktop/src-tauri**:`lib.rs::run()` 启动 `WasmRuntime` + 在 `setup` 里初始化 `SqliteStorage`(路径取 `SRE_GRAPH_DB_PATH` 或 app data dir,migrate)→ `.manage(AppState { runtime, storage })`。command:`list_connectors` / `sync_all_now`(sync → upsert raw facts → **resolve+diff+apply_change_set** 维护 materialized 拓扑,返回 `changes` 增量计数)/ `get_topology`(读 latest topology facts,raw `FactDto[]`,留诊断用)/ `get_graph`(**Phase 2.5 起**读 materialized 拓扑 → `engine_identity::topology_to_graph` → `GraphResponse`,前端拓扑渲染走这条)
-- **desktop/src/views/TopologyView.tsx**:Phase 2.4 视图,吃 `GraphResponse`。`graphToElements(graph)` 把 `{nodes,edges}` 纯映射成 Cytoscape elements(去重/连边/悬空过滤已在 Rust 完成,前端不再解 JSON);有 Vitest 覆盖。`App.tsx` 启动 + sync 后均调 `get_graph` 拉成图渲染;sync 后 header 显示 `changes` 增量(`Δ +Nn/Me −Kn/Le`)
+- **desktop/src-tauri**:`lib.rs::run()` 启动 `WasmRuntime` + 在 `setup` 里初始化 `SqliteStorage`(路径取 `SRE_GRAPH_DB_PATH` 或 app data dir,migrate)→ `.manage(AppState { runtime, storage })`。command:`list_connectors` / `sync_all_now`(sync → upsert raw facts → **resolve+merge_metric_health+diff+apply_change_set** 维护 materialized 拓扑,返回 `changes` 增量计数)/ `get_topology`(读 latest topology facts,raw `FactDto[]`,留诊断用)/ `get_graph`(**Phase 2.5 起**读 materialized 拓扑 → `engine_identity::topology_to_graph` → `GraphResponse`,前端拓扑渲染走这条)。Phase 2.7 加 `commands/proxy.rs`(`start_kubectl_proxy`/`stop_kubectl_proxy`/`proxy_status` 托管 `kubectl proxy --port=8001`,TCP 就绪探测;`AppState.proxy: Mutex<Option<Child>>` 持子进程,`RunEvent::Exit` kill 防孤儿)
+- **desktop/src/views/TopologyView.tsx**:Phase 2.4 视图,吃 `GraphResponse`。`graphToElements(graph)` 把 `{nodes,edges}` 纯映射成 Cytoscape elements(去重/连边/悬空过滤已在 Rust 完成,前端不再解 JSON);有 Vitest 覆盖。Phase 2.7 起 fill=health / border=risk 真色(shape=type 不变,对齐 reference graphStyles),经 `healthFill`/`riskBorder` helper + `data(fill)`/`data(borderColor)` mapper 上色。`App.tsx` 启动 + sync 后均调 `get_graph` 拉成图渲染;sync 后 header 显示 `changes` 增量(`Δ +Nn/Me −Kn/Le`)
 
 ### 常用命令
 
@@ -139,7 +141,7 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - [x] Phase 2.5:Identity Resolver v0(engine-identity `resolve`/`diff`/`topology_to_graph` + engine-storage materialized `topology_nodes`/`topology_edges` + Tauri sync 维护 + `get_graph` 改读 materialized;headless `dump_topology` 验证 + 全栈 cargo/vitest 绿)
 - [x] Phase 2.6:Prometheus connector WASM 化(`modules/connectors/prometheus` 首个消费 http-client capability;GET `/api/v1/query` → Prom JSON → metric Fact;mock-server e2e + deny-by-default 验证)
 - [x] Phase 2.6b:真实 K8s API connector WASM 化(`modules/connectors/k8s` 经本地 `kubectl proxy` 明文 HTTP 拉 API;纯 mapper 把 Deployment/ReplicaSet/Pod/Service/Node 映射成 topology Fact —— owner 链 Pod→RS→Deploy、health 由 phase/ready 推导、parent 层级;真集群 otel-demo 验证:71 fact / GraphResponse nodes=71 edges=70 health{critical:1,warning:4})。**架构**:WASM 只用 http-client,TLS+认证留 kubectl proxy,不碰凭据、不加 capability
-- [ ] Phase 2.7(可选):metric→topology health 合并(需 Identity Resolver field-ownership,见 doc/11 §4.3)+ desktop 托管 kubectl proxy 生命周期 + Tauri 视图迁真集群拓扑
+- [x] Phase 2.7(可选):metric→topology health 合并(需 Identity Resolver field-ownership,见 doc/11 §4.3)+ desktop 托管 kubectl proxy 生命周期 + Tauri 视图迁真集群拓扑。✅ 完成:health_merge/storage/proxy/select_config/vitest 单测全绿 + 真集群 headless(engine-cli tick k8s 经 manifest api_base 拉 71 fact;prometheus OOM 0 fact 符合预期,merge no-op)
 - [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
 - [ ] Phase 4:engine-reports(PRD-003)复刻
 

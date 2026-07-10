@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   graphToElements,
+  healthFill,
+  riskBorder,
   shapeFor,
   type GraphResponse,
 } from "./TopologyView";
@@ -94,5 +96,72 @@ describe("shapeFor", () => {
     expect(shapeFor("Cluster")).toBe("hexagon");
     expect(shapeFor("Namespace")).toBe("round-rectangle");
     expect(shapeFor("UnknownThing")).toBe("ellipse");
+  });
+});
+
+describe("healthFill", () => {
+  it("maps health to fill colors, unknown/missing -> gray", () => {
+    expect(healthFill("normal")).toBe("#3fb950");
+    expect(healthFill("warning")).toBe("#d29922");
+    expect(healthFill("critical")).toBe("#f85149");
+    expect(healthFill("unknown")).toBe("#8b949e");
+    expect(healthFill(undefined)).toBe("#8b949e");
+    expect(healthFill(null)).toBe("#8b949e");
+  });
+});
+
+describe("riskBorder", () => {
+  it("maps risk to border color + width, unknown/missing -> gray thin", () => {
+    expect(riskBorder("high")).toEqual({ color: "#f85149", width: "3px" });
+    expect(riskBorder("medium")).toEqual({ color: "#d29922", width: "2px" });
+    expect(riskBorder("low")).toEqual({ color: "#238636", width: "1px" });
+    expect(riskBorder("unknown")).toEqual({ color: "#8b949e", width: "1px" });
+    expect(riskBorder(undefined)).toEqual({ color: "#8b949e", width: "1px" });
+  });
+});
+
+describe("graphToElements health/risk", () => {
+  it("carries health/risk onto element data and derives fill/border", () => {
+    const elements = graphToElements(
+      graph({
+        nodes: [
+          {
+            id: "pod:a",
+            label: "a",
+            type: "Pod",
+            properties: { health_status: "critical", risk_level: "high" },
+          },
+          {
+            id: "pod:b",
+            label: "b",
+            type: "Pod",
+            properties: { health_status: "normal", risk_level: "low" },
+          },
+          {
+            id: "pod:c",
+            label: "c",
+            type: "Pod",
+            properties: {},
+          },
+        ],
+        edges: [],
+      })
+    );
+    const a = elements[0].data;
+    expect(a.health).toBe("critical");
+    expect(a.risk).toBe("high");
+    expect(a.fill).toBe("#f85149"); // critical -> red
+    expect(a.borderColor).toBe("#f85149"); // high -> red
+    expect(a.borderWidth).toBe("3px");
+
+    const b = elements[1].data;
+    expect(b.fill).toBe("#3fb950"); // normal -> green
+    expect(b.borderColor).toBe("#238636"); // low -> green
+
+    // 缺 health/risk -> gray fill + gray thin border
+    const c = elements[2].data;
+    expect(c.fill).toBe("#8b949e");
+    expect(c.borderColor).toBe("#8b949e");
+    expect(c.borderWidth).toBe("1px");
   });
 });

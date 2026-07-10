@@ -32,6 +32,10 @@ anyhow             = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Phase 2.7 - kubectl proxy 生命周期托管(process)+ 就绪探测(net/time)。
+# Tauri 已拉 tokio 1.x,这里显式启用 process/net/time/sync 特性;Cargo 特性合并。
+tokio = { version = "1", features = ["process", "net", "time", "sync", "rt-multi-thread", "macros"] }
+
 # engine path deps(按 doc/16 §3 配置)
 engine-core     = { path = "../../engine/crates/engine-core" }
 engine-identity = { path = "../../engine/crates/engine-identity" }

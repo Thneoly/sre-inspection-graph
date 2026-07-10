@@ -150,14 +150,30 @@ pub async fn sync_all_now(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 2. Identity Resolver v0:resolve(最新 topology facts)→ diff(当前 materialized)
-    //    → apply。materialized 表是 get_graph 的读源。
+    // 2. Identity Resolver v0:resolve(最新 topology facts)→ 合入 metric-derived
+    //    health(doc/11 §4.3)→ diff(当前 materialized)→ apply。materialized 表是
+    //    get_graph 的读源。
     let facts = state
         .storage
         .latest_topology_facts()
         .await
         .map_err(|e| e.to_string())?;
-    let next = engine_identity::resolve(&facts);
+    let mut next = engine_identity::resolve(&facts);
+    // Phase 2.7 - 把 prometheus metric Fact 按阈值推成 health,合进 topology 节点
+    // (worst-severity v0 仲裁,doc/11 §4.3)。真 Prom 不可用时 metric_facts 为空
+    // -> no-op,k8s phase health 照常。
+    let metric_facts = state
+        .storage
+        .latest_metric_facts()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !metric_facts.is_empty() {
+        next = engine_identity::merge_metric_health(
+            &next,
+            &metric_facts,
+            &engine_identity::HealthThresholds::default(),
+        );
+    }
     let current = state
         .storage
         .materialized_topology()

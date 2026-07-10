@@ -17,11 +17,13 @@
 pub mod commands;
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use engine_storage::SqliteStorage;
 use engine_wasm::{ManifestFile, WasmRuntime};
 use tauri::Manager;
 
+use commands::proxy::{proxy_status, start_kubectl_proxy, stop_kubectl_proxy};
 use commands::system::get_app_version;
 use commands::topology::{get_graph, get_topology};
 use commands::wasm::{list_connectors, sync_all_now};
@@ -116,6 +118,9 @@ pub struct AppState {
     pub runtime: WasmRuntime,
     /// Local SQLite storage.
     pub storage: SqliteStorage,
+    /// desktop 托管的 kubectl proxy 子进程(Phase 2.7)。`std::sync::Mutex` 便于在
+    /// `RunEvent::Exit` 同步回调里 kill;command 端持锁时间极短(不跨 await)。
+    pub proxy: Mutex<Option<tokio::process::Child>>,
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
@@ -145,7 +150,11 @@ pub fn run() {
                 Ok::<_, String>(storage)
             })?;
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
-            app.manage(AppState { runtime, storage });
+            app.manage(AppState {
+                runtime,
+                storage,
+                proxy: Mutex::new(None),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -154,7 +163,22 @@ pub fn run() {
             sync_all_now,
             get_topology,
             get_graph,
+            start_kubectl_proxy,
+            stop_kubectl_proxy,
+            proxy_status,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 退出时杀掉托管的 kubectl proxy,不留孤儿进程。
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut guard) = state.proxy.lock() {
+                        if let Some(mut child) = guard.take() {
+                            let _ = child.start_kill();
+                        }
+                    }
+                }
+            }
+        });
 }

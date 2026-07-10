@@ -4812,6 +4812,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

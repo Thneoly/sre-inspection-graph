@@ -18,12 +18,6 @@ fn engine_cli_binary() -> Option<PathBuf> {
     option_env!("CARGO_BIN_EXE_engine-cli").map(PathBuf::from)
 }
 
-fn hello_world_wasm_built() -> bool {
-    modules_root()
-        .join("target/wasm32-wasip2/release/hello_world.wasm")
-        .exists()
-}
-
 #[test]
 fn banner_runs_without_subcommand() {
     let Some(bin) = engine_cli_binary() else {
@@ -53,7 +47,9 @@ fn tick_loads_manifest_and_emits_facts() {
     let Some(bin) = engine_cli_binary() else {
         return;
     };
-    if !hello_world_wasm_built() {
+    let hello_wasm = modules_root()
+        .join("target/wasm32-wasip2/release/hello_world.wasm");
+    if !hello_wasm.exists() {
         eprintln!(
             "skipping: hello_world.wasm not built. \
              Run `cd modules && cargo wasi-build` first."
@@ -61,18 +57,39 @@ fn tick_loads_manifest_and_emits_facts() {
         return;
     }
 
+    // 用合成 manifest(只启 hello-world)跑 tick,而非 repo manifest -- 后者 Phase 2.7
+    // 起为真集群配置(hello-world/k8s-mini disabled,k8s/prometheus 需外部 proxy/prom),
+    // 不适合做确定性 smoke。wasm_path 用绝对路径(TOML literal string,不转义反斜杠);
+    // from_manifest 的 modules_root.join(absolute) 直取绝对路径,故 MODULES_ROOT 只需放
+    // manifest.toml 的临时目录。
+    let tmp = std::env::temp_dir().join(format!("sre-cli-smoke-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mkdir tmp");
+    let manifest = format!(
+        "schema_version = \"1\"\n\n\
+         [[modules]]\n\
+         name = \"hello-world\"\n\
+         type = \"connector\"\n\
+         wasm_path = '{}'\n\
+         version = \"0.1.0\"\n\
+         capabilities = []\n\
+         sync_interval_seconds = 60\n",
+        hello_wasm.display()
+    );
+    std::fs::write(tmp.join("manifest.toml"), manifest).expect("write manifest");
+
     let out = Command::new(&bin)
         .arg("tick")
-        .env("MODULES_ROOT", modules_root())
+        .env("MODULES_ROOT", &tmp)
         .output()
         .expect("run engine-cli tick");
+    let _ = std::fs::remove_dir_all(&tmp);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
         "tick exited non-zero: stdout={stdout} stderr={stderr}"
     );
-    // 关键标记:summary 段、hello-world 行、arrow 行
+    // 关键标记:summary 段、hello-world 行(确定性 1 fact)、arrow 行
     assert!(stdout.contains("=== tick summary ==="), "summary missing");
     assert!(
         stdout.contains("hello-world: 1 fact(s)"),
@@ -82,16 +99,6 @@ fn tick_loads_manifest_and_emits_facts() {
         stdout.contains("arrow RecordBatch"),
         "arrow summary missing"
     );
-    // 如果 k8s-mini 也 build 了(modules/manifest.toml 默认包含),要看到它
-    if modules_root()
-        .join("target/wasm32-wasip2/release/k8s_mini.wasm")
-        .exists()
-    {
-        assert!(
-            stdout.contains("k8s-mini:"),
-            "k8s-mini summary line missing: {stdout}"
-        );
-    }
 }
 
 #[test]

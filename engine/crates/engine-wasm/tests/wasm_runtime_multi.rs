@@ -14,18 +14,8 @@ fn modules_root() -> PathBuf {
     PathBuf::from(crate_dir).join("../../../modules")
 }
 
-fn read_manifest() -> Option<ManifestFile> {
-    let path = modules_root().join("manifest.toml");
-    let text = std::fs::read_to_string(&path).ok()?;
-    ManifestFile::from_toml_str(&text).ok()
-}
-
 #[tokio::test]
 async fn wasm_runtime_loads_hello_world_from_manifest() {
-    let Some(manifest) = read_manifest() else {
-        eprintln!("skipping: modules/manifest.toml not found");
-        return;
-    };
     let wasm_path = modules_root().join("target/wasm32-wasip2/release/hello_world.wasm");
     if !wasm_path.exists() {
         eprintln!(
@@ -34,6 +24,20 @@ async fn wasm_runtime_loads_hello_world_from_manifest() {
         return;
     }
 
+    // 合成 manifest(只启 hello-world)-- repo manifest Phase 2.7 起为真集群配置
+    // (hello-world disabled),不适合此确定性 from_manifest+sync_all+Arrow 验证。
+    let toml = r#"
+schema_version = "1"
+
+[[modules]]
+name = "hello-world"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/hello_world.wasm"
+version = "0.1.0"
+capabilities = []
+sync_interval_seconds = 60
+"#;
+    let manifest = ManifestFile::from_toml_str(toml).expect("parse manifest");
     let rt = WasmRuntime::from_manifest(&modules_root(), &manifest)
         .await
         .expect("from_manifest");

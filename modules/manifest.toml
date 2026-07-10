@@ -5,10 +5,18 @@
 #
 # wasm_path 是**相对 modules/ 目录**的路径。Cargo workspace 共享一个
 # target/(在 modules/target/),不是 per-crate target/。
+#
+# Phase 2.7 起:
+# - `enabled`(缺省 true)= false 的模块不加载(scaffolding 禁用,条目保留)。
+# - `config`(缺省 None)= per-connector sync config,inline table -> JSON object。
+#   sync_all 逐 connector 分发(见 engine_wasm::select_config),不再一刀切广播。
+#   无 config 的 connector 回退调用方传入的全局 config_json。
 
 schema_version = "1"
 
-# Phase 1 — hello-world 占位 connector,验证 WIT 接口端到端
+# Phase 1 - hello-world 占位 connector,验证 WIT 接口端到端。
+# Phase 2.7 起真集群阶段禁用,只跑 k8s / prometheus。留条目不删 -- 多 connector
+# 编排复测时改回 enabled = true 即可。
 [[modules]]
 name = "hello-world"
 type = "connector"
@@ -16,15 +24,15 @@ wasm_path = "target/wasm32-wasip2/release/hello_world.wasm"
 version = "0.1.0"
 capabilities = []
 sync_interval_seconds = 60
-# WASI ABI 版本 — Phase 1 全 p2(wasm32-wasip2 Tier 2 stable)
+enabled = false
+# WASI ABI 版本 - Phase 1 全 p2(wasm32-wasip2 Tier 2 stable)
 # 切 p3(wasm32-wasip3 Tier 3,要 nightly + -Z build-std)留 doc/16 §3 说明的窗口
 wasi_version = "p2"
-# sha256 留空 — Phase 2 起强制校验
+# sha256 留空 - Phase 2 起强制校验
 sha256 = ""
 
-# Phase 2 E — k8s-mini,第二条 connector,验证 WasmRuntime 多 connector 编排路径。
-# 当前用 config_json 静态读 namespaces 列表;Phase 3 起 http-client capability
-# 接 reqwest 后切真实 K8s API。
+# Phase 2 E - k8s-mini,第二条 connector,验证 WasmRuntime 多 connector 编排路径。
+# Phase 2.7 起真集群阶段禁用 -- 真拓扑由 k8s connector 产,k8s-mini 的 mock 会与之混图。
 [[modules]]
 name = "k8s-mini"
 type = "connector"
@@ -32,13 +40,18 @@ wasm_path = "target/wasm32-wasip2/release/k8s_mini.wasm"
 version = "0.1.0"
 capabilities = ["logging", "clock"]
 sync_interval_seconds = 30
+enabled = false
 wasi_version = "p2"
 sha256 = ""
 
-# Phase 2.6 — prometheus,首个消费 http-client capability 的真实 connector。
+# Phase 2.6 - prometheus,首个消费 http-client capability 的真实 connector。
 # GET {prometheus_url}/api/v1/query 跑 PromQL,解析 Prom JSON 产 metric Fact。
 # capabilities 必须含 "http-client",host 端 deny-by-default 才放行网络调用。
-# config_json 需带 prometheus_url(空则跳过,见 connector 文档)。
+# Phase 2.7 起 per-connector config:prometheus_url / cluster / namespace 走 manifest。
+# 真 Prom 在 vbox 集群 OOMKilled -- 本期 metric 不入图,health 合并
+# (engine_identity::merge_metric_health)在无 metric fact 时 no-op,k8s phase health 照常。
+# 想让 prom 走同一 kubectl proxy:把 prometheus_url 改成
+# http://127.0.0.1:8001/api/v1/namespaces/<ns>/services/<prom-svc>:9090/proxy 即可。
 [[modules]]
 name = "prometheus"
 type = "connector"
@@ -46,12 +59,15 @@ wasm_path = "target/wasm32-wasip2/release/prometheus.wasm"
 version = "0.1.0"
 capabilities = ["logging", "clock", "http-client"]
 sync_interval_seconds = 30
+enabled = true
 wasi_version = "p2"
 sha256 = ""
+config = { prometheus_url = "http://127.0.0.1:9090", cluster = "vm-cluster", namespace = "otel-demo" }
 
-# Phase 2.6b — k8s,真实 Kubernetes connector。走本地 kubectl proxy(明文 HTTP,
-# TLS+认证留 proxy)→ GET /api/v1/... 列资源 → topology Fact。config 带 api_base /
-# cluster / namespace。capabilities 含 http-client。
+# Phase 2.6b - k8s,真实 Kubernetes connector。走本地 kubectl proxy(明文 HTTP,
+# TLS+认证留 proxy)-> GET /api/v1/... 列资源 -> topology Fact。
+# Phase 2.7 起 per-connector config:api_base 指向 desktop 托管的 kubectl proxy(8001),
+# cluster / namespace 为 vbox 集群 otel-demo。capabilities 含 http-client。
 [[modules]]
 name = "k8s"
 type = "connector"
@@ -59,8 +75,10 @@ wasm_path = "target/wasm32-wasip2/release/k8s.wasm"
 version = "0.1.0"
 capabilities = ["logging", "clock", "http-client"]
 sync_interval_seconds = 30
+enabled = true
 wasi_version = "p2"
 sha256 = ""
+config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo" }
 
 # Phase 3+ 起在这里追加 jaeger / flagd / k8s-events real connector
 # 以及 8 个 PRD-001 handler。
