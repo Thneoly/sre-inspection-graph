@@ -31,7 +31,7 @@ graph_data/
 │       ├── engine-storage/     # ✅ Storage trait + SqliteStorage(raw Fact 落库,Phase 2.1)
 │       ├── engine-cli/         # ✅ headless binary(tick 子命令)
 │       ├── engine-testkit/     # 骨架
-│       ├── engine-identity/    # ✅ Identity Resolver v0(resolve/diff/topology_to_graph)
+│       ├── engine-identity/    # ✅ Identity Resolver v0(resolve/diff/topology_to_graph + Phase 2.7 health_merge)
 │       ├── engine-recovery/    # 骨架(Phase 3:PRD-001 复刻)
 │       ├── engine-changes/     # 骨架(Phase 3:PRD-002 复刻)
 │       └── engine-reports/     # 骨架(Phase 4:PRD-003 复刻)

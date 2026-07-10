@@ -42,9 +42,8 @@ sync_interval_seconds = 60
         .await
         .expect("from_manifest");
 
-    // 至少把 hello-world 拉起来 —— 可能有同时加载 k8s-mini 等其它 connector,
-    // 测试在 multi-connector 增加时不要随之碎掉
-    assert!(rt.connector_count() >= 1, "should load >= 1 connector");
+    // 合成 manifest 只启 hello-world,恰好 1 个 connector
+    assert_eq!(rt.connector_count(), 1, "should load exactly hello-world");
     assert!(
         rt.connector_names().contains(&"hello-world"),
         "hello-world should be among loaded connectors, got: {:?}",

@@ -648,6 +648,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn merge_metric_health_flows_through_resolve_diff_apply() {
+        // 验证 sync_all_now 的 part1 接线 seam:resolve -> merge_metric_health
+        // -> diff -> apply,materialized 拓扑反映合并后的 health(prometheus warning
+        // > k8s normal -> warning)。覆盖 merge 输出喂给 diff/apply 的衔接(单测只测
+        // merge 本身,这条测整条 pipeline)。
+        let store = migrated_store().await;
+        // service 节点:k8s 说 normal/low
+        store
+            .upsert_facts(&[fact(
+                "svc1",
+                "service:c:ns:cart",
+                "Service",
+                100,
+                r#"{"health_status":"normal","risk_level":"low"}"#,
+            )])
+            .await
+            .expect("upsert topology fact");
+        // 同 resource_id 的 metric fact:prometheus error_rate=3.0 -> warning
+        store
+            .upsert_facts(&[Fact::new(
+                "m1",
+                "metric",
+                "prometheus",
+                "service:c:ns:cart",
+                "Service",
+                200,
+                r#"{"metric":"span_error_rate_pct","value":3.0}"#,
+            )])
+            .await
+            .expect("upsert metric fact");
+
+        let topo_facts = store
+            .latest_topology_facts()
+            .await
+            .expect("latest topology facts");
+        let metric_facts = store
+            .latest_metric_facts()
+            .await
+            .expect("latest metric facts");
+        assert_eq!(metric_facts.len(), 1);
+
+        // resolve -> merge(prometheus warning > k8s normal -> warning)
+        let mut next = engine_identity::resolve(&topo_facts);
+        next = engine_identity::merge_metric_health(
+            &next,
+            &metric_facts,
+            &engine_identity::HealthThresholds::default(),
+        );
+        assert!(
+            next.nodes[0]
+                .attributes_json
+                .contains(r#""health_status":"warning""#),
+            "merged health should be warning: {}",
+            next.nodes[0].attributes_json
+        );
+
+        // diff(空 materialized)-> apply
+        let current = store
+            .materialized_topology()
+            .await
+            .expect("read empty materialized");
+        assert!(current.is_empty());
+        let cs = engine_identity::diff(&current, &next);
+        assert_eq!(cs.summary().nodes_upserted, 1);
+        store
+            .apply_change_set(&cs)
+            .await
+            .expect("apply change set");
+
+        // materialized 反映合并 health;topology_to_graph summary 也反映
+        let mat = store
+            .materialized_topology()
+            .await
+            .expect("read materialized");
+        assert_eq!(mat.nodes.len(), 1);
+        assert!(mat.nodes[0]
+            .attributes_json
+            .contains(r#""health_status":"warning""#));
+        assert!(mat.nodes[0]
+            .attributes_json
+            .contains(r#""risk_level":"medium""#));
+        let g = engine_identity::topology_to_graph(&mat);
+        assert_eq!(g.summary.health_counts["warning"], 1);
+        assert_eq!(g.summary.health_counts["normal"], 0);
+    }
+
+    #[tokio::test]
     async fn materialized_topology_round_trips_resolve_diff_apply() {
         let store = migrated_store().await;
         // 第一次 sync:cluster → ns → pod
