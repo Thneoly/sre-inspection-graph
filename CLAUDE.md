@@ -32,7 +32,7 @@ graph_data/
 │       ├── engine-cli/         # ✅ headless binary(tick 子命令)
 │       ├── engine-testkit/     # 骨架
 │       ├── engine-identity/    # ✅ Identity Resolver v0(resolve/diff/topology_to_graph + Phase 2.7 health_merge)
-│       ├── engine-recovery/    # 骨架(Phase 3:PRD-001 复刻)
+│       ├── engine-recovery/    # ✅ Phase 3.1:action_defs(8 action)+ cascade dry_run(BFS)
 │       ├── engine-changes/     # 骨架(Phase 3:PRD-002 复刻)
 │       └── engine-reports/     # 骨架(Phase 4:PRD-003 复刻)
 ├── desktop/            # Tauri 2.x 桌面(React 18 + AntD + Cytoscape)
@@ -78,6 +78,19 @@ graph_data/
 
 | 2.7 | metric->topology health 合并(engine-identity `health_merge`,doc/11 §4.3 field-ownership v0:最严重胜出)+ desktop 托管 kubectl proxy(`commands/proxy.rs`)+ per-connector manifest config(`select_config` + `enabled`)+ Tauri 真集群拓扑(shape=type/fill=health/border=risk 真色);真集群 headless 验证:engine-cli tick k8s 经 manifest api_base 拉 71 fact | ✅ |
 
+### Phase 3 进展
+
+> PRD-001(recovery)/ PRD-002(changes)复刻。审批语义已定(doc/14 §9):**桌面单机确认门**(保留 risk->status,丢 reference 的 `approver_team`/24h TTL/多人 approve-reject)。
+
+| 增量 | 内容 | 状态 |
+|---|---|---|
+| 3.1 | engine-recovery `action_defs`(8 action 元数据 + `propagation` 规则 + rule/change 推荐)+ `cascade::dry_run`(BFS blast radius,I/O-free 吃 `&Topology`)+ contract test(移植 reference `TestActionDefs`/`TestDryRun`,合成 9 节点 11 边拓扑) | ✅ |
+| 3.2 | engine-recovery `execution` 管线 + `approval`(单机确认门)+ rollback + 8 mock handler + SQLite executions 表 | ⏳ |
+| 3.3 | engine-recovery `verifiers` + auto-rollback(防递归)+ `chains`(3 模板 × 3 on_failure) | ⏳ |
+| 3.4 | engine-changes `ChangeEvent` 模型 + `record_change` + propagation 反向 BFS | ⏳ |
+| 3.5 | engine-changes frequency + alert 关联 + yaml_diff + correlated_changes + `suggest_for_change` 桥 | ⏳ |
+| 3.6 | Tauri commands(recovery/change_events)+ 视图 + 接 sync_all_now 管线 | ⏳ |
+
 ### 关键 crate 入口
 
 - **engine-core**(`engine/crates/engine-core/src/`):`Fact`(WIT `connector.fact` 的 host 规范型,7 字段)+ `fact_schema()`(Arrow Schema)+ `FactBatch`(→ `RecordBatch` 零拷贝转储)。所有下游(storage / query / Arrow)只认它。`graph.rs` — `GraphResponse { nodes, edges, summary }`(对齐 reference `app/models/graph.py`)+ `facts_to_graph(&[Fact])`:topology-node 去重(newest)、`parent_resource_id` 派生 `CONTAINS` 边、悬空过滤;+ `summarize(&[GraphNode], &[GraphEdge])`(risk/health 固定桶统计的**唯一入口**,`facts_to_graph` 与 engine-identity `topology_to_graph` 共用,不漂移)。**领域逻辑在此,Tauri command 只薄包装**
@@ -89,6 +102,7 @@ graph_data/
   - `multi.rs` — `WasmRuntime`(N 个 `ConnectorEntry`)+ `from_manifest`(跳过 `enabled=false`)/ `sync_all` / `tick_loop` + `SyncSummary` + `select_config`(Phase 2.7:per-connector `config` 优先,无则回退全局 broadcast)。**保持 storage-agnostic**,持久化在 orchestration 层(Tauri/CLI)做
   - `lib.rs` — `ModuleManifest` / `ManifestFile`(manifest.toml schema;Phase 2.7 加 `enabled: bool` + `config: Option<serde_json::Value>`)+ `WasiVersion`(p2/p3 enum)
 - **engine-cli**(`engine/crates/engine-cli/src/main.rs`):headless binary。`tick` 单次;`tick --loop --interval=30` 持续。`MODULES_ROOT` env 覆盖 manifest 根
+- **engine-recovery**(`engine/crates/engine-recovery/src/`):PRD-001 复刻。**Phase 3.1** `action_defs.rs` - 8 个命名 `static ActionDef`(restart_pod/scale_deployment/rollback_deployment/refresh_secret/drain_node/kill_query/restart_service/clear_cache;元数据 + `propagation` 规则 + rule/change 推荐;`kill_query` 例外 medium 不审批)+ `get_action`/`list_actions_filtered`/`suggest_for_rule`/`suggest_for_change`。`cascade.rs` - `dry_run(action_id, target, input_params, &Topology) -> DryRunResult`(I/O-free BFS blast radius,forward/reverse + max_depth + target_type 筛选 + 多规则取 max severity + 排除自身 + 按 (-severity, id) 排序 + 回滚参数:scale 反向 delta / rollback 空 {})。**逐字对齐 reference `action_defs.py`/`cascade.py`,contract test 移植 `TestActionDefs`/`TestDryRun`**。3.2+ 接 execution/approval/handler/verifier/chain
 - **desktop/src-tauri**:`lib.rs::run()` 启动 `WasmRuntime` + 在 `setup` 里初始化 `SqliteStorage`(路径取 `SRE_GRAPH_DB_PATH` 或 app data dir,migrate)→ `.manage(AppState { runtime, storage })`。command:`list_connectors` / `sync_all_now`(sync → upsert raw facts → **resolve+merge_metric_health+diff+apply_change_set** 维护 materialized 拓扑,返回 `changes` 增量计数)/ `get_topology`(读 latest topology facts,raw `FactDto[]`,留诊断用)/ `get_graph`(**Phase 2.5 起**读 materialized 拓扑 → `engine_identity::topology_to_graph` → `GraphResponse`,前端拓扑渲染走这条)。Phase 2.7 加 `commands/proxy.rs`(`start_kubectl_proxy`/`stop_kubectl_proxy`/`proxy_status` 托管 `kubectl proxy --port=8001`,TCP 就绪探测;`AppState.proxy: Mutex<Option<Child>>` 持子进程,`RunEvent::Exit` kill 防孤儿)
 - **desktop/src/views/TopologyView.tsx**:Phase 2.4 视图,吃 `GraphResponse`。`graphToElements(graph)` 把 `{nodes,edges}` 纯映射成 Cytoscape elements(去重/连边/悬空过滤已在 Rust 完成,前端不再解 JSON);有 Vitest 覆盖。Phase 2.7 起 fill=health / border=risk 真色(shape=type 不变,对齐 reference graphStyles),经 `healthFill`/`riskBorder` helper + `data(fill)`/`data(borderColor)` mapper 上色。`App.tsx` 启动 + sync 后均调 `get_graph` 拉成图渲染;sync 后 header 显示 `changes` 增量(`Δ +Nn/Me −Kn/Le`)
 
@@ -142,7 +156,13 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - [x] Phase 2.6:Prometheus connector WASM 化(`modules/connectors/prometheus` 首个消费 http-client capability;GET `/api/v1/query` → Prom JSON → metric Fact;mock-server e2e + deny-by-default 验证)
 - [x] Phase 2.6b:真实 K8s API connector WASM 化(`modules/connectors/k8s` 经本地 `kubectl proxy` 明文 HTTP 拉 API;纯 mapper 把 Deployment/ReplicaSet/Pod/Service/Node 映射成 topology Fact —— owner 链 Pod→RS→Deploy、health 由 phase/ready 推导、parent 层级;真集群 otel-demo 验证:71 fact / GraphResponse nodes=71 edges=70 health{critical:1,warning:4})。**架构**:WASM 只用 http-client,TLS+认证留 kubectl proxy,不碰凭据、不加 capability
 - [x] Phase 2.7(可选):metric→topology health 合并(需 Identity Resolver field-ownership,见 doc/11 §4.3)+ desktop 托管 kubectl proxy 生命周期 + Tauri 视图迁真集群拓扑。✅ 完成:health_merge/storage/proxy/select_config/vitest 单测全绿 + 真集群 headless(engine-cli tick k8s 经 manifest api_base 拉 71 fact;prometheus OOM 0 fact 符合预期,merge no-op)
-- [ ] Phase 3:engine-recovery(PRD-001)/ engine-changes(PRD-002)复刻 —— **PRD-001 审批流桌面语义需在此 Phase 明确决策**(doc/14 §9 风险)
+- [x] Phase 3.1:engine-recovery `action_defs`(8 action 元数据 + propagation + rule/change 推荐)+ `cascade::dry_run`(BFS blast radius,I/O-free 吃 `&Topology`)+ contract test(移植 reference `TestActionDefs`/`TestDryRun`,合成 9 节点 11 边拓扑);逐字对齐 reference,clippy + 20 测试绿。**审批语义已定**(doc/14 §9):桌面单机确认门,3.2 落地
+- [ ] Phase 3.2:engine-recovery `execution` 管线 + `approval`(单机确认门)+ rollback + 8 mock handler + SQLite executions 表
+- [ ] Phase 3.3:engine-recovery `verifiers` + auto-rollback + `chains`(3 模板 × 3 on_failure)
+- [ ] Phase 3.4:engine-changes `ChangeEvent` + `record_change` + propagation 反向 BFS
+- [ ] Phase 3.5:engine-changes frequency + alert 关联 + yaml_diff + correlated_changes + `suggest_for_change` 桥
+- [ ] Phase 3.6:Tauri commands(recovery/change_events)+ 视图 + 接 sync_all_now 管线
+- [ ] Phase 3 延后:真 handler(write-capability WIT)+ k8s-watch connector + webhook + k8s connector 边富化(USES/ROUTES_TO,真 cluster 级联/传播才需)
 - [ ] Phase 4:engine-reports(PRD-003)复刻
 
 ---

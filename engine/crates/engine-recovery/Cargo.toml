@@ -7,10 +7,11 @@ license.workspace = true
 description = "Recovery action engine (PRD-001 port) — actions / approval / cascade / chains"
 
 [dependencies]
-engine-core = { workspace = true }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
-chrono      = { workspace = true }
-uuid        = { workspace = true }
+engine-core     = { workspace = true }
+engine-identity = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+thiserror       = { workspace = true }
+tracing         = { workspace = true }
+chrono          = { workspace = true }
+uuid            = { workspace = true }
