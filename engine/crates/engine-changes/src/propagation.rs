@@ -266,6 +266,45 @@ pub(crate) mod tests {
         }
     }
 
+    /// 构造 reference `test_change_events_phase2.py::_seed_store` 的等价拓扑
+    /// (8 节点 / 7 边 -- sprint1 的子集:无 svc / orphan / e8 / e9 / e10)。
+    /// `img:order:1.2.3` 作节点存在但无边(测 image_pushed propagated_to=[])。
+    pub(crate) fn fixture_topology_phase2() -> Topology {
+        let n = |id: &str, t: &str, label: &str| ResolvedNode {
+            resource_id: id.into(),
+            resource_type: t.into(),
+            label: label.into(),
+            attributes_json: "{}".into(),
+        };
+        let e = |id: &str, src: &str, tgt: &str, rel: &str| ResolvedEdge {
+            id: id.into(),
+            source: src.into(),
+            target: tgt.into(),
+            edge_type: rel.into(),
+        };
+        Topology {
+            nodes: vec![
+                n("app:order", "Application", "订单应用"),
+                n("comp:order-api", "ApplicationComponent", "订单API组件"),
+                n("deploy:order-api", "Deployment", "order-api"),
+                n("pod:order-api-1", "Pod", "order-api-1"),
+                n("pod:order-api-2", "Pod", "order-api-2"),
+                n("cm:order-config", "ConfigMap", "order-config"),
+                n("secret:order-db", "Secret", "order-db-secret"),
+                n("img:order:1.2.3", "ContainerImage", "order:1.2.3"),
+            ],
+            edges: vec![
+                e("e1", "app:order", "comp:order-api", "CONTAINS"),
+                e("e2", "comp:order-api", "deploy:order-api", "DEPLOYED_AS"),
+                e("e3", "deploy:order-api", "pod:order-api-1", "CONTAINS"),
+                e("e4", "deploy:order-api", "pod:order-api-2", "CONTAINS"),
+                e("e5", "pod:order-api-1", "cm:order-config", "USES"),
+                e("e6", "pod:order-api-2", "cm:order-config", "USES"),
+                e("e7", "pod:order-api-1", "secret:order-db", "USES"),
+            ],
+        }
+    }
+
     fn derive(target: &str, max_depth: usize) -> Vec<String> {
         derive_propagation(target, &fixture_topology(), max_depth, None)
     }
