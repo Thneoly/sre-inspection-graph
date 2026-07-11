@@ -304,25 +304,13 @@ fn invalid_result(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use engine_identity::{ResolvedEdge, ResolvedNode, Topology};
     use serde_json::json;
 
-    /// 构造 reference test_recovery.py 的 fixture 拓扑(9 节点 11 边)。
-    ///
-    /// ```text
-    /// app:order
-    ///   └ comp:order-api      (BELONGS_TO 反向 = comp 在 app 下)
-    ///       └ deploy:order-api  (DEPLOYED_AS)
-    ///           └ pod:order-api-1  (CONTAINS)
-    ///           └ pod:order-api-2  (CONTAINS)
-    ///               └ node:worker-1  (SCHEDULED_ON)
-    /// svc:order-api  (ROUTES_TO pod:order-api-1, pod:order-api-2)
-    /// secret:order-tls  (USES -> pod:order-api-1)
-    /// mysql:order-db  (USES -> pod:order-api-1)
-    /// ```
-    fn fixture_topology() -> Topology {
+    /// 构造 reference test_recovery.py 的 fixture 拓扑(9 节点 11 边)。execution::tests 复用。
+    pub(crate) fn fixture_topology() -> Topology {
         let nodes = vec![
             node("app:order", "Application", "订单应用"),
             node("comp:order-api", "ApplicationComponent", "订单API组件"),

@@ -1091,6 +1091,7 @@ dependencies = [
  "anyhow",
  "engine-core",
  "engine-identity",
+ "engine-recovery",
  "serde",
  "serde_json",
  "sqlx",

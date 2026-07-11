@@ -25,6 +25,9 @@
 
 pub mod action_defs;
 pub mod cascade;
+pub mod execution;
+pub mod handlers;
+pub mod models;
 
 pub use action_defs::{
     get_action, list_actions, list_actions_filtered, suggest_for_change, suggest_for_rule,
@@ -32,6 +35,13 @@ pub use action_defs::{
     RiskLevel, ACTION_DEFS, CHANGE_ACTION_SUGGESTIONS, RULE_ACTION_SUGGESTIONS,
 };
 pub use cascade::{dry_run, AffectedResource, DryRunResult};
+pub use execution::{
+    cancel_execution, confirm_execution, execute, rollback, ExecutionRegistry,
+};
+pub use handlers::{get_handler, is_executable, HandlerFn, HANDLERS};
+pub use models::{
+    ExecutionContext, ExecutionError, RecoveryExecution, RecoveryStatus, VerifyStatus,
+};
 
 /// Crate version.
 pub fn version() -> &'static str {

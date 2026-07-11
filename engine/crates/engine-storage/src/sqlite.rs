@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use engine_core::Fact;
 use engine_identity::{ChangeSet, ResolvedEdge, ResolvedNode, Topology};
+use engine_recovery::{DryRunResult, RecoveryExecution, RecoveryStatus, VerifyStatus};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -121,6 +122,51 @@ impl SqliteStorage {
               edge_type TEXT NOT NULL,
               updated_at INTEGER NOT NULL
             )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 3.2 - recovery_executions 表(RecoveryExecution 持久化)。
+        // JSON 列(input_params / dry_run_result / result / verify_result)存序列化文本;
+        // status / verify_status 存 snake_case 枚举文本。3.3 verifier/chain 复用同表。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS recovery_executions (
+              execution_id TEXT PRIMARY KEY,
+              action_id TEXT NOT NULL,
+              target_resource_id TEXT NOT NULL,
+              target_resource_type TEXT NOT NULL,
+              finding_id TEXT,
+              input_params TEXT NOT NULL,
+              dry_run_result TEXT NOT NULL,
+              status TEXT NOT NULL,
+              initiated_by TEXT NOT NULL,
+              request_reason TEXT NOT NULL,
+              initiated_at TEXT NOT NULL,
+              executed_at TEXT NOT NULL,
+              completed_at TEXT NOT NULL,
+              result TEXT NOT NULL,
+              rollback_execution_id TEXT,
+              reverses_execution_id TEXT,
+              cluster_id TEXT NOT NULL,
+              verify_status TEXT NOT NULL,
+              verify_result TEXT NOT NULL,
+              verified_at TEXT NOT NULL,
+              chain_id TEXT NOT NULL,
+              chain_step_index INTEGER NOT NULL,
+              approval_comment TEXT NOT NULL,
+              approved_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_recovery_executions_status
+              ON recovery_executions(status)
             "#,
         )
         .execute(&self.pool)
@@ -402,6 +448,162 @@ impl SqliteStorage {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Insert or update a [`RecoveryExecution`] (Phase 3.2)。
+    ///
+    /// 按 `execution_id` 幂等。JSON 字段(input_params / dry_run_result / result /
+    /// verify_result)存序列化文本;status / verify_status 存 snake_case 枚举。
+    pub async fn upsert_recovery_execution(
+        &self,
+        e: &RecoveryExecution,
+    ) -> Result<(), StorageError> {
+        let input_params = e.input_params.to_string();
+        let dry_run_result = serde_json::to_string(&e.dry_run_result)
+            .map_err(|e| StorageError::Clock(e.to_string()))?;
+        let result = e.result.to_string();
+        let verify_result = e.verify_result.to_string();
+        let status = serde_json::to_string(&e.status).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let verify_status =
+            serde_json::to_string(&e.verify_status).map_err(|e| StorageError::Clock(e.to_string()))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO recovery_executions (
+                execution_id, action_id, target_resource_id, target_resource_type,
+                finding_id, input_params, dry_run_result, status,
+                initiated_by, request_reason, initiated_at, executed_at, completed_at,
+                result, rollback_execution_id, reverses_execution_id, cluster_id,
+                verify_status, verify_result, verified_at, chain_id, chain_step_index,
+                approval_comment, approved_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24
+            )
+            ON CONFLICT(execution_id) DO UPDATE SET
+                action_id = excluded.action_id,
+                target_resource_id = excluded.target_resource_id,
+                target_resource_type = excluded.target_resource_type,
+                finding_id = excluded.finding_id,
+                input_params = excluded.input_params,
+                dry_run_result = excluded.dry_run_result,
+                status = excluded.status,
+                initiated_by = excluded.initiated_by,
+                request_reason = excluded.request_reason,
+                initiated_at = excluded.initiated_at,
+                executed_at = excluded.executed_at,
+                completed_at = excluded.completed_at,
+                result = excluded.result,
+                rollback_execution_id = excluded.rollback_execution_id,
+                reverses_execution_id = excluded.reverses_execution_id,
+                cluster_id = excluded.cluster_id,
+                verify_status = excluded.verify_status,
+                verify_result = excluded.verify_result,
+                verified_at = excluded.verified_at,
+                chain_id = excluded.chain_id,
+                chain_step_index = excluded.chain_step_index,
+                approval_comment = excluded.approval_comment,
+                approved_at = excluded.approved_at
+            "#,
+        )
+        .bind(&e.execution_id)
+        .bind(&e.action_id)
+        .bind(&e.target_resource_id)
+        .bind(&e.target_resource_type)
+        .bind(&e.finding_id)
+        .bind(&input_params)
+        .bind(&dry_run_result)
+        .bind(&status)
+        .bind(&e.initiated_by)
+        .bind(&e.request_reason)
+        .bind(&e.initiated_at)
+        .bind(&e.executed_at)
+        .bind(&e.completed_at)
+        .bind(&result)
+        .bind(&e.rollback_execution_id)
+        .bind(&e.reverses_execution_id)
+        .bind(&e.cluster_id)
+        .bind(&verify_status)
+        .bind(&verify_result)
+        .bind(&e.verified_at)
+        .bind(&e.chain_id)
+        .bind(e.chain_step_index)
+        .bind(&e.approval_comment)
+        .bind(&e.approved_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 取单个 [`RecoveryExecution`];不存在返 None。
+    pub async fn get_recovery_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<RecoveryExecution>, StorageError> {
+        let row = sqlx::query(
+            r#"SELECT * FROM recovery_executions WHERE execution_id = ?1"#,
+        )
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(row_to_execution).transpose()
+    }
+
+    /// 列 [`RecoveryExecution`](新到旧,按 initiated_at 降序)。
+    pub async fn list_recovery_executions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<RecoveryExecution>, StorageError> {
+        let rows = sqlx::query(
+            r#"SELECT * FROM recovery_executions ORDER BY initiated_at DESC LIMIT ?1"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_execution).collect()
+    }
+}
+
+/// 把一行 recovery_executions 解析成 [`RecoveryExecution`]。
+fn row_to_execution(row: sqlx::sqlite::SqliteRow) -> Result<RecoveryExecution, StorageError> {
+    let input_params: String = row.try_get("input_params")?;
+    let dry_run_result: String = row.try_get("dry_run_result")?;
+    let result: String = row.try_get("result")?;
+    let verify_result: String = row.try_get("verify_result")?;
+    let status: String = row.try_get("status")?;
+    let verify_status: String = row.try_get("verify_status")?;
+    Ok(RecoveryExecution {
+        execution_id: row.try_get("execution_id")?,
+        action_id: row.try_get("action_id")?,
+        target_resource_id: row.try_get("target_resource_id")?,
+        target_resource_type: row.try_get("target_resource_type")?,
+        finding_id: row.try_get("finding_id")?,
+        input_params: serde_json::from_str(&input_params)
+            .map_err(|e| StorageError::Clock(format!("input_params parse: {e}")))?,
+        dry_run_result: serde_json::from_str::<DryRunResult>(&dry_run_result)
+            .map_err(|e| StorageError::Clock(format!("dry_run_result parse: {e}")))?,
+        status: serde_json::from_str::<RecoveryStatus>(&status)
+            .map_err(|e| StorageError::Clock(format!("status parse: {e}")))?,
+        initiated_by: row.try_get("initiated_by")?,
+        request_reason: row.try_get("request_reason")?,
+        initiated_at: row.try_get("initiated_at")?,
+        executed_at: row.try_get("executed_at")?,
+        completed_at: row.try_get("completed_at")?,
+        result: serde_json::from_str(&result)
+            .map_err(|e| StorageError::Clock(format!("result parse: {e}")))?,
+        rollback_execution_id: row.try_get("rollback_execution_id")?,
+        reverses_execution_id: row.try_get("reverses_execution_id")?,
+        cluster_id: row.try_get("cluster_id")?,
+        verify_status: serde_json::from_str::<VerifyStatus>(&verify_status)
+            .map_err(|e| StorageError::Clock(format!("verify_status parse: {e}")))?,
+        verify_result: serde_json::from_str(&verify_result)
+            .map_err(|e| StorageError::Clock(format!("verify_result parse: {e}")))?,
+        verified_at: row.try_get("verified_at")?,
+        chain_id: row.try_get("chain_id")?,
+        chain_step_index: row.try_get("chain_step_index")?,
+        approval_comment: row.try_get("approval_comment")?,
+        approved_at: row.try_get("approved_at")?,
+    })
 }
 
 impl Storage for SqliteStorage {
@@ -732,6 +934,61 @@ mod tests {
         let g = engine_identity::topology_to_graph(&mat);
         assert_eq!(g.summary.health_counts["warning"], 1);
         assert_eq!(g.summary.health_counts["normal"], 0);
+    }
+
+    #[tokio::test]
+    async fn recovery_execution_round_trips_sqlite() {
+        let store = migrated_store().await;
+        // 最小拓扑(1 Deployment,desired_replicas=3)
+        let topo = Topology {
+            nodes: vec![ResolvedNode {
+                resource_id: "deploy:c:ns:app".into(),
+                resource_type: "Deployment".into(),
+                label: "app".into(),
+                attributes_json: r#"{"desired_replicas":3}"#.into(),
+            }],
+            edges: vec![],
+        };
+        let mut reg = engine_recovery::ExecutionRegistry::new();
+        let e = engine_recovery::execute(
+            &mut reg,
+            "scale_deployment",
+            "deploy:c:ns:app",
+            &serde_json::json!({ "replicas_delta": 2 }),
+            &topo,
+            "tester",
+            "test",
+        )
+        .expect("execute");
+        assert_eq!(e.status, engine_recovery::RecoveryStatus::Succeeded);
+        assert_eq!(e.result["new_replicas"], 5);
+
+        store
+            .upsert_recovery_execution(&e)
+            .await
+            .expect("upsert");
+        let got = store
+            .get_recovery_execution(&e.execution_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.execution_id, e.execution_id);
+        assert_eq!(got.status, e.status);
+        assert_eq!(got.result["new_replicas"], 5);
+        assert_eq!(got.dry_run_result.action_id, "scale_deployment");
+        assert_eq!(got.cluster_id, "c"); // target_id 第二段
+
+        let listed = store.list_recovery_executions(10).await.expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].execution_id, e.execution_id);
+
+        // upsert 幂等:同 id 再写不报错,不新增行
+        store
+            .upsert_recovery_execution(&e)
+            .await
+            .expect("upsert again");
+        let listed2 = store.list_recovery_executions(10).await.expect("list2");
+        assert_eq!(listed2.len(), 1);
     }
 
     #[tokio::test]

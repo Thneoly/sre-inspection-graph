@@ -15,7 +15,9 @@ neo4j   = []
 [dependencies]
 engine-core     = { workspace = true }
 engine-identity = { workspace = true }
+engine-recovery = { workspace = true }
 serde       = { workspace = true }
+serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }
@@ -23,4 +25,3 @@ sqlx        = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-serde_json = { workspace = true }
