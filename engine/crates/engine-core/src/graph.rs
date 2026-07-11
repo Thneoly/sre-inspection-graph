@@ -33,8 +33,12 @@ use serde_json::{Map, Value};
 
 use crate::Fact;
 
-/// 只有 `kind == "topology-node"` 的 Fact 进图。
+/// 只有 `kind == "topology-node"` 的 Fact 进图作节点。
 const TOPOLOGY_NODE_KIND: &str = "topology-node";
+/// `kind == "topology-edge"` 的 Fact 是**显式边**(connector 产的 USES / ROUTES_TO /
+/// SCHEDULED_ON 等),与 `parent_resource_id` 派生的 CONTAINS 并列进图。attributes_json
+/// 须含 `source` / `target` / `edge_type` 三字段;两端节点不在本批时悬空过滤。
+const TOPOLOGY_EDGE_KIND: &str = "topology-edge";
 /// attributes_json 里指向父资源的字段名 —— 据此派生 `CONTAINS` 父子边。
 const PARENT_KEY: &str = "parent_resource_id";
 /// 派生父子边的关系类型(对照 reference relationship_type 命名空间)。
@@ -104,22 +108,30 @@ pub struct GraphResponse {
 ///    (父在本批 + 非自环才连);取 `risk_level` / `health_status` 累计 summary。
 /// 4. 悬空边(指向不存在节点)在连边时即过滤。
 pub fn facts_to_graph(facts: &[Fact]) -> GraphResponse {
-    // 1. dedup:resource_id → 最新 topology-node fact(严格更大替换,平局保留先到)
-    let mut newest: HashMap<&str, &Fact> = HashMap::new();
+    // 1. dedup nodes:resource_id → 最新 topology-node fact(严格更大替换,平局保留先到)
+    let mut newest_nodes: HashMap<&str, &Fact> = HashMap::new();
+    // 1b. dedup edge facts:resource_id → 最新 topology-edge fact(同 node 去重逻辑)
+    let mut newest_edges: HashMap<&str, &Fact> = HashMap::new();
     for f in facts {
-        if f.kind != TOPOLOGY_NODE_KIND {
-            continue;
-        }
-        match newest.get(f.resource_id.as_str()) {
-            Some(prev) if prev.timestamp >= f.timestamp => {}
-            _ => {
-                newest.insert(f.resource_id.as_str(), f);
-            }
+        match f.kind.as_str() {
+            TOPOLOGY_NODE_KIND => match newest_nodes.get(f.resource_id.as_str()) {
+                Some(prev) if prev.timestamp >= f.timestamp => {}
+                _ => {
+                    newest_nodes.insert(f.resource_id.as_str(), f);
+                }
+            },
+            TOPOLOGY_EDGE_KIND => match newest_edges.get(f.resource_id.as_str()) {
+                Some(prev) if prev.timestamp >= f.timestamp => {}
+                _ => {
+                    newest_edges.insert(f.resource_id.as_str(), f);
+                }
+            },
+            _ => {}
         }
     }
 
-    // 2. 按 resource_id 升序 —— 稳定输出
-    let mut ordered: Vec<&Fact> = newest.into_values().collect();
+    // 2. 节点按 resource_id 升序 —— 稳定输出
+    let mut ordered: Vec<&Fact> = newest_nodes.into_values().collect();
     ordered.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
 
     let node_ids: HashSet<&str> = ordered.iter().map(|f| f.resource_id.as_str()).collect();
@@ -148,6 +160,38 @@ pub fn facts_to_graph(facts: &[Fact]) -> GraphResponse {
             label: label_for(&props, &f.resource_id),
             type_: f.resource_type.clone(),
             properties: props,
+        });
+    }
+
+    // 3. 显式 topology-edge fact -> GraphEdge(悬空过滤 + 自环过滤)。
+    //    边 id 用 "{source}->{target}" -- 与 CONTAINS 派生边 id 体系一致;K8s 同对
+    //    资源不会同时有多种关系,故不撞(changeset::diff 按 id 判等)。
+    let mut edge_facts: Vec<&Fact> = newest_edges.into_values().collect();
+    edge_facts.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
+    for f in &edge_facts {
+        let props = parse_props(&f.attributes_json);
+        let Some(source) = props.get("source").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(target) = props.get("target").and_then(Value::as_str) else {
+            continue;
+        };
+        if source == target {
+            continue;
+        }
+        if !node_ids.contains(source) || !node_ids.contains(target) {
+            continue;
+        }
+        let edge_type = props
+            .get("edge_type")
+            .and_then(Value::as_str)
+            .unwrap_or("RELATED_TO");
+        edges.push(GraphEdge {
+            id: format!("{source}->{target}"),
+            source: source.to_string(),
+            target: target.to_string(),
+            type_: edge_type.to_string(),
+            properties: derived_edge_props(),
         });
     }
 
@@ -419,5 +463,82 @@ mod tests {
         assert_eq!(v["summary"]["total_nodes"], 1);
         assert!(v["summary"]["risk_counts"].is_object());
         assert!(v["summary"]["health_counts"].is_object());
+    }
+
+    fn edge_fact(resource_id: &str, source: &str, target: &str, edge_type: &str, ts: u64) -> Fact {
+        Fact::new(
+            format!("eid-{resource_id}-{ts}"),
+            TOPOLOGY_EDGE_KIND,
+            "k8s",
+            resource_id,
+            "Edge",
+            ts,
+            serde_json::json!({ "source": source, "target": target, "edge_type": edge_type })
+                .to_string(),
+        )
+    }
+
+    #[test]
+    fn edge_fact_yields_typed_edge() {
+        let facts = vec![
+            node_fact("pod:a", "Pod", 1, serde_json::json!({})),
+            node_fact("node:b", "Node", 1, serde_json::json!({})),
+            edge_fact("edge:SCHEDULED_ON:pod:a->node:b", "pod:a", "node:b", "SCHEDULED_ON", 1),
+        ];
+        let g = facts_to_graph(&facts);
+        assert_eq!(g.nodes.len(), 2);
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.edges[0].type_, "SCHEDULED_ON");
+        assert_eq!(g.edges[0].source, "pod:a");
+        assert_eq!(g.edges[0].target, "node:b");
+        assert_eq!(g.edges[0].id, "pod:a->node:b");
+    }
+
+    #[test]
+    fn edge_fact_dangling_filtered() {
+        let facts = vec![
+            node_fact("pod:a", "Pod", 1, serde_json::json!({})),
+            // target cm:missing 不在本批 -> 悬空过滤
+            edge_fact("edge:USES:pod:a->cm:missing", "pod:a", "cm:missing", "USES", 1),
+        ];
+        let g = facts_to_graph(&facts);
+        assert_eq!(g.nodes.len(), 1);
+        assert_eq!(g.edges.len(), 0);
+    }
+
+    #[test]
+    fn edge_fact_coexists_with_contains() {
+        let facts = vec![
+            node_fact("ns:d", "Namespace", 1, serde_json::json!({})),
+            node_fact(
+                "pod:a",
+                "Pod",
+                1,
+                serde_json::json!({ "parent_resource_id": "ns:d" }),
+            ),
+            node_fact("node:b", "Node", 1, serde_json::json!({})),
+            edge_fact("edge:SCHEDULED_ON:pod:a->node:b", "pod:a", "node:b", "SCHEDULED_ON", 1),
+        ];
+        let g = facts_to_graph(&facts);
+        // CONTAINS(ns->pod) + SCHEDULED_ON(pod->node)
+        assert_eq!(g.edges.len(), 2);
+        let types: Vec<&str> = g.edges.iter().map(|e| e.type_.as_str()).collect();
+        assert!(types.contains(&"CONTAINS"));
+        assert!(types.contains(&"SCHEDULED_ON"));
+    }
+
+    #[test]
+    fn edge_fact_dedups_same_resource_id() {
+        let facts = vec![
+            node_fact("svc:s", "Service", 1, serde_json::json!({})),
+            node_fact("pod:a", "Pod", 1, serde_json::json!({})),
+            // 同 resource_id 两条(不同 ts),dedup 只留 1 条
+            edge_fact("edge:ROUTES_TO:svc:s->pod:a", "svc:s", "pod:a", "ROUTES_TO", 1),
+            edge_fact("edge:ROUTES_TO:svc:s->pod:a", "svc:s", "pod:a", "ROUTES_TO", 2),
+        ];
+        let g = facts_to_graph(&facts);
+        let routes: Vec<&GraphEdge> =
+            g.edges.iter().filter(|e| e.type_ == "ROUTES_TO").collect();
+        assert_eq!(routes.len(), 1, "同 resource_id edge fact 应 dedup");
     }
 }

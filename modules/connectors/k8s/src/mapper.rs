@@ -1,36 +1,47 @@
-//! k8s mapper —— **纯函数核心**(不在 `cfg(wasm32)` 内,host `cargo test` 可直接测)。
+//! k8s mapper -- **纯函数核心**(不在 `cfg(wasm32)` 内,host `cargo test` 可直接测)。
 //!
 //! 吃 K8s API 的 list 响应(`serde_json::Value`,形如 `{"items":[...]}`),产
 //! canonical [`Fact`](`module_sdk::Fact`,7 字段 host 镜像)。对照 reference
-//! `app/datasource/connectors/k8s_mapper.py` 的稳定 ID + 关系语义,但只做 v0
-//! 拓扑层级(不做 ConfigMap/Secret 关联、不做 component/middleware owner 抽取)。
+//! `app/datasource/connectors/k8s_mapper.py` 的稳定 ID + 关系语义。
 //!
-//! ## resource_id schema(与 k8s-mini 对齐 + 新增 deploy)
+//! ## resource_id schema(与 k8s-mini 对齐 + deploy/cm/secret)
 //!
 //! - `cluster:{cluster}`                       Cluster(无 parent)
-//! - `node:{cluster}:{node}`                    Node      → cluster
-//! - `ns:{cluster}:{ns}`                        Namespace → cluster
-//! - `deploy:{cluster}:{ns}:{name}`             Deployment→ namespace
-//! - `pod:{cluster}:{ns}:{name}`                Pod       → deployment(owner 链)否则 namespace
-//! - `service:{cluster}:{ns}:{name}`            Service   → namespace
+//! - `node:{cluster}:{node}`                    Node      -> cluster
+//! - `ns:{cluster}:{ns}`                        Namespace -> cluster
+//! - `deploy:{cluster}:{ns}:{name}`             Deployment-> namespace
+//! - `pod:{cluster}:{ns}:{name}`                Pod       -> deployment(owner 链)否则 namespace
+//! - `service:{cluster}:{ns}:{name}`            Service   -> namespace
+//! - `cm:{cluster}:{ns}:{name}`                 ConfigMap -> namespace
+//! - `secret:{cluster}:{ns}:{name}`             Secret    -> namespace
 //!
-//! 父子关系写进 `attributes_json.parent_resource_id` —— host 侧
+//! 父子关系写进 `attributes_json.parent_resource_id` -- host 侧
 //! `engine_core::facts_to_graph` / `engine_identity::resolve` 据此建 `CONTAINS` 边。
+//!
+//! ## 富化边(Phase 3.7,作 `topology-edge` fact,对照 reference k8s_mapper)
+//!
+//! - `SCHEDULED_ON`(pod -> node):`pod.spec.nodeName`
+//! - `ROUTES_TO`(svc -> pod):`service.spec.selector` 匹配 `pod.metadata.labels`
+//! - `USES`(pod -> configmap/secret):`spec.volumes`(configMap/secret)
+//!   + `envFrom`(configMapRef/secretRef);**不解析 `env[].valueFrom`**(对齐 reference)
+//!
+//! 不产 `BELONGS_TO` / `DEPLOYED_AS` / `RUNS` / `EXPOSES`(需 application/component 层,v0 无)。
 //!
 //! ## Pod owner 链(对照 reference)
 //!
-//! Pod.ownerReferences[kind=ReplicaSet].name → 在 ReplicaSet 列表里查
-//! ReplicaSet.ownerReferences[kind=Deployment].name → Deployment。落空(裸 Pod /
+//! Pod.ownerReferences[kind=ReplicaSet].name -> 在 ReplicaSet 列表里查
+//! ReplicaSet.ownerReferences[kind=Deployment].name -> Deployment。落空(裸 Pod /
 //! 找不到)退化 parent = Namespace。
 //!
 //! ## health 推导
 //!
-//! Pod:phase + containerStatuses.ready →
+//! Pod:phase + containerStatuses.ready ->
 //! - `normal`  : phase=Running 且所有容器 ready
 //! - `warning` : phase=Running 但有容器未 ready,或 phase=Pending
 //! - `critical`: phase ∈ {Failed, Unknown},或任一容器 waiting=CrashLoopBackOff
 //!
-//! 其余资源默认 `normal`。`risk_level` 由 health 映射(critical→high / warning→medium / normal→low)。
+//! 其余资源默认 `normal`。`risk_level` 由 health 映射(critical->high / warning->medium / normal->low)。
+//! ConfigMap/Secret 不存 data 值,只存 `data_keys`(逗号分隔的 key 名)。
 
 use serde_json::{json, Map, Value};
 
@@ -42,7 +53,7 @@ pub struct ClusterInput {
     pub cluster: String,
     /// 目标 namespace。
     pub namespace: String,
-    /// 时间戳(Unix 秒)—— fact.id / fact.timestamp 用。host 由 clock capability 给。
+    /// 时间戳(Unix 秒)-- fact.id / fact.timestamp 用。host 由 clock capability 给。
     pub now: u64,
     /// `GET /api/v1/nodes` 响应。
     pub nodes: Value,
@@ -54,12 +65,17 @@ pub struct ClusterInput {
     pub pods: Value,
     /// `GET /api/v1/namespaces/{ns}/services` 响应。
     pub services: Value,
+    /// `GET /api/v1/namespaces/{ns}/configmaps` 响应(Phase 3.7:ConfigMap node + Pod USES 边)。
+    pub configmaps: Value,
+    /// `GET /api/v1/namespaces/{ns}/secrets` 响应(Phase 3.7:Secret node + Pod USES 边;只取 name + data_keys)。
+    pub secrets: Value,
 }
 
 const SOURCE: &str = "k8s";
 const KIND: &str = "topology-node";
+const EDGE_KIND: &str = "topology-edge";
 
-/// 把一批 K8s list 响应映射成 topology Fact 列表。
+/// 把一批 K8s list 响应映射成 topology Fact 列表(节点 + 富化边)。
 pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
     let c = input.cluster.as_str();
     let ns = input.namespace.as_str();
@@ -123,10 +139,48 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
         ));
     }
 
-    // 5) ReplicaSet name → Deployment name(owner 链中间层,不入图)
+    // 5) ReplicaSet name -> Deployment name(owner 链中间层,不入图)
     let rs_to_deploy = index_rs_to_deploy(&input.replicasets);
 
-    // 6) Pods —— parent = Deployment(经 rs 链)否则 Namespace
+    // 6) ConfigMaps(node + 供 Pod USES 边引用)
+    for cm in items(&input.configmaps) {
+        let Some(name) = meta_name(cm) else { continue };
+        facts.push(node_fact(
+            now,
+            &format!("cm:{c}:{ns}:{name}"),
+            "ConfigMap",
+            json!({
+                "cluster": c,
+                "namespace": ns,
+                "name": name,
+                "parent_resource_id": format!("ns:{c}:{ns}"),
+                "data_keys": data_keys_of(cm),
+                "health_status": "normal",
+                "risk_level": "low",
+            }),
+        ));
+    }
+
+    // 7) Secrets(node + 供 Pod USES 边引用;不存 data 值,只存 data_keys)
+    for s in items(&input.secrets) {
+        let Some(name) = meta_name(s) else { continue };
+        facts.push(node_fact(
+            now,
+            &format!("secret:{c}:{ns}:{name}"),
+            "Secret",
+            json!({
+                "cluster": c,
+                "namespace": ns,
+                "name": name,
+                "parent_resource_id": format!("ns:{c}:{ns}"),
+                "data_keys": data_keys_of(s),
+                "health_status": "normal",
+                "risk_level": "low",
+            }),
+        ));
+    }
+
+    // 8) Pods -- parent(经 rs 链)+ SCHEDULED_ON 边 + USES 边
     for p in items(&input.pods) {
         let Some(name) = meta_name(p) else { continue };
         let parent = pod_parent(p, &rs_to_deploy, c, ns);
@@ -136,9 +190,10 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
             .and_then(|s| s.get("nodeName"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        let pod_id = format!("pod:{c}:{ns}:{name}");
         facts.push(node_fact(
             now,
-            &format!("pod:{c}:{ns}:{name}"),
+            &pod_id,
             "Pod",
             json!({
                 "cluster": c,
@@ -151,14 +206,34 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 "risk_level": risk_from_health(health),
             }),
         ));
+
+        // SCHEDULED_ON:pod -> node
+        if !node_name.is_empty() {
+            facts.push(edge_fact(
+                now,
+                "SCHEDULED_ON",
+                &pod_id,
+                &format!("node:{c}:{node_name}"),
+            ));
+        }
+        // USES:pod -> configmap(volumes.configMap + envFrom.configMapRef)
+        for cm_name in pod_cm_refs(p) {
+            facts.push(edge_fact(now, "USES", &pod_id, &format!("cm:{c}:{ns}:{cm_name}")));
+        }
+        // USES:pod -> secret(volumes.secret + envFrom.secretRef)
+        for sec_name in pod_secret_refs(p) {
+            facts.push(edge_fact(now, "USES", &pod_id, &format!("secret:{c}:{ns}:{sec_name}")));
+        }
     }
 
-    // 7) Services —— parent = Namespace
+    // 9) Services -- ROUTES_TO:selector 匹配 pod labels
+    let pod_labels = index_pod_labels(&input.pods, c, ns);
     for s in items(&input.services) {
         let Some(name) = meta_name(s) else { continue };
+        let svc_id = format!("service:{c}:{ns}:{name}");
         facts.push(node_fact(
             now,
-            &format!("service:{c}:{ns}:{name}"),
+            &svc_id,
             "Service",
             json!({
                 "cluster": c,
@@ -169,6 +244,19 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 "risk_level": "low",
             }),
         ));
+        let selector = s
+            .get("spec")
+            .and_then(|sp| sp.get("selector"))
+            .and_then(Value::as_object);
+        if let Some(selector) = selector {
+            if !selector.is_empty() {
+                for ple in &pod_labels {
+                    if labels_match(&ple.labels, selector) {
+                        facts.push(edge_fact(now, "ROUTES_TO", &svc_id, &ple.id));
+                    }
+                }
+            }
+        }
     }
 
     facts
@@ -187,7 +275,23 @@ fn node_fact(now: u64, resource_id: &str, resource_type: &str, attrs: Value) -> 
     }
 }
 
-/// `{"items":[...]}` → items slice(非数组返空)。
+/// 构造一条 topology-edge Fact(富化边)。resource_id 含 edge_type 避免同 src->tgt
+/// 不同 edge_type 撞 latest 去重 key;id 含 ts 避免跨轮撞。
+fn edge_fact(now: u64, edge_type: &str, source: &str, target: &str) -> Fact {
+    let resource_id = format!("edge:{edge_type}:{source}->{target}");
+    Fact {
+        id: format!("{SOURCE}:edge:{edge_type}:{source}->{target}:{now}"),
+        kind: EDGE_KIND.to_string(),
+        source: SOURCE.to_string(),
+        resource_id,
+        resource_type: "Edge".to_string(),
+        timestamp: now,
+        attributes_json: json!({ "source": source, "target": target, "edge_type": edge_type })
+            .to_string(),
+    }
+}
+
+/// `{"items":[...]}` -> items slice(非数组返空)。
 fn items(list: &Value) -> &[Value] {
     list.get("items")
         .and_then(Value::as_array)
@@ -200,7 +304,7 @@ fn meta_name(obj: &Value) -> Option<&str> {
     obj.get("metadata")?.get("name")?.as_str()
 }
 
-/// ReplicaSet name → 拥有它的 Deployment name。
+/// ReplicaSet name -> 拥有它的 Deployment name。
 fn index_rs_to_deploy(replicasets: &Value) -> Map<String, Value> {
     let mut m = Map::new();
     for rs in items(replicasets) {
@@ -212,7 +316,7 @@ fn index_rs_to_deploy(replicasets: &Value) -> Map<String, Value> {
     m
 }
 
-/// Pod → parent resource_id:Deployment(经 rs 链)否则 Namespace。
+/// Pod -> parent resource_id:Deployment(经 rs 链)否则 Namespace。
 fn pod_parent(pod: &Value, rs_to_deploy: &Map<String, Value>, c: &str, ns: &str) -> String {
     if let Some(rs_name) = owner_name(pod, "ReplicaSet") {
         if let Some(deploy) = rs_to_deploy.get(rs_name).and_then(Value::as_str) {
@@ -244,7 +348,7 @@ fn pod_health(pod: &Value) -> &'static str {
         .and_then(|s| s.get("containerStatuses"))
         .and_then(Value::as_array);
 
-    // CrashLoopBackOff(任一容器 waiting.reason)→ critical
+    // CrashLoopBackOff(任一容器 waiting.reason)-> critical
     if let Some(cs) = cs {
         let crashloop = cs.iter().any(|c| {
             c.get("state")
@@ -281,7 +385,7 @@ fn pod_health(pod: &Value) -> &'static str {
     }
 }
 
-/// Node health:status.conditions 里 Ready=True → normal,否则 critical。
+/// Node health:status.conditions 里 Ready=True -> normal,否则 critical。
 fn node_health(node: &Value) -> &'static str {
     let ready = node
         .get("status")
@@ -301,13 +405,149 @@ fn node_health(node: &Value) -> &'static str {
     }
 }
 
-/// health → risk_level 映射(给 Cytoscape border 配色)。
+/// health -> risk_level 映射(给 Cytoscape border 配色)。
 fn risk_from_health(health: &str) -> &'static str {
     match health {
         "critical" => "high",
         "warning" => "medium",
         _ => "low",
     }
+}
+
+/// ConfigMap/Secret 的 data key 名(排序后逗号分隔)。不取 data 值。
+fn data_keys_of(obj: &Value) -> String {
+    let mut keys: Vec<&str> = obj
+        .get("data")
+        .and_then(Value::as_object)
+        .map(|m| m.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    keys.sort();
+    keys.join(",")
+}
+
+/// 去重保序地把 name 推进 refs(空名跳过)。
+fn push_ref(
+    refs: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    name: &str,
+) {
+    if !name.is_empty() && seen.insert(name.to_string()) {
+        refs.push(name.to_string());
+    }
+}
+
+/// Pod 引用的 ConfigMap name(volumes.configMap + envFrom.configMapRef,去重保序)。
+fn pod_cm_refs(pod: &Value) -> Vec<String> {
+    let mut refs: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(vols) = pod
+        .get("spec")
+        .and_then(|s| s.get("volumes"))
+        .and_then(Value::as_array)
+    {
+        for v in vols {
+            if let Some(name) = v
+                .get("configMap")
+                .and_then(|c| c.get("name"))
+                .and_then(Value::as_str)
+            {
+                push_ref(&mut refs, &mut seen, name);
+            }
+        }
+    }
+    if let Some(containers) = pod
+        .get("spec")
+        .and_then(|s| s.get("containers"))
+        .and_then(Value::as_array)
+    {
+        for c in containers {
+            if let Some(envfrom) = c.get("envFrom").and_then(Value::as_array) {
+                for ef in envfrom {
+                    if let Some(name) = ef
+                        .get("configMapRef")
+                        .and_then(|r| r.get("name"))
+                        .and_then(Value::as_str)
+                    {
+                        push_ref(&mut refs, &mut seen, name);
+                    }
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// Pod 引用的 Secret name(volumes.secret.secretName + envFrom.secretRef,去重保序)。
+fn pod_secret_refs(pod: &Value) -> Vec<String> {
+    let mut refs: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(vols) = pod
+        .get("spec")
+        .and_then(|s| s.get("volumes"))
+        .and_then(Value::as_array)
+    {
+        for v in vols {
+            if let Some(name) = v
+                .get("secret")
+                .and_then(|s| s.get("secretName"))
+                .and_then(Value::as_str)
+            {
+                push_ref(&mut refs, &mut seen, name);
+            }
+        }
+    }
+    if let Some(containers) = pod
+        .get("spec")
+        .and_then(|s| s.get("containers"))
+        .and_then(Value::as_array)
+    {
+        for c in containers {
+            if let Some(envfrom) = c.get("envFrom").and_then(Value::as_array) {
+                for ef in envfrom {
+                    if let Some(name) = ef
+                        .get("secretRef")
+                        .and_then(|r| r.get("name"))
+                        .and_then(Value::as_str)
+                    {
+                        push_ref(&mut refs, &mut seen, name);
+                    }
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// Pod label 索引项(供 Service ROUTES_TO selector 匹配)。
+struct PodLabelEntry {
+    id: String,
+    labels: Map<String, Value>,
+}
+
+/// 建 pod resource_id -> labels 索引。
+fn index_pod_labels(pods: &Value, c: &str, ns: &str) -> Vec<PodLabelEntry> {
+    let mut out = Vec::new();
+    for p in items(pods) {
+        let Some(name) = meta_name(p) else { continue };
+        let labels = p
+            .get("metadata")
+            .and_then(|m| m.get("labels"))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        out.push(PodLabelEntry {
+            id: format!("pod:{c}:{ns}:{name}"),
+            labels,
+        });
+    }
+    out
+}
+
+/// selector 的所有 k=v 都在 labels 里匹配。
+fn labels_match(labels: &Map<String, Value>, selector: &Map<String, Value>) -> bool {
+    selector
+        .iter()
+        .all(|(k, v)| labels.get(k) == Some(v))
 }
 
 #[cfg(test)]

@@ -40,7 +40,8 @@ pub struct ResolvedEdge {
     pub source: String,
     /// 终点节点 `resource_id`(子)。
     pub target: String,
-    /// 关系类型。v0 仅 `CONTAINS`。
+    /// 关系类型。`CONTAINS`(`parent_resource_id` 派生)+ 富化 edge fact
+    /// (`USES` / `ROUTES_TO` / `SCHEDULED_ON` 等,k8s connector 产)。
     pub edge_type: String,
 }
 
@@ -248,5 +249,36 @@ mod tests {
         assert_eq!(g.summary.risk_counts["unknown"], 1);
         assert_eq!(g.summary.health_counts["critical"], 1);
         assert_eq!(g.summary.health_counts["unknown"], 1);
+    }
+
+    fn edge_fact(resource_id: &str, source: &str, target: &str, edge_type: &str, ts: u64) -> Fact {
+        Fact::new(
+            format!("eid-{resource_id}-{ts}"),
+            "topology-edge",
+            "k8s",
+            resource_id,
+            "Edge",
+            ts,
+            serde_json::json!({ "source": source, "target": target, "edge_type": edge_type })
+                .to_string(),
+        )
+    }
+
+    #[test]
+    fn resolve_carries_uses_and_routes_to_edges() {
+        // resolve 透传 facts_to_graph 的显式 edge fact 到 Topology.edges(多类型,非仅 CONTAINS)
+        let facts = vec![
+            node_fact("svc:s", "Service", 1, serde_json::json!({})),
+            node_fact("pod:a", "Pod", 1, serde_json::json!({})),
+            node_fact("cm:c", "ConfigMap", 1, serde_json::json!({})),
+            edge_fact("edge:ROUTES_TO:svc:s->pod:a", "svc:s", "pod:a", "ROUTES_TO", 1),
+            edge_fact("edge:USES:pod:a->cm:c", "pod:a", "cm:c", "USES", 1),
+        ];
+        let t = resolve(&facts);
+        assert_eq!(t.nodes.len(), 3);
+        assert_eq!(t.edges.len(), 2);
+        let types: Vec<&str> = t.edges.iter().map(|e| e.edge_type.as_str()).collect();
+        assert!(types.contains(&"ROUTES_TO"));
+        assert!(types.contains(&"USES"));
     }
 }

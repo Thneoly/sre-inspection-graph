@@ -348,7 +348,7 @@ impl SqliteStorage {
                         ORDER BY timestamp DESC, inserted_at DESC, id DESC
                     ) AS rn
                 FROM facts
-                WHERE kind = 'topology-node'
+                WHERE kind IN ('topology-node', 'topology-edge')
             )
             WHERE rn = 1
             ORDER BY resource_id ASC
@@ -1159,6 +1159,46 @@ mod tests {
         let ids: Vec<&str> = latest.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(ids, vec!["cluster", "pod-new"]);
         assert_eq!(latest[1].attributes_json, r#"{"new":true}"#);
+    }
+
+    #[tokio::test]
+    async fn latest_topology_facts_includes_edge_facts() {
+        // Phase 3.7:topology-edge fact 也应被 latest_topology_facts 取出(与 node 一起)
+        let store = migrated_store().await;
+        store
+            .upsert_facts(&[
+                fact("pod-a", "pod:demo:default:web-0", "Pod", 10, "{}"),
+                fact("node-b", "node:demo:worker-1", "Node", 10, "{}"),
+                Fact::new(
+                    "edge-1",
+                    "topology-edge",
+                    "k8s",
+                    "edge:SCHEDULED_ON:pod:demo:default:web-0->node:demo:worker-1",
+                    "Edge",
+                    10,
+                    r#"{"source":"pod:demo:default:web-0","target":"node:demo:worker-1","edge_type":"SCHEDULED_ON"}"#,
+                ),
+            ])
+            .await
+            .expect("upsert facts");
+
+        let latest = store
+            .latest_topology_facts()
+            .await
+            .expect("query latest topology facts");
+        // 2 node + 1 edge
+        assert_eq!(latest.len(), 3);
+        let kinds: Vec<&str> = latest.iter().map(|f| f.kind.as_str()).collect();
+        assert!(kinds.contains(&"topology-node"));
+        assert!(kinds.contains(&"topology-edge"));
+        let edge = latest
+            .iter()
+            .find(|f| f.kind == "topology-edge")
+            .expect("edge fact present");
+        assert_eq!(
+            edge.resource_id,
+            "edge:SCHEDULED_ON:pod:demo:default:web-0->node:demo:worker-1"
+        );
     }
 
     #[tokio::test]

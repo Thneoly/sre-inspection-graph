@@ -122,6 +122,16 @@ mod imp {
                 &format!("/api/v1/namespaces/{ns}/services"),
                 &mut errors,
             );
+            let configmaps = get_json(
+                &base,
+                &format!("/api/v1/namespaces/{ns}/configmaps"),
+                &mut errors,
+            );
+            let secrets = get_json(
+                &base,
+                &format!("/api/v1/namespaces/{ns}/secrets"),
+                &mut errors,
+            );
 
             let input = mapper::ClusterInput {
                 cluster: cfg.cluster,
@@ -132,6 +142,8 @@ mod imp {
                 replicasets,
                 pods,
                 services,
+                configmaps,
+                secrets,
             };
             let facts = mapper::map_cluster(&input)
                 .into_iter()
