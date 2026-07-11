@@ -25,9 +25,11 @@
 
 pub mod action_defs;
 pub mod cascade;
+pub mod chains;
 pub mod execution;
 pub mod handlers;
 pub mod models;
+pub mod verifiers;
 
 pub use action_defs::{
     get_action, list_actions, list_actions_filtered, suggest_for_change, suggest_for_rule,
@@ -35,13 +37,19 @@ pub use action_defs::{
     RiskLevel, ACTION_DEFS, CHANGE_ACTION_SUGGESTIONS, RULE_ACTION_SUGGESTIONS,
 };
 pub use cascade::{dry_run, AffectedResource, DryRunResult};
+pub use chains::{
+    abort_chain, cancel_chain, confirm_chain, execute_chain, get_chain_template,
+    list_chain_template_ids, ChainRegistry, ChainStep, ChainTemplate,
+};
 pub use execution::{
-    cancel_execution, confirm_execution, execute, rollback, ExecutionRegistry,
+    cancel_execution, confirm_execution, execute, reverify, rollback, ExecutionRegistry,
 };
 pub use handlers::{get_handler, is_executable, HandlerFn, HANDLERS};
 pub use models::{
-    ExecutionContext, ExecutionError, RecoveryExecution, RecoveryStatus, VerifyStatus,
+    ChainStatus, ExecutionContext, ExecutionError, OnFailureStrategy, RecoveryChain,
+    RecoveryExecution, RecoveryStatus, VerifyStatus,
 };
+pub use verifiers::{get_verifier, run_verifier, VerifierFn, VerifierVerdict, VERIFIERS};
 
 /// Crate version.
 pub fn version() -> &'static str {

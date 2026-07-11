@@ -940,7 +940,7 @@ mod tests {
     async fn recovery_execution_round_trips_sqlite() {
         let store = migrated_store().await;
         // 最小拓扑(1 Deployment,desired_replicas=3)
-        let topo = Topology {
+        let mut topo = Topology {
             nodes: vec![ResolvedNode {
                 resource_id: "deploy:c:ns:app".into(),
                 resource_type: "Deployment".into(),
@@ -955,7 +955,7 @@ mod tests {
             "scale_deployment",
             "deploy:c:ns:app",
             &serde_json::json!({ "replicas_delta": 2 }),
-            &topo,
+            &mut topo,
             "tester",
             "test",
         )

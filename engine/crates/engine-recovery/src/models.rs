@@ -61,6 +61,103 @@ pub enum VerifyStatus {
     Error,
 }
 
+/// chain 失败处理策略(对齐 reference `RecoveryChain.on_failure`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnFailureStrategy {
+    /// 当前 step 失败 -> chain=partial,停。
+    Stop,
+    /// 当前 step 失败 -> 反向逐个 rollback 已成功前置 step -> chain=rolled_back。
+    RollbackAll,
+    /// 当前 step 失败 -> 继续下一步(尽力而为)。
+    Continue,
+}
+
+/// chain 生命周期状态(对齐 reference `RecoveryChain.status`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChainStatus {
+    /// 刚创建(瞬态)。
+    Pending,
+    /// 待链级审批(单机确认门:任一步 medium/high)。
+    AwaitingApproval,
+    /// 执行中。
+    Executing,
+    /// 全部 step 成功。
+    Succeeded,
+    /// 部分 step 失败(on_failure=stop/continue)。
+    Partial,
+    /// 链失败(审批取消 / 模板丢失)。
+    Failed,
+    /// 已回滚(on_failure=rollback_all)。
+    RolledBack,
+    /// 已中止(操作者 abort)。
+    Aborted,
+}
+
+/// 恢复动作链(对齐 reference `RecoveryChain`)。3.3 用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryChain {
+    /// UUID。
+    pub chain_id: String,
+    /// 引用 CHAIN_TEMPLATES key,或 "ad-hoc"。
+    pub template_id: String,
+    /// 目标资源。
+    pub target_resource_id: String,
+    /// 当前状态。
+    pub status: ChainStatus,
+    /// 失败策略。
+    pub on_failure: OnFailureStrategy,
+    /// step execution_ids(顺序即步骤序)。
+    pub step_executions: Vec<String>,
+    /// 当前步骤索引。
+    pub current_step_index: usize,
+    /// 总步数。
+    pub total_steps: usize,
+    /// 发起人。
+    pub initiated_by: String,
+    /// 发起理由。
+    pub request_reason: String,
+    /// 发起时间(ISO8601)。
+    pub initiated_at: String,
+    /// 完成时间(ISO8601)。
+    pub completed_at: String,
+    /// 链级审批 id(单机确认门;空 = 无需审批)。
+    pub approval_id: String,
+    /// 失败原因。
+    pub failure_reason: String,
+    /// 缓存模板名(前端展示)。
+    pub template_name: String,
+    /// 确认备注(单机确认门)。
+    pub approval_comment: String,
+    /// 确认时间(ISO8601)。
+    pub approved_at: String,
+}
+
+impl Default for RecoveryChain {
+    fn default() -> Self {
+        Self {
+            chain_id: String::new(),
+            template_id: String::new(),
+            target_resource_id: String::new(),
+            status: ChainStatus::Pending,
+            on_failure: OnFailureStrategy::Stop,
+            step_executions: Vec::new(),
+            current_step_index: 0,
+            total_steps: 0,
+            initiated_by: String::new(),
+            request_reason: String::new(),
+            initiated_at: String::new(),
+            completed_at: String::new(),
+            approval_id: String::new(),
+            failure_reason: String::new(),
+            template_name: String::new(),
+            approval_comment: String::new(),
+            approved_at: String::new(),
+        }
+    }
+}
+
 /// handler 执行上下文(对齐 reference `context` dict)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionContext {

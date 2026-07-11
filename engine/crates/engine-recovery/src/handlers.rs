@@ -1,19 +1,24 @@
 //! 8 个 RecoveryAction mock handler(复刻 `reference/app/recovery/handlers/*.py`)。
 //!
-//! 每个 handler 是纯函数 `fn(&ResolvedNode, &Value params, &ExecutionContext) -> Value`,
-//! 返回 flat result dict(`{"success": bool, "error"?: str, ...action-specific}`),
-//! 对齐 reference handler 返回形状。
+//! 每个 handler 是纯函数 `fn(&mut ResolvedNode, &Value params, &ExecutionContext) -> Value`,
+//! 返回 flat result dict(`{"success": bool, "error"?: str, ...action-specific}`)。
+//!
+//! ## mock 双向:mutate twin + 返 result
+//!
+//! reference mock handler 改 DSS 节点 properties(供 verifier 读)+ 返 result dict。本 port
+//! 对齐:handler 接 `&mut ResolvedNode`,把动作生效后的属性写回 `attributes_json`(模拟
+//! 生效),**同时**返 result dict。这样 3.3 verifier 读 mutated attrs(faithful),rollback
+//! 反向 handler 读 post-action 状态(正确反转,非重应用到原状态)。
 //!
 //! ## 与 reference 的差异
 //!
-//! - **只 mock 模式**:reference 有 mock/real 双模式(`RECOVERY_HANDLER_MODE`);本 port
-//!   3.2 仅 mock(real handler 待 write-capability WIT,延后)。mock 不调真实 K8s/MySQL/Redis。
-//! - **不 mutate DSS 孪生**:reference mock 改 `store` 节点 properties(供 verifier 读);
-//!   本 port handler 纯返 result dict,不动 topology(topology 是 connector 的只读快照)。
-//!   3.3 verifier 据本 result dict 判(非读 DSS props)。old/new 值从 target `attributes_json`
-//!   读默认值(desired_replicas=3 / restart_count=0 等),与 reference 默认一致。
-//! - handler 校验 target 类型 + 参数,前置违例返 `{success:false, error}`(不抛异常,
-//!   对齐 reference「handler 内部失败不抛」)。
+//! - **只 mock 模式**:reference mock/real 双模式;本 port 3.2/3.3 仅 mock(real 待 write-
+//!   capability WIT)。mock 不调真实 K8s/MySQL/Redis。
+//! - **twin 即入参 `&mut ResolvedNode`**:reference 改全局 DSS store;本 port 改调用方传入的
+//!   topology twin(orchestration 3.6 应传 materialized topology 的 clone,避免污染真相源)。
+//! - handler 校验 target 类型 + 参数,违例返 `{success:false,error}`(不抛,对齐 reference)。
+//! - result 字段含 verifier 期望:new_replicas / new_restart_count / new_revision / new_version /
+//!   endpoints_refresh_count / cordoned。
 
 #![allow(missing_docs)]
 
@@ -22,8 +27,8 @@ use serde_json::{json, Value};
 
 use crate::models::ExecutionContext;
 
-/// handler 函数指针类型。
-pub type HandlerFn = fn(&ResolvedNode, &Value, &ExecutionContext) -> Value;
+/// handler 函数指针类型(取 `&mut ResolvedNode` 以 mutate twin)。
+pub type HandlerFn = fn(&mut ResolvedNode, &Value, &ExecutionContext) -> Value;
 
 /// handler 注册表(action_id -> fn)。
 pub static HANDLERS: &[(&str, HandlerFn)] = &[
@@ -60,6 +65,13 @@ fn attrs(node: &ResolvedNode) -> serde_json::Map<String, Value> {
     }
 }
 
+/// 解析 + mutate + 写回 `attributes_json`(模拟动作生效)。
+fn with_attrs_mut(node: &mut ResolvedNode, f: impl FnOnce(&mut serde_json::Map<String, Value>)) {
+    let mut m = attrs(node);
+    f(&mut m);
+    node.attributes_json = Value::Object(m).to_string();
+}
+
 fn attr_i64(attrs: &serde_json::Map<String, Value>, key: &str, default: i64) -> i64 {
     attrs.get(key).and_then(Value::as_i64).unwrap_or(default)
 }
@@ -84,9 +96,9 @@ fn err(msg: impl Into<String>) -> Value {
     json!({ "success": false, "error": msg.into() })
 }
 
-// ===== 8 handlers(mock)=====
+// ===== 8 handlers(mock + mutate twin)=====
 
-fn scale_deployment(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn scale_deployment(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "Deployment" {
         return err(format!("target is {}, not Deployment", target.resource_type));
     }
@@ -106,6 +118,11 @@ fn scale_deployment(target: &ResolvedNode, params: &Value, _ctx: &ExecutionConte
     if new > 100 {
         return err(format!("new replicas exceeds limit ({new} > 100)"));
     }
+    // mutate twin:desired = available = new(对齐 reference mock _execute_mock)
+    with_attrs_mut(target, |m| {
+        m.insert("desired_replicas".into(), json!(new));
+        m.insert("available_replicas".into(), json!(new));
+    });
     json!({
         "success": true,
         "old_replicas": old,
@@ -115,7 +132,7 @@ fn scale_deployment(target: &ResolvedNode, params: &Value, _ctx: &ExecutionConte
     })
 }
 
-fn restart_pod(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn restart_pod(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "Pod" {
         return err(format!("target is {}, not Pod", target.resource_type));
     }
@@ -127,6 +144,13 @@ fn restart_pod(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -
     let a = attrs(target);
     let old = attr_i64(&a, "restart_count", 0);
     let new = old + 1;
+    with_attrs_mut(target, |m| {
+        m.insert("restart_count".into(), json!(new));
+        // warning -> normal(对齐 reference _apply_dss)
+        if m.get("health_status").and_then(Value::as_str) == Some("warning") {
+            m.insert("health_status".into(), json!("normal"));
+        }
+    });
     json!({
         "success": true,
         "old_restart_count": old,
@@ -137,13 +161,12 @@ fn restart_pod(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -
     })
 }
 
-fn rollback_deployment(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn rollback_deployment(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "Deployment" {
         return err(format!("target is {}, not Deployment", target.resource_type));
     }
     let a = attrs(target);
     let old = attr_i64(&a, "current_revision", 1);
-    // revision 显式给则用,否则回退到上一版(最少 1)
     let new = params
         .get("revision")
         .and_then(Value::as_i64)
@@ -151,6 +174,9 @@ fn rollback_deployment(target: &ResolvedNode, params: &Value, _ctx: &ExecutionCo
     if new < 1 {
         return err(format!("revision must be >= 1 (got {new})"));
     }
+    with_attrs_mut(target, |m| {
+        m.insert("current_revision".into(), json!(new));
+    });
     json!({
         "success": true,
         "old_revision": old,
@@ -159,7 +185,7 @@ fn rollback_deployment(target: &ResolvedNode, params: &Value, _ctx: &ExecutionCo
     })
 }
 
-fn refresh_secret(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn refresh_secret(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "Secret" {
         return err(format!("target is {}, not Secret", target.resource_type));
     }
@@ -167,6 +193,9 @@ fn refresh_secret(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext
     let a = attrs(target);
     let old = attr_i64(&a, "secret_version", 1);
     let new = old + 1;
+    with_attrs_mut(target, |m| {
+        m.insert("secret_version".into(), json!(new));
+    });
     json!({
         "success": true,
         "old_version": old,
@@ -176,13 +205,16 @@ fn refresh_secret(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext
     })
 }
 
-fn drain_node(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn drain_node(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "KubernetesNode" {
         return err(format!("target is {}, not KubernetesNode", target.resource_type));
     }
     let ignore_daemonsets = param_bool(params, "ignore_daemonsets", true);
     let delete_local_data = param_bool(params, "delete_local_data", false);
     let force = param_bool(params, "force", false);
+    with_attrs_mut(target, |m| {
+        m.insert("cordoned".into(), json!(true));
+    });
     json!({
         "success": true,
         "cordoned": true,
@@ -193,7 +225,7 @@ fn drain_node(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) ->
     })
 }
 
-fn kill_query(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn kill_query(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "MySQL" {
         return err(format!("target is {}, not MySQL", target.resource_type));
     }
@@ -202,6 +234,7 @@ fn kill_query(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) ->
         _ => return err("query_id is required"),
     };
     let min_duration = param_i64(params, "min_duration_seconds", 30);
+    // 一次性动作,无持续副作用可 mutate(对齐 reference verify_kill_query not_supported)
     json!({
         "success": true,
         "killed_query_id": query_id,
@@ -210,26 +243,34 @@ fn kill_query(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) ->
     })
 }
 
-fn restart_service(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn restart_service(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "Service" {
         return err(format!("target is {}, not Service", target.resource_type));
     }
     let drop_idle = param_i64(params, "drop_idle_seconds", 0);
+    let a = attrs(target);
+    let old = attr_i64(&a, "endpoints_refresh_count", 0);
+    let new = old + 1;
+    with_attrs_mut(target, |m| {
+        m.insert("endpoints_refresh_count".into(), json!(new));
+    });
     json!({
         "success": true,
         "endpoints_regenerated": true,
+        "endpoints_refresh_count": new,
         "drop_idle_seconds": drop_idle,
         "note": "Service endpoints regenerated (mock execution)",
     })
 }
 
-fn clear_cache(target: &ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
+fn clear_cache(target: &mut ResolvedNode, params: &Value, _ctx: &ExecutionContext) -> Value {
     if target.resource_type != "Redis" {
         return err(format!("target is {}, not Redis", target.resource_type));
     }
     let scope = param_str(params, "scope", "pattern");
     let db_index = param_i64(params, "db_index", 0);
     let key_pattern = param_str(params, "key_pattern", "");
+    // 一次性动作,无持续副作用(对齐 reference verify_clear_cache not_supported)
     json!({
         "success": true,
         "scope": scope,
@@ -260,6 +301,10 @@ mod tests {
             auto_rollback: false,
         }
     }
+    /// 读 mutate 后的 attr。
+    fn attr_after(node: &ResolvedNode, key: &str) -> Option<Value> {
+        attrs(node).get(key).cloned()
+    }
 
     #[test]
     fn eight_handlers_registered() {
@@ -281,59 +326,61 @@ mod tests {
     }
 
     #[test]
-    fn scale_deployment_success_and_validations() {
-        let deploy = node("deploy:a", "Deployment", r#"{"desired_replicas":3}"#);
-        // +2 -> 5
-        let r = scale_deployment(&deploy, &json!({"replicas_delta":2}), &ctx());
+    fn scale_deployment_mutates_and_validates() {
+        let mut deploy = node("deploy:a", "Deployment", r#"{"desired_replicas":3}"#);
+        let r = scale_deployment(&mut deploy, &json!({"replicas_delta":2}), &ctx());
         assert_eq!(r["success"], true);
         assert_eq!(r["old_replicas"], 3);
         assert_eq!(r["new_replicas"], 5);
-        // delta=0 -> error
-        let r0 = scale_deployment(&deploy, &json!({"replicas_delta":0}), &ctx());
+        // twin 被 mutate
+        assert_eq!(attr_after(&deploy, "desired_replicas"), Some(json!(5)));
+        assert_eq!(attr_after(&deploy, "available_replicas"), Some(json!(5)));
+        // delta=0 -> error,twin 不动
+        let mut d2 = node("deploy:a", "Deployment", r#"{"desired_replicas":3}"#);
+        let r0 = scale_deployment(&mut d2, &json!({"replicas_delta":0}), &ctx());
         assert_eq!(r0["success"], false);
-        // 缺 delta -> error
-        let rm = scale_deployment(&deploy, &json!({}), &ctx());
-        assert_eq!(rm["success"], false);
+        assert_eq!(attr_after(&d2, "desired_replicas"), Some(json!(3))); // 未 mutate
         // 类型不匹配
-        let pod = node("pod:a", "Pod", "{}");
-        let rt = scale_deployment(&pod, &json!({"replicas_delta":1}), &ctx());
+        let mut pod = node("pod:a", "Pod", "{}");
+        let rt = scale_deployment(&mut pod, &json!({"replicas_delta":1}), &ctx());
         assert_eq!(rt["success"], false);
     }
 
     #[test]
-    fn scale_deployment_defaults_desired_replicas_3() {
-        // attributes 无 desired_replicas -> 默认 3
-        let deploy = node("deploy:a", "Deployment", "{}");
-        let r = scale_deployment(&deploy, &json!({"replicas_delta":1}), &ctx());
-        assert_eq!(r["old_replicas"], 3);
-        assert_eq!(r["new_replicas"], 4);
-    }
-
-    #[test]
-    fn restart_pod_increments_restart_count() {
-        let pod = node("pod:a", "Pod", r#"{"restart_count":2}"#);
-        let r = restart_pod(&pod, &json!({}), &ctx());
+    fn restart_pod_mutates_count_and_clears_warning() {
+        let mut pod = node("pod:a", "Pod", r#"{"restart_count":2,"health_status":"warning"}"#);
+        let r = restart_pod(&mut pod, &json!({}), &ctx());
         assert_eq!(r["success"], true);
-        assert_eq!(r["old_restart_count"], 2);
         assert_eq!(r["new_restart_count"], 3);
-        assert_eq!(r["graceful"], true); // default
+        assert_eq!(attr_after(&pod, "restart_count"), Some(json!(3)));
+        assert_eq!(attr_after(&pod, "health_status"), Some(json!("normal"))); // warning -> normal
     }
 
     #[test]
-    fn kill_query_requires_query_id() {
-        let mysql = node("mysql:a", "MySQL", "{}");
-        let r = kill_query(&mysql, &json!({}), &ctx());
-        assert_eq!(r["success"], false);
-        let r2 = kill_query(&mysql, &json!({"query_id":"q-42"}), &ctx());
-        assert_eq!(r2["success"], true);
-        assert_eq!(r2["killed_query_id"], "q-42");
+    fn kill_query_no_mutation() {
+        let mut mysql = node("mysql:a", "MySQL", "{}");
+        let r = kill_query(&mut mysql, &json!({"query_id":"q-42"}), &ctx());
+        assert_eq!(r["success"], true);
+        assert_eq!(r["killed_query_id"], "q-42");
+        // 无持续副作用 -> attributes 不变(仍空 object)
+        assert!(attrs(&mysql).is_empty());
     }
 
     #[test]
     fn drain_node_cordons() {
-        let n = node("node:a", "KubernetesNode", "{}");
-        let r = drain_node(&n, &json!({}), &ctx());
+        let mut n = node("node:a", "KubernetesNode", "{}");
+        let r = drain_node(&mut n, &json!({}), &ctx());
         assert_eq!(r["success"], true);
         assert_eq!(r["cordoned"], true);
+        assert_eq!(attr_after(&n, "cordoned"), Some(json!(true)));
+    }
+
+    #[test]
+    fn restart_service_increments_refresh_count() {
+        let mut s = node("svc:a", "Service", r#"{"endpoints_refresh_count":4}"#);
+        let r = restart_service(&mut s, &json!({}), &ctx());
+        assert_eq!(r["success"], true);
+        assert_eq!(r["endpoints_refresh_count"], 5);
+        assert_eq!(attr_after(&s, "endpoints_refresh_count"), Some(json!(5)));
     }
 }
