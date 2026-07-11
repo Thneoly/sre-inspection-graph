@@ -7,10 +7,11 @@ license.workspace = true
 description = "ChangeEvent service (PRD-002 port) — propagation BFS / yaml diff / frequency / alert correlation"
 
 [dependencies]
-engine-core = { workspace = true }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
-chrono      = { workspace = true }
-uuid        = { workspace = true }
+engine-core     = { workspace = true }
+engine-identity = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+thiserror       = { workspace = true }
+tracing         = { workspace = true }
+chrono          = { workspace = true }
+uuid            = { workspace = true }
