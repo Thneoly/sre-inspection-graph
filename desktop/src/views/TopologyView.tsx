@@ -45,6 +45,8 @@ export interface FactDto {
 
 interface Props {
   graph: GraphResponse;
+  /** Phase 3.6 - 点击节点回调(打开 NodeDetailPanel)。 */
+  onSelectNode?: (nodeId: string) => void;
 }
 
 // resource_type -> cytoscape shape。无 fallback 时给 ellipse(K8s 原生类型外的兜底)
@@ -220,9 +222,12 @@ const STYLE: StylesheetCSS[] = [
   },
 ];
 
-export function TopologyView({ graph }: Props) {
+export function TopologyView({ graph, onSelectNode }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  // 最新回调存 ref,避免 cy.on 闭包捕获 stale prop。
+  const onSelectRef = useRef(onSelectNode);
+  onSelectRef.current = onSelectNode;
 
   // 初始化 + 卸载
   useEffect(() => {
@@ -234,6 +239,8 @@ export function TopologyView({ graph }: Props) {
       layout: { name: "preset" }, // 初始无元素,layout 占位
       wheelSensitivity: 0.2,
     });
+    // Phase 3.6 - 点节点 -> 回调(打开 NodeDetailPanel)
+    cy.on("tap", "node", (evt) => onSelectRef.current?.(evt.target.id()));
     cyRef.current = cy;
     return () => {
       cy.destroy();

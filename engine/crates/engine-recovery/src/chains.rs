@@ -105,6 +105,19 @@ impl ChainRegistry {
     pub fn new() -> Self {
         Self { chains: HashMap::new() }
     }
+
+    /// 从已加载的 chain 列表构造(orchestration 从 storage 恢复用,Phase 3.6)。
+    pub fn from_chains(chains: Vec<RecoveryChain>) -> Self {
+        Self {
+            chains: chains.into_iter().map(|c| (c.chain_id.clone(), c)).collect(),
+        }
+    }
+
+    /// 全部 chain(插入序不保证;调用方按需排序)。
+    pub fn list(&self) -> Vec<&RecoveryChain> {
+        self.chains.values().collect()
+    }
+
     pub fn get(&self, id: &str) -> Option<&RecoveryChain> {
         self.chains.get(id)
     }

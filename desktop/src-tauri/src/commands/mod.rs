@@ -13,3 +13,6 @@ pub mod system;
 pub mod topology;
 pub mod wasm;
 pub mod proxy;
+pub mod recovery;
+pub mod change_events;
+pub mod alerts;

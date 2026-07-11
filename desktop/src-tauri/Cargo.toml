@@ -31,6 +31,8 @@ serde_json   = "1"
 anyhow             = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Phase 3.6 - alert event ID 生成(already transitively in lock via tauri)
+uuid = { version = "1", features = ["v4"] }
 
 # Phase 2.7 - kubectl proxy 生命周期托管(process)+ 就绪探测(net/time)。
 # Tauri 已拉 tokio 1.x,这里显式启用 process/net/time/sync 特性;Cargo 特性合并。
@@ -41,6 +43,8 @@ engine-core     = { path = "../../engine/crates/engine-core" }
 engine-identity = { path = "../../engine/crates/engine-identity" }
 engine-storage  = { path = "../../engine/crates/engine-storage" }
 engine-wasm     = { path = "../../engine/crates/engine-wasm" }
+engine-recovery = { path = "../../engine/crates/engine-recovery" }
+engine-changes  = { path = "../../engine/crates/engine-changes" }
 
 [features]
 default = ["custom-protocol"]

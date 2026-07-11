@@ -100,14 +100,29 @@ impl AlertRegistry {
         Self::default()
     }
 
+    /// 从已加载的告警列表构造(orchestration 从 storage 恢复用,Phase 3.6)。
+    pub fn from_alerts(alerts: Vec<AlertEvent>) -> Self {
+        Self { alerts }
+    }
+
     /// 追加一个告警。
     pub fn add(&mut self, alert: AlertEvent) {
-        self.alerts.push(alert);
+        self.alerts.push(alert)
+    }
+
+    /// 全部告警(插入序;启动载入 + 无过滤列出用)。
+    pub fn list_all(&self) -> Vec<&AlertEvent> {
+        self.alerts.iter().collect()
     }
 
     /// 按 ID 取告警。
     pub fn get(&self, alert_event_id: &str) -> Option<&AlertEvent> {
         self.alerts.iter().find(|a| a.alert_event_id == alert_event_id)
+    }
+
+    /// 按 ID 取告警的可变引用(`resolve_alert` 改 status/resolved_at 用)。
+    pub fn get_mut(&mut self, alert_event_id: &str) -> Option<&mut AlertEvent> {
+        self.alerts.iter_mut().find(|a| a.alert_event_id == alert_event_id)
     }
 
     /// 按 `fired_at` 时间窗列出告警(ISO8601 字典序闭区间,对齐 reference

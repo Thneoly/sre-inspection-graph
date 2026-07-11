@@ -23,7 +23,21 @@ use engine_storage::SqliteStorage;
 use engine_wasm::{ManifestFile, WasmRuntime};
 use tauri::Manager;
 
+use commands::alerts::{
+    correlate_changes_for_alert, get_alert, list_alerts, record_alert, resolve_alert,
+};
+use commands::change_events::{
+    change_event_alerts, change_event_impact, change_event_recovery_suggestion, correlated_changes,
+    frequent_changes, get_change_event, list_change_events, record_change_event,
+};
 use commands::proxy::{proxy_status, start_kubectl_proxy, stop_kubectl_proxy};
+use commands::recovery::{
+    abort_chain, cancel_chain, cancel_recovery_execution, confirm_chain,
+    confirm_recovery_execution, dry_run_recovery, execute_chain, execute_recovery,
+    get_recovery_action, get_recovery_chain, get_recovery_execution, get_chain_template,
+    list_chain_templates, list_recovery_actions, list_recovery_chains, list_recovery_executions,
+    recovery_suggestions_for_rule, reverify_recovery_execution, rollback_recovery_execution,
+};
 use commands::system::get_app_version;
 use commands::topology::{get_graph, get_topology};
 use commands::wasm::{list_connectors, sync_all_now};
@@ -121,6 +135,16 @@ pub struct AppState {
     /// desktop 托管的 kubectl proxy 子进程(Phase 2.7)。`std::sync::Mutex` 便于在
     /// `RunEvent::Exit` 同步回调里 kill;command 端持锁时间极短(不跨 await)。
     pub proxy: Mutex<Option<tokio::process::Child>>,
+    /// Phase 3.6 - recovery 执行注册表(单机确认门 + mock handler twin)。启动从
+    /// `recovery_executions` 表载入;每次 execute/confirm/rollback 后 upsert 回写。
+    pub recovery_executions: Mutex<engine_recovery::ExecutionRegistry>,
+    /// Phase 3.6 - recovery chain 注册表。启动从 `recovery_chains` 表载入。
+    pub recovery_chains: Mutex<engine_recovery::ChainRegistry>,
+    /// Phase 3.6 - change event 注册表。启动从 `change_events` 表载入;
+    /// `record_change_event` 后 upsert。
+    pub change_events: Mutex<engine_changes::ChangeRegistry>,
+    /// Phase 3.6 - alert 注册表(无 live 源,k8s-watch/webhook 延后;仅手动 record_alert)。
+    pub alerts: Mutex<engine_changes::AlertRegistry>,
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
@@ -139,21 +163,49 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             let storage_path = resolve_storage_path(app.handle())?;
-            let storage = tauri::async_runtime::block_on(async {
-                let storage = SqliteStorage::connect(&storage_path)
-                    .await
-                    .map_err(|e| format!("connect sqlite {}: {e}", storage_path.display()))?;
-                storage
-                    .migrate()
-                    .await
-                    .map_err(|e| format!("migrate sqlite {}: {e}", storage_path.display()))?;
-                Ok::<_, String>(storage)
-            })?;
+            let (storage, recovery_executions, recovery_chains, change_events, alerts) =
+                tauri::async_runtime::block_on(async {
+                    let storage = SqliteStorage::connect(&storage_path)
+                        .await
+                        .map_err(|e| format!("connect sqlite {}: {e}", storage_path.display()))?;
+                    storage
+                        .migrate()
+                        .await
+                        .map_err(|e| format!("migrate sqlite {}: {e}", storage_path.display()))?;
+                    // Phase 3.6 - 启动从 storage 载入 4 个 registry(重启恢复)
+                    let execs = storage
+                        .list_recovery_executions(1000)
+                        .await
+                        .map_err(|e| format!("load recovery_executions: {e}"))?;
+                    let chains = storage
+                        .list_recovery_chains(1000)
+                        .await
+                        .map_err(|e| format!("load recovery_chains: {e}"))?;
+                    let changes = storage
+                        .list_change_events(1000)
+                        .await
+                        .map_err(|e| format!("load change_events: {e}"))?;
+                    let alerts = storage
+                        .list_alert_events(1000)
+                        .await
+                        .map_err(|e| format!("load alert_events: {e}"))?;
+                    Ok::<_, String>((
+                        storage,
+                        engine_recovery::ExecutionRegistry::from_executions(execs),
+                        engine_recovery::ChainRegistry::from_chains(chains),
+                        engine_changes::ChangeRegistry::from_events(changes),
+                        engine_changes::AlertRegistry::from_alerts(alerts),
+                    ))
+                })?;
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
             app.manage(AppState {
                 runtime,
                 storage,
                 proxy: Mutex::new(None),
+                recovery_executions: Mutex::new(recovery_executions),
+                recovery_chains: Mutex::new(recovery_chains),
+                change_events: Mutex::new(change_events),
+                alerts: Mutex::new(alerts),
             });
             Ok(())
         })
@@ -166,6 +218,41 @@ pub fn run() {
             start_kubectl_proxy,
             stop_kubectl_proxy,
             proxy_status,
+            // Phase 3.6 - recovery (PRD-001)
+            list_recovery_actions,
+            get_recovery_action,
+            dry_run_recovery,
+            recovery_suggestions_for_rule,
+            execute_recovery,
+            list_recovery_executions,
+            get_recovery_execution,
+            confirm_recovery_execution,
+            cancel_recovery_execution,
+            rollback_recovery_execution,
+            reverify_recovery_execution,
+            list_chain_templates,
+            get_chain_template,
+            execute_chain,
+            confirm_chain,
+            cancel_chain,
+            abort_chain,
+            list_recovery_chains,
+            get_recovery_chain,
+            // Phase 3.6 - change_events (PRD-002)
+            record_change_event,
+            list_change_events,
+            get_change_event,
+            correlated_changes,
+            frequent_changes,
+            change_event_impact,
+            change_event_recovery_suggestion,
+            change_event_alerts,
+            // Phase 3.6 - alerts
+            record_alert,
+            list_alerts,
+            get_alert,
+            resolve_alert,
+            correlate_changes_for_alert,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

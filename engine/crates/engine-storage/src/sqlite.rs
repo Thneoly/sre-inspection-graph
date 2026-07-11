@@ -5,7 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use engine_core::Fact;
 use engine_identity::{ChangeSet, ResolvedEdge, ResolvedNode, Topology};
-use engine_recovery::{DryRunResult, RecoveryExecution, RecoveryStatus, VerifyStatus};
+use engine_changes::{AlertEvent, ChangeEvent};
+use engine_recovery::{
+    DryRunResult, RecoveryChain, RecoveryExecution, RecoveryStatus, VerifyStatus,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -167,6 +170,97 @@ impl SqliteStorage {
             r#"
             CREATE INDEX IF NOT EXISTS idx_recovery_executions_status
               ON recovery_executions(status)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 3.6 - change_events 表(ChangeEvent 持久化)。enum 列(change_type /
+        // source / severity_estimate)存 snake_case JSON 文本;diff_summary / propagated_to
+        // 存 JSON 文本。ChangeRegistry 启动从本表载入,record_change 后 upsert。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS change_events (
+              change_event_id TEXT PRIMARY KEY,
+              change_type TEXT NOT NULL,
+              target_resource_id TEXT NOT NULL,
+              target_resource_type TEXT NOT NULL,
+              changed_at TEXT NOT NULL,
+              changed_by TEXT NOT NULL,
+              source TEXT NOT NULL,
+              description TEXT NOT NULL,
+              diff_summary TEXT NOT NULL,
+              related_commit TEXT NOT NULL,
+              related_pr TEXT NOT NULL,
+              severity_estimate TEXT NOT NULL,
+              propagated_to TEXT NOT NULL,
+              commit_sha TEXT NOT NULL,
+              pipeline_url TEXT NOT NULL,
+              git_repo TEXT NOT NULL,
+              cluster_id TEXT NOT NULL,
+              yaml_diff TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_change_events_changed_at
+              ON change_events(changed_at DESC)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 3.6 - recovery_chains 表(RecoveryChain 持久化)。enum 列(status /
+        // on_failure)存 snake_case JSON 文本;step_executions 存 JSON 数组文本。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS recovery_chains (
+              chain_id TEXT PRIMARY KEY,
+              template_id TEXT NOT NULL,
+              target_resource_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              on_failure TEXT NOT NULL,
+              step_executions TEXT NOT NULL,
+              current_step_index INTEGER NOT NULL,
+              total_steps INTEGER NOT NULL,
+              initiated_by TEXT NOT NULL,
+              request_reason TEXT NOT NULL,
+              initiated_at TEXT NOT NULL,
+              completed_at TEXT NOT NULL,
+              approval_id TEXT NOT NULL,
+              failure_reason TEXT NOT NULL,
+              template_name TEXT NOT NULL,
+              approval_comment TEXT NOT NULL,
+              approved_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 3.6 - alert_events 表(AlertEvent 持久化)。enum 列(severity / status)
+        // 存 snake_case JSON 文本。无 live 源(k8s-watch/webhook 延后);仅 record_alert 手动录。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS alert_events (
+              alert_event_id TEXT PRIMARY KEY,
+              alert_name TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              status TEXT NOT NULL,
+              fired_at TEXT NOT NULL,
+              resource_ref TEXT NOT NULL,
+              rule_id TEXT NOT NULL,
+              metric_name TEXT NOT NULL,
+              metric_value REAL NOT NULL,
+              summary TEXT NOT NULL,
+              description TEXT NOT NULL,
+              cluster_id TEXT NOT NULL,
+              resolved_at TEXT NOT NULL
+            )
             "#,
         )
         .execute(&self.pool)
@@ -562,6 +656,233 @@ impl SqliteStorage {
         .await?;
         rows.into_iter().map(row_to_execution).collect()
     }
+
+    // ===== Phase 3.6: change_events =====
+
+    /// Insert or update a [`ChangeEvent`]。按 `change_event_id` 幂等。
+    pub async fn upsert_change_event(&self, e: &ChangeEvent) -> Result<(), StorageError> {
+        let change_type = serde_json::to_string(&e.change_type).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let source = serde_json::to_string(&e.source).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let severity =
+            serde_json::to_string(&e.severity_estimate).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let diff_summary = e.diff_summary.to_string();
+        let propagated_to =
+            serde_json::to_string(&e.propagated_to).map_err(|e| StorageError::Clock(e.to_string()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO change_events (
+                change_event_id, change_type, target_resource_id, target_resource_type,
+                changed_at, changed_by, source, description, diff_summary,
+                related_commit, related_pr, severity_estimate, propagated_to,
+                commit_sha, pipeline_url, git_repo, cluster_id, yaml_diff
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+            )
+            ON CONFLICT(change_event_id) DO UPDATE SET
+                change_type = excluded.change_type,
+                target_resource_id = excluded.target_resource_id,
+                target_resource_type = excluded.target_resource_type,
+                changed_at = excluded.changed_at,
+                changed_by = excluded.changed_by,
+                source = excluded.source,
+                description = excluded.description,
+                diff_summary = excluded.diff_summary,
+                related_commit = excluded.related_commit,
+                related_pr = excluded.related_pr,
+                severity_estimate = excluded.severity_estimate,
+                propagated_to = excluded.propagated_to,
+                commit_sha = excluded.commit_sha,
+                pipeline_url = excluded.pipeline_url,
+                git_repo = excluded.git_repo,
+                cluster_id = excluded.cluster_id,
+                yaml_diff = excluded.yaml_diff
+            "#,
+        )
+        .bind(&e.change_event_id)
+        .bind(&change_type)
+        .bind(&e.target_resource_id)
+        .bind(&e.target_resource_type)
+        .bind(&e.changed_at)
+        .bind(&e.changed_by)
+        .bind(&source)
+        .bind(&e.description)
+        .bind(&diff_summary)
+        .bind(&e.related_commit)
+        .bind(&e.related_pr)
+        .bind(&severity)
+        .bind(&propagated_to)
+        .bind(&e.commit_sha)
+        .bind(&e.pipeline_url)
+        .bind(&e.git_repo)
+        .bind(&e.cluster_id)
+        .bind(&e.yaml_diff)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 取单个 [`ChangeEvent`];不存在返 None。
+    pub async fn get_change_event(&self, change_event_id: &str) -> Result<Option<ChangeEvent>, StorageError> {
+        let row = sqlx::query(r#"SELECT * FROM change_events WHERE change_event_id = ?1"#)
+            .bind(change_event_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_change_event).transpose()
+    }
+
+    /// 列 [`ChangeEvent`](新到旧,按 changed_at 降序)。
+    pub async fn list_change_events(&self, limit: i64) -> Result<Vec<ChangeEvent>, StorageError> {
+        let rows = sqlx::query(r#"SELECT * FROM change_events ORDER BY changed_at DESC LIMIT ?1"#)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(row_to_change_event).collect()
+    }
+
+    // ===== Phase 3.6: recovery_chains =====
+
+    /// Insert or update a [`RecoveryChain`]。按 `chain_id` 幂等。
+    pub async fn upsert_recovery_chain(&self, c: &RecoveryChain) -> Result<(), StorageError> {
+        let status = serde_json::to_string(&c.status).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let on_failure = serde_json::to_string(&c.on_failure).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let step_executions =
+            serde_json::to_string(&c.step_executions).map_err(|e| StorageError::Clock(e.to_string()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO recovery_chains (
+                chain_id, template_id, target_resource_id, status, on_failure,
+                step_executions, current_step_index, total_steps,
+                initiated_by, request_reason, initiated_at, completed_at,
+                approval_id, failure_reason, template_name, approval_comment, approved_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+            )
+            ON CONFLICT(chain_id) DO UPDATE SET
+                template_id = excluded.template_id,
+                target_resource_id = excluded.target_resource_id,
+                status = excluded.status,
+                on_failure = excluded.on_failure,
+                step_executions = excluded.step_executions,
+                current_step_index = excluded.current_step_index,
+                total_steps = excluded.total_steps,
+                initiated_by = excluded.initiated_by,
+                request_reason = excluded.request_reason,
+                initiated_at = excluded.initiated_at,
+                completed_at = excluded.completed_at,
+                approval_id = excluded.approval_id,
+                failure_reason = excluded.failure_reason,
+                template_name = excluded.template_name,
+                approval_comment = excluded.approval_comment,
+                approved_at = excluded.approved_at
+            "#,
+        )
+        .bind(&c.chain_id)
+        .bind(&c.template_id)
+        .bind(&c.target_resource_id)
+        .bind(&status)
+        .bind(&on_failure)
+        .bind(&step_executions)
+        .bind(c.current_step_index as i64)
+        .bind(c.total_steps as i64)
+        .bind(&c.initiated_by)
+        .bind(&c.request_reason)
+        .bind(&c.initiated_at)
+        .bind(&c.completed_at)
+        .bind(&c.approval_id)
+        .bind(&c.failure_reason)
+        .bind(&c.template_name)
+        .bind(&c.approval_comment)
+        .bind(&c.approved_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 取单个 [`RecoveryChain`];不存在返 None。
+    pub async fn get_recovery_chain(&self, chain_id: &str) -> Result<Option<RecoveryChain>, StorageError> {
+        let row = sqlx::query(r#"SELECT * FROM recovery_chains WHERE chain_id = ?1"#)
+            .bind(chain_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_recovery_chain).transpose()
+    }
+
+    /// 列 [`RecoveryChain`](新到旧,按 initiated_at 降序)。
+    pub async fn list_recovery_chains(&self, limit: i64) -> Result<Vec<RecoveryChain>, StorageError> {
+        let rows = sqlx::query(r#"SELECT * FROM recovery_chains ORDER BY initiated_at DESC LIMIT ?1"#)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(row_to_recovery_chain).collect()
+    }
+
+    // ===== Phase 3.6: alert_events =====
+
+    /// Insert or update an [`AlertEvent`]。按 `alert_event_id` 幂等。
+    pub async fn upsert_alert_event(&self, a: &AlertEvent) -> Result<(), StorageError> {
+        let severity = serde_json::to_string(&a.severity).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let status = serde_json::to_string(&a.status).map_err(|e| StorageError::Clock(e.to_string()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO alert_events (
+                alert_event_id, alert_name, severity, status, fired_at,
+                resource_ref, rule_id, metric_name, metric_value,
+                summary, description, cluster_id, resolved_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+            )
+            ON CONFLICT(alert_event_id) DO UPDATE SET
+                alert_name = excluded.alert_name,
+                severity = excluded.severity,
+                status = excluded.status,
+                fired_at = excluded.fired_at,
+                resource_ref = excluded.resource_ref,
+                rule_id = excluded.rule_id,
+                metric_name = excluded.metric_name,
+                metric_value = excluded.metric_value,
+                summary = excluded.summary,
+                description = excluded.description,
+                cluster_id = excluded.cluster_id,
+                resolved_at = excluded.resolved_at
+            "#,
+        )
+        .bind(&a.alert_event_id)
+        .bind(&a.alert_name)
+        .bind(&severity)
+        .bind(&status)
+        .bind(&a.fired_at)
+        .bind(&a.resource_ref)
+        .bind(&a.rule_id)
+        .bind(&a.metric_name)
+        .bind(a.metric_value)
+        .bind(&a.summary)
+        .bind(&a.description)
+        .bind(&a.cluster_id)
+        .bind(&a.resolved_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 取单个 [`AlertEvent`];不存在返 None。
+    pub async fn get_alert_event(&self, alert_event_id: &str) -> Result<Option<AlertEvent>, StorageError> {
+        let row = sqlx::query(r#"SELECT * FROM alert_events WHERE alert_event_id = ?1"#)
+            .bind(alert_event_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_alert_event).transpose()
+    }
+
+    /// 列 [`AlertEvent`](新到旧,按 fired_at 降序)。
+    pub async fn list_alert_events(&self, limit: i64) -> Result<Vec<AlertEvent>, StorageError> {
+        let rows = sqlx::query(r#"SELECT * FROM alert_events ORDER BY fired_at DESC LIMIT ?1"#)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(row_to_alert_event).collect()
+    }
 }
 
 /// 把一行 recovery_executions 解析成 [`RecoveryExecution`]。
@@ -603,6 +924,90 @@ fn row_to_execution(row: sqlx::sqlite::SqliteRow) -> Result<RecoveryExecution, S
         chain_step_index: row.try_get("chain_step_index")?,
         approval_comment: row.try_get("approval_comment")?,
         approved_at: row.try_get("approved_at")?,
+    })
+}
+
+/// 把一行 change_events 解析成 [`ChangeEvent`]。
+fn row_to_change_event(row: sqlx::sqlite::SqliteRow) -> Result<ChangeEvent, StorageError> {
+    let change_type: String = row.try_get("change_type")?;
+    let source: String = row.try_get("source")?;
+    let severity: String = row.try_get("severity_estimate")?;
+    let diff_summary: String = row.try_get("diff_summary")?;
+    let propagated_to: String = row.try_get("propagated_to")?;
+    Ok(ChangeEvent {
+        change_event_id: row.try_get("change_event_id")?,
+        change_type: serde_json::from_str(&change_type)
+            .map_err(|e| StorageError::Clock(format!("change_type parse: {e}")))?,
+        target_resource_id: row.try_get("target_resource_id")?,
+        target_resource_type: row.try_get("target_resource_type")?,
+        changed_at: row.try_get("changed_at")?,
+        changed_by: row.try_get("changed_by")?,
+        source: serde_json::from_str(&source).map_err(|e| StorageError::Clock(format!("source parse: {e}")))?,
+        description: row.try_get("description")?,
+        diff_summary: serde_json::from_str(&diff_summary)
+            .map_err(|e| StorageError::Clock(format!("diff_summary parse: {e}")))?,
+        related_commit: row.try_get("related_commit")?,
+        related_pr: row.try_get("related_pr")?,
+        severity_estimate: serde_json::from_str(&severity)
+            .map_err(|e| StorageError::Clock(format!("severity parse: {e}")))?,
+        propagated_to: serde_json::from_str(&propagated_to)
+            .map_err(|e| StorageError::Clock(format!("propagated_to parse: {e}")))?,
+        commit_sha: row.try_get("commit_sha")?,
+        pipeline_url: row.try_get("pipeline_url")?,
+        git_repo: row.try_get("git_repo")?,
+        cluster_id: row.try_get("cluster_id")?,
+        yaml_diff: row.try_get("yaml_diff")?,
+    })
+}
+
+/// 把一行 recovery_chains 解析成 [`RecoveryChain`]。
+fn row_to_recovery_chain(row: sqlx::sqlite::SqliteRow) -> Result<RecoveryChain, StorageError> {
+    let status: String = row.try_get("status")?;
+    let on_failure: String = row.try_get("on_failure")?;
+    let step_executions: String = row.try_get("step_executions")?;
+    let current_step_index: i64 = row.try_get("current_step_index")?;
+    let total_steps: i64 = row.try_get("total_steps")?;
+    Ok(RecoveryChain {
+        chain_id: row.try_get("chain_id")?,
+        template_id: row.try_get("template_id")?,
+        target_resource_id: row.try_get("target_resource_id")?,
+        status: serde_json::from_str(&status).map_err(|e| StorageError::Clock(format!("status parse: {e}")))?,
+        on_failure: serde_json::from_str(&on_failure)
+            .map_err(|e| StorageError::Clock(format!("on_failure parse: {e}")))?,
+        step_executions: serde_json::from_str(&step_executions)
+            .map_err(|e| StorageError::Clock(format!("step_executions parse: {e}")))?,
+        current_step_index: current_step_index as usize,
+        total_steps: total_steps as usize,
+        initiated_by: row.try_get("initiated_by")?,
+        request_reason: row.try_get("request_reason")?,
+        initiated_at: row.try_get("initiated_at")?,
+        completed_at: row.try_get("completed_at")?,
+        approval_id: row.try_get("approval_id")?,
+        failure_reason: row.try_get("failure_reason")?,
+        template_name: row.try_get("template_name")?,
+        approval_comment: row.try_get("approval_comment")?,
+        approved_at: row.try_get("approved_at")?,
+    })
+}
+
+/// 把一行 alert_events 解析成 [`AlertEvent`]。
+fn row_to_alert_event(row: sqlx::sqlite::SqliteRow) -> Result<AlertEvent, StorageError> {
+    let severity: String = row.try_get("severity")?;
+    let status: String = row.try_get("status")?;
+    Ok(AlertEvent {
+        alert_event_id: row.try_get("alert_event_id")?,
+        alert_name: row.try_get("alert_name")?,
+        severity: serde_json::from_str(&severity).map_err(|e| StorageError::Clock(format!("severity parse: {e}")))?,
+        status: serde_json::from_str(&status).map_err(|e| StorageError::Clock(format!("status parse: {e}")))?,
+        fired_at: row.try_get("fired_at")?,
+        resource_ref: row.try_get("resource_ref")?,
+        rule_id: row.try_get("rule_id")?,
+        metric_name: row.try_get("metric_name")?,
+        metric_value: row.try_get("metric_value")?,
+        summary: row.try_get("summary")?,
+        description: row.try_get("description")?,
+        cluster_id: row.try_get("cluster_id")?,
+        resolved_at: row.try_get("resolved_at")?,
     })
 }
 
@@ -1074,5 +1479,116 @@ mod tests {
         assert_eq!(after, next2);
         assert_eq!(after.nodes.len(), 2); // cluster + ns
         assert_eq!(after.edges.len(), 1); // cluster->ns
+    }
+
+    #[tokio::test]
+    async fn change_event_round_trips_sqlite() {
+        let store = migrated_store().await;
+        let ev = engine_changes::ChangeEvent {
+            change_event_id: "ce-abc123def456".into(),
+            change_type: engine_changes::ChangeType::ConfigmapUpdated,
+            target_resource_id: "cm:order-config".into(),
+            target_resource_type: "ConfigMap".into(),
+            changed_at: "2026-07-11T03:00:00Z".into(),
+            changed_by: "alice".into(),
+            source: engine_changes::Source::Manual,
+            description: "pool 20->50".into(),
+            diff_summary: serde_json::json!({"max_pool_size": {"old": 20, "new": 50}}),
+            related_commit: "abc123".into(),
+            related_pr: "PR-42".into(),
+            severity_estimate: engine_changes::Severity::Medium,
+            propagated_to: vec!["pod:order-api-1".into(), "pod:order-api-2".into()],
+            commit_sha: "abc123".into(),
+            pipeline_url: "https://ci/x".into(),
+            git_repo: "order-api".into(),
+            cluster_id: "demo".into(),
+            yaml_diff: "--- old\n+++ new\n".into(),
+        };
+        store.upsert_change_event(&ev).await.expect("upsert");
+        let got = store
+            .get_change_event(&ev.change_event_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got, ev);
+        assert_eq!(got.propagated_to, vec!["pod:order-api-1".to_string(), "pod:order-api-2".to_string()]);
+        assert_eq!(got.diff_summary["max_pool_size"]["new"], 50);
+
+        let listed = store.list_change_events(10).await.expect("list");
+        assert_eq!(listed.len(), 1);
+        // upsert 幂等
+        store.upsert_change_event(&ev).await.expect("upsert again");
+        let listed2 = store.list_change_events(10).await.expect("list2");
+        assert_eq!(listed2.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn recovery_chain_round_trips_sqlite() {
+        let store = migrated_store().await;
+        let chain = engine_recovery::RecoveryChain {
+            chain_id: "chain-1".into(),
+            template_id: "safe_rollback_deployment".into(),
+            target_resource_id: "deploy:order-api".into(),
+            status: engine_recovery::ChainStatus::Succeeded,
+            on_failure: engine_recovery::OnFailureStrategy::RollbackAll,
+            step_executions: vec!["e1".into(), "e2".into(), "e3".into()],
+            current_step_index: 3,
+            total_steps: 3,
+            initiated_by: "tester".into(),
+            request_reason: "rollback".into(),
+            initiated_at: "2026-07-11T03:00:00Z".into(),
+            completed_at: "2026-07-11T03:01:00Z".into(),
+            approval_id: String::new(),
+            failure_reason: String::new(),
+            template_name: "安全回滚 Deployment".into(),
+            approval_comment: String::new(),
+            approved_at: String::new(),
+        };
+        store.upsert_recovery_chain(&chain).await.expect("upsert");
+        let got = store
+            .get_recovery_chain(&chain.chain_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.chain_id, "chain-1");
+        assert_eq!(got.status, engine_recovery::ChainStatus::Succeeded);
+        assert_eq!(got.on_failure, engine_recovery::OnFailureStrategy::RollbackAll);
+        assert_eq!(got.step_executions, vec!["e1".to_string(), "e2".to_string(), "e3".to_string()]);
+        assert_eq!(got.current_step_index, 3);
+        assert_eq!(got.total_steps, 3);
+        assert_eq!(got.template_name, "安全回滚 Deployment");
+
+        let listed = store.list_recovery_chains(10).await.expect("list");
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn alert_event_round_trips_sqlite() {
+        let store = migrated_store().await;
+        let mut alert = engine_changes::AlertEvent::new("alert-1", "HighErrorRate");
+        alert.severity = engine_changes::AlertSeverity::Critical;
+        alert.status = engine_changes::AlertStatus::Firing;
+        alert.fired_at = "2026-07-11T03:00:00Z".into();
+        alert.resource_ref = "svc:order-api".into();
+        alert.rule_id = "rule-1".into();
+        alert.metric_name = "error_rate".into();
+        alert.metric_value = 12.5;
+        alert.summary = "error rate high".into();
+        alert.description = "p99 spike".into();
+        alert.cluster_id = "demo".into();
+        store.upsert_alert_event(&alert).await.expect("upsert");
+        let got = store
+            .get_alert_event(&alert.alert_event_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.alert_event_id, "alert-1");
+        assert_eq!(got.severity, engine_changes::AlertSeverity::Critical);
+        assert_eq!(got.status, engine_changes::AlertStatus::Firing);
+        assert_eq!(got.resource_ref, "svc:order-api");
+        assert!((got.metric_value - 12.5).abs() < f64::EPSILON);
+
+        let listed = store.list_alert_events(10).await.expect("list");
+        assert_eq!(listed.len(), 1);
     }
 }

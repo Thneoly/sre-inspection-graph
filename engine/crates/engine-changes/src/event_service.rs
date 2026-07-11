@@ -42,6 +42,11 @@ impl ChangeRegistry {
         Self::default()
     }
 
+    /// 从已加载的事件列表构造(orchestration 从 storage 恢复用,Phase 3.6)。
+    pub fn from_events(events: Vec<ChangeEvent>) -> Self {
+        Self { events }
+    }
+
     /// 追加一个事件(对齐 `store.add_change_event`)。
     pub fn add(&mut self, event: ChangeEvent) {
         self.events.push(event);
