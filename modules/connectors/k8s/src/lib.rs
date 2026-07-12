@@ -55,6 +55,8 @@ mod imp {
         cluster: String,
         #[serde(default = "default_namespace")]
         namespace: String,
+        #[serde(default = "default_release_prefix")]
+        release_prefix: String,
     }
     fn default_api_base() -> String {
         "http://127.0.0.1:8001".to_string()
@@ -65,6 +67,9 @@ mod imp {
     fn default_namespace() -> String {
         "default".to_string()
     }
+    fn default_release_prefix() -> String {
+        mapper::DEFAULT_RELEASE_PREFIX.to_string()
+    }
 
     impl Guest for K8s {
         fn sync(config_json: String) -> Result<SyncResult, SyncError> {
@@ -73,6 +78,7 @@ mod imp {
                     api_base: default_api_base(),
                     cluster: default_cluster(),
                     namespace: default_namespace(),
+                    release_prefix: default_release_prefix(),
                 }
             } else {
                 serde_json::from_str(&config_json)
@@ -144,6 +150,7 @@ mod imp {
                 services,
                 configmaps,
                 secrets,
+                release_prefix: cfg.release_prefix,
             };
             let facts = mapper::map_cluster(&input)
                 .into_iter()

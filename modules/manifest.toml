@@ -78,7 +78,7 @@ sync_interval_seconds = 30
 enabled = true
 wasi_version = "p2"
 sha256 = ""
-config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo" }
+config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo", release_prefix = "otel-demo" }
 
 # Phase 3+ 起在这里追加 jaeger / flagd / k8s-events real connector
 # 以及 8 个 PRD-001 handler。

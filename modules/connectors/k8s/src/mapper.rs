@@ -69,16 +69,92 @@ pub struct ClusterInput {
     pub configmaps: Value,
     /// `GET /api/v1/namespaces/{ns}/secrets` 响应(Phase 3.7:Secret node + Pod USES 边;只取 name + data_keys)。
     pub secrets: Value,
+    /// Helm release 前缀(Phase 3.8:Application 名 + component 名 strip 用,默认 "otel-demo")。
+    pub release_prefix: String,
 }
 
 const SOURCE: &str = "k8s";
 const KIND: &str = "topology-node";
 const EDGE_KIND: &str = "topology-edge";
 
+/// OTel Demo Helm release 默认前缀(对照 reference DEFAULT_RELEASE_PREFIX)。
+pub const DEFAULT_RELEASE_PREFIX: &str = "otel-demo";
+
+/// infra deploy(不挂 Application,对照 reference INFRA_NAMES)。
+const INFRA_NAMES: &[&str] = &[
+    "loadgenerator",
+    "otelcol",
+    "prometheus-server",
+    "jaeger",
+    "opensearch",
+    "grafana",
+    "kibana",
+];
+
+/// 中间件识别 -> (keyword, 节点 type, id 前缀)(对照 reference MIDDLEWARE_PATTERNS)。
+const MIDDLEWARE_PATTERNS: &[(&str, &str, &str)] = &[
+    ("valkey", "Redis", "redis"),
+    ("redis", "Redis", "redis"),
+    ("kafka", "Kafka", "kafka"),
+    ("postgres", "PostgreSQL", "postgres"),
+    ("postgresql", "PostgreSQL", "postgres"),
+    ("mysql", "MySQL", "mysql"),
+];
+
+/// strip release prefix(otel-demo-cartservice -> cartservice)。
+fn strip_release_prefix<'a>(name: &'a str, release_prefix: &str) -> &'a str {
+    let p = format!("{release_prefix}-");
+    name.strip_prefix(&p).unwrap_or(name)
+}
+
+/// 从 deployment 名推 ApplicationComponent 短名(对照 reference normalize_component_name)。
+/// strip release prefix + 砍 "service" 后缀(长度 > "service")+ 拆混淆名。
+fn normalize_component_name(deploy_name: &str, release_prefix: &str) -> String {
+    let mut name = strip_release_prefix(deploy_name, release_prefix).to_string();
+    if name.ends_with("service") && name.len() > "service".len() {
+        name.truncate(name.len() - "service".len());
+    }
+    name = name
+        .replace("frauddetection", "fraud-detection")
+        .replace("productcatalog", "product-catalog")
+        .replace("frontendproxy", "frontend-proxy");
+    name
+}
+
+/// 检测中间件 -> (node_type, id_prefix)(对照 reference detect_middleware)。
+/// 先整名匹配,再 keyword 子串兜底。
+fn detect_middleware(
+    deploy_name: &str,
+    release_prefix: &str,
+) -> Option<(&'static str, &'static str)> {
+    let short = strip_release_prefix(deploy_name, release_prefix);
+    for &(kw, mw_type, prefix) in MIDDLEWARE_PATTERNS {
+        if short == kw {
+            return Some((mw_type, prefix));
+        }
+    }
+    for &(kw, mw_type, prefix) in MIDDLEWARE_PATTERNS {
+        if short.contains(kw) {
+            return Some((mw_type, prefix));
+        }
+    }
+    None
+}
+
+/// infra deploy 不挂 Application(对照 reference is_infra)。
+fn is_infra(deploy_name: &str, release_prefix: &str) -> bool {
+    let short = strip_release_prefix(deploy_name, release_prefix);
+    if INFRA_NAMES.contains(&short) {
+        return true;
+    }
+    INFRA_NAMES.iter().any(|infra| short.starts_with(infra))
+}
+
 /// 把一批 K8s list 响应映射成 topology Fact 列表(节点 + 富化边)。
 pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
     let c = input.cluster.as_str();
     let ns = input.namespace.as_str();
+    let release = input.release_prefix.as_str();
     let now = input.now;
     let mut facts: Vec<Fact> = Vec::new();
 
@@ -121,12 +197,32 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
         }),
     ));
 
-    // 4) Deployments
+    // 4) Application(1 个 per c:ns:release,parent = ns)
+    let app_rid = format!("app:{c}:{ns}:{release}");
+    facts.push(node_fact(
+        now,
+        &app_rid,
+        "Application",
+        json!({
+            "cluster": c,
+            "namespace": ns,
+            "name": release,
+            "parent_resource_id": format!("ns:{c}:{ns}"),
+            "release": release,
+            "health_status": "normal",
+            "risk_level": "low",
+        }),
+    ));
+
+    // 5) Deployments + Component/Middleware owner(infra 不挂 application)
+    let mut comp_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut mw_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for d in items(&input.deployments) {
         let Some(name) = meta_name(d) else { continue };
+        let deploy_rid = format!("deploy:{c}:{ns}:{name}");
         facts.push(node_fact(
             now,
-            &format!("deploy:{c}:{ns}:{name}"),
+            &deploy_rid,
             "Deployment",
             json!({
                 "cluster": c,
@@ -137,6 +233,54 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 "risk_level": "low",
             }),
         ));
+
+        if is_infra(name, release) {
+            continue;
+        }
+        if let Some((mw_type, mw_prefix)) = detect_middleware(name, release) {
+            // Middleware node(dedup)+ DEPLOYED_AS(mw -> deploy)
+            let mw_rid = format!("{mw_prefix}:{c}:{ns}:{name}");
+            if mw_seen.insert(mw_rid.clone()) {
+                facts.push(node_fact(
+                    now,
+                    &mw_rid,
+                    mw_type,
+                    json!({
+                        "cluster": c,
+                        "namespace": ns,
+                        "name": name,
+                        "parent_resource_id": format!("ns:{c}:{ns}"),
+                        "health_status": "normal",
+                        "risk_level": "low",
+                    }),
+                ));
+            }
+            facts.push(edge_fact(now, "DEPLOYED_AS", &mw_rid, &deploy_rid));
+        } else {
+            // ApplicationComponent node(dedup,parent=app 派生 CONTAINS)+ DEPLOYED_AS/BELONGS_TO
+            let comp_name = normalize_component_name(name, release);
+            let comp_rid = format!("comp:{c}:{ns}:{comp_name}");
+            if comp_seen.insert(comp_rid.clone()) {
+                facts.push(node_fact(
+                    now,
+                    &comp_rid,
+                    "ApplicationComponent",
+                    json!({
+                        "cluster": c,
+                        "namespace": ns,
+                        "name": comp_name,
+                        "parent_resource_id": app_rid.clone(),
+                        "health_status": "normal",
+                        "risk_level": "low",
+                    }),
+                ));
+                // BELONGS_TO(comp -> app)反向边
+                facts.push(edge_fact(now, "BELONGS_TO", &comp_rid, &app_rid));
+            }
+            // DEPLOYED_AS(comp -> deploy) + BELONGS_TO(deploy -> comp)
+            facts.push(edge_fact(now, "DEPLOYED_AS", &comp_rid, &deploy_rid));
+            facts.push(edge_fact(now, "BELONGS_TO", &deploy_rid, &comp_rid));
+        }
     }
 
     // 5) ReplicaSet name -> Deployment name(owner 链中间层,不入图)

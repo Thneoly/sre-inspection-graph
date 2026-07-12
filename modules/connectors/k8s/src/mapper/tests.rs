@@ -24,13 +24,16 @@ fn base_input() -> ClusterInput {
         cluster: "vm".to_string(),
         namespace: "otel-demo".to_string(),
         now: 1_700_000_000,
+        release_prefix: "otel-demo".to_string(),
         nodes: json!({ "items": [
             { "metadata": { "name": "vm1" }, "status": { "conditions": [ { "type": "Ready", "status": "True" } ] } },
             { "metadata": { "name": "vm2" }, "status": { "conditions": [ { "type": "Ready", "status": "False" } ] } }
         ]}),
         deployments: json!({ "items": [
             { "metadata": { "name": "frontend" } },
-            { "metadata": { "name": "cartservice" } }
+            { "metadata": { "name": "cartservice" } },
+            // middleware:otel-demo-valkey -> Redis(strip prefix 后 "valkey" 命中)
+            { "metadata": { "name": "otel-demo-valkey" } }
         ]}),
         replicasets: json!({ "items": [
             { "metadata": { "name": "frontend-abc", "ownerReferences": [ { "kind": "Deployment", "name": "frontend" } ] } },
@@ -83,8 +86,15 @@ fn builds_full_hierarchy_with_parents() {
     assert_eq!(attr(find(&facts, "node:vm:vm1").unwrap(), "parent_resource_id"), "cluster:vm");
     // Namespace -> cluster
     assert_eq!(attr(find(&facts, "ns:vm:otel-demo").unwrap(), "parent_resource_id"), "cluster:vm");
+    // Application -> namespace(Phase 3.8)
+    assert_eq!(attr(find(&facts, "app:vm:otel-demo:otel-demo").unwrap(), "parent_resource_id"), "ns:vm:otel-demo");
+    // ApplicationComponent -> application(派生 CONTAINS)
+    assert_eq!(attr(find(&facts, "comp:vm:otel-demo:frontend").unwrap(), "parent_resource_id"), "app:vm:otel-demo:otel-demo");
+    assert_eq!(attr(find(&facts, "comp:vm:otel-demo:cart").unwrap(), "parent_resource_id"), "app:vm:otel-demo:otel-demo");
     // Deployment -> namespace
     assert_eq!(attr(find(&facts, "deploy:vm:otel-demo:frontend").unwrap(), "parent_resource_id"), "ns:vm:otel-demo");
+    // Middleware(Redis)-> namespace
+    assert_eq!(attr(find(&facts, "redis:vm:otel-demo:otel-demo-valkey").unwrap(), "parent_resource_id"), "ns:vm:otel-demo");
     // Service -> namespace
     assert_eq!(attr(find(&facts, "service:vm:otel-demo:frontend").unwrap(), "parent_resource_id"), "ns:vm:otel-demo");
     // ConfigMap -> namespace
@@ -145,12 +155,13 @@ fn configmap_and_secret_store_data_keys_only() {
 fn all_facts_carry_k8s_source() {
     let facts = map_cluster(&base_input());
     assert!(facts.iter().all(|f| f.source == "k8s"));
-    // 节点:1 cluster + 2 node + 1 ns + 2 deploy + 3 pod + 1 svc + 2 cm + 1 secret = 13
+    // 节点:1 cluster + 2 node + 1 ns + 1 app + 3 deploy + 2 comp + 1 mw + 3 pod + 1 svc + 2 cm + 1 secret = 18
     let nodes = facts.iter().filter(|f| f.kind == "topology-node").count();
-    assert_eq!(nodes, 13);
-    // 边:3 SCHEDULED_ON + 2 USES(cm)+ 1 USES(secret)+ 1 ROUTES_TO = 7
+    assert_eq!(nodes, 18);
+    // 边:SCHEDULED_ON 3 + USES 3 + ROUTES_TO 1 + BELONGS_TO(comp->app 2 + deploy->comp 2)
+    //     + DEPLOYED_AS(comp->deploy 2 + mw->deploy 1)= 14
     let edges = facts.iter().filter(|f| f.kind == "topology-edge").count();
-    assert_eq!(edges, 7);
+    assert_eq!(edges, 14);
 }
 
 #[test]
@@ -162,7 +173,6 @@ fn scheduled_on_edge_per_pod_with_nodename() {
         .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "SCHEDULED_ON")
         .collect();
     assert_eq!(sched.len(), 3);
-    // frontend-abc-1 调度在 vm1
     assert!(find_kind(
         &facts,
         "edge:SCHEDULED_ON:pod:vm:otel-demo:frontend-abc-1->node:vm:vm1",
@@ -174,7 +184,6 @@ fn scheduled_on_edge_per_pod_with_nodename() {
 #[test]
 fn uses_edge_for_configmap_and_secret_refs() {
     let facts = map_cluster(&base_input());
-    // frontend-abc-1 USES cm:feature-flags(volumes)+ cm:order-config(envFrom)
     assert!(find_kind(
         &facts,
         "edge:USES:pod:vm:otel-demo:frontend-abc-1->cm:vm:otel-demo:feature-flags",
@@ -187,14 +196,12 @@ fn uses_edge_for_configmap_and_secret_refs() {
         "topology-edge"
     )
     .is_some());
-    // cartservice-xyz-1 USES secret:order-db(volumes)
     assert!(find_kind(
         &facts,
         "edge:USES:pod:vm:otel-demo:cartservice-xyz-1->secret:vm:otel-demo:order-db",
         "topology-edge"
     )
     .is_some());
-    // USES 边总数 = 2 cm + 1 secret = 3
     let uses = facts
         .iter()
         .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "USES")
@@ -205,7 +212,6 @@ fn uses_edge_for_configmap_and_secret_refs() {
 #[test]
 fn routes_to_edge_matches_selector() {
     let facts = map_cluster(&base_input());
-    // service frontend selector {app:frontend} 只匹配 frontend-abc-1(不匹配 cartservice/orphan)
     let routes: Vec<&Fact> = facts
         .iter()
         .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "ROUTES_TO")
@@ -215,12 +221,131 @@ fn routes_to_edge_matches_selector() {
     assert_eq!(attr(routes[0], "target"), "pod:vm:otel-demo:frontend-abc-1");
 }
 
+// ===== Phase 3.8:Application/Component/Middleware 层 =====
+
 #[test]
-fn empty_or_null_lists_yield_only_cluster_and_namespace() {
+fn normalize_component_name_cases() {
+    // strip release prefix + 砍 service 后缀 + 拆混淆名(对照 reference)
+    assert_eq!(normalize_component_name("otel-demo-cartservice", "otel-demo"), "cart");
+    assert_eq!(normalize_component_name("otel-demo-frontend", "otel-demo"), "frontend");
+    assert_eq!(normalize_component_name("otel-demo-frontendproxy", "otel-demo"), "frontend-proxy");
+    assert_eq!(normalize_component_name("otel-demo-recommendationservice", "otel-demo"), "recommendation");
+    assert_eq!(normalize_component_name("otel-demo-frauddetectionservice", "otel-demo"), "fraud-detection");
+    assert_eq!(normalize_component_name("otel-demo-productcatalogservice", "otel-demo"), "product-catalog");
+    // 无 release 前缀也不挂
+    assert_eq!(normalize_component_name("frontend", "otel-demo"), "frontend");
+    // 短名不砍 service(避免吃光)
+    assert_eq!(normalize_component_name("ad", "otel-demo"), "ad");
+}
+
+#[test]
+fn detect_middleware_cases() {
+    // 整名匹配
+    assert_eq!(detect_middleware("otel-demo-valkey", "otel-demo"), Some(("Redis", "redis")));
+    assert_eq!(detect_middleware("otel-demo-kafka", "otel-demo"), Some(("Kafka", "kafka")));
+    assert_eq!(detect_middleware("otel-demo-postgres", "otel-demo"), Some(("PostgreSQL", "postgres")));
+    // 普通业务服务不是中间件
+    assert_eq!(detect_middleware("otel-demo-frontend", "otel-demo"), None);
+    assert_eq!(detect_middleware("otel-demo-cartservice", "otel-demo"), None);
+}
+
+#[test]
+fn is_infra_cases() {
+    assert!(is_infra("otel-demo-loadgenerator", "otel-demo"));
+    assert!(is_infra("otel-demo-jaeger", "otel-demo"));
+    // 普通业务不是 infra
+    assert!(!is_infra("otel-demo-frontend", "otel-demo"));
+    assert!(!is_infra("otel-demo-cartservice", "otel-demo"));
+}
+
+#[test]
+fn application_component_middleware_layer() {
+    let facts = map_cluster(&base_input());
+
+    // Application node
+    assert_eq!(
+        find(&facts, "app:vm:otel-demo:otel-demo").unwrap().resource_type,
+        "Application"
+    );
+
+    // ApplicationComponent:frontend(无 service 后缀)+ cart(砍 service)
+    assert_eq!(
+        find(&facts, "comp:vm:otel-demo:frontend").unwrap().resource_type,
+        "ApplicationComponent"
+    );
+    assert_eq!(
+        attr(find(&facts, "comp:vm:otel-demo:cart").unwrap(), "name"),
+        "cart"
+    );
+
+    // Middleware:otel-demo-valkey -> Redis
+    let mw = find(&facts, "redis:vm:otel-demo:otel-demo-valkey").unwrap();
+    assert_eq!(mw.resource_type, "Redis");
+
+    // DEPLOYED_AS:comp -> deploy(frontend + cart)
+    assert!(find_kind(
+        &facts,
+        "edge:DEPLOYED_AS:comp:vm:otel-demo:frontend->deploy:vm:otel-demo:frontend",
+        "topology-edge"
+    )
+    .is_some());
+    assert!(find_kind(
+        &facts,
+        "edge:DEPLOYED_AS:comp:vm:otel-demo:cart->deploy:vm:otel-demo:cartservice",
+        "topology-edge"
+    )
+    .is_some());
+    // DEPLOYED_AS:mw -> deploy(valkey)
+    assert!(find_kind(
+        &facts,
+        "edge:DEPLOYED_AS:redis:vm:otel-demo:otel-demo-valkey->deploy:vm:otel-demo:otel-demo-valkey",
+        "topology-edge"
+    )
+    .is_some());
+
+    // BELONGS_TO:deploy -> comp(反向,action BELONGS_TO forward 命中)
+    assert!(find_kind(
+        &facts,
+        "edge:BELONGS_TO:deploy:vm:otel-demo:frontend->comp:vm:otel-demo:frontend",
+        "topology-edge"
+    )
+    .is_some());
+    // BELONGS_TO:comp -> app(反向)
+    assert!(find_kind(
+        &facts,
+        "edge:BELONGS_TO:comp:vm:otel-demo:frontend->app:vm:otel-demo:otel-demo",
+        "topology-edge"
+    )
+    .is_some());
+
+    // CONTAINS(app -> comp)由 comp.parent_resource_id=app 派生(非 edge fact)
+    assert!(
+        find_kind(&facts, "edge:CONTAINS:app:vm:otel-demo:otel-demo->comp:vm:otel-demo:frontend", "topology-edge")
+            .is_none(),
+        "CONTAINS(app->comp)应派生(非 edge fact)"
+    );
+
+    // BELONGS_TO 边总数:comp->app 2 + deploy->comp 2 = 4
+    let belongs = facts
+        .iter()
+        .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "BELONGS_TO")
+        .count();
+    assert_eq!(belongs, 4);
+    // DEPLOYED_AS 边总数:comp->deploy 2 + mw->deploy 1 = 3
+    let deployed = facts
+        .iter()
+        .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "DEPLOYED_AS")
+        .count();
+    assert_eq!(deployed, 3);
+}
+
+#[test]
+fn empty_or_null_lists_yield_only_cluster_namespace_application() {
     let input = ClusterInput {
         cluster: "vm".to_string(),
         namespace: "otel-demo".to_string(),
         now: 1,
+        release_prefix: "otel-demo".to_string(),
         nodes: serde_json::Value::Null,
         deployments: json!({}),
         replicasets: json!({ "items": [] }),
@@ -230,9 +355,10 @@ fn empty_or_null_lists_yield_only_cluster_and_namespace() {
         secrets: json!({ "items": [] }),
     };
     let facts = map_cluster(&input);
-    // 只剩 cluster + namespace(无 edge fact)
-    assert_eq!(facts.len(), 2);
+    // cluster + namespace + application(无 deploy 故无 component)
+    assert_eq!(facts.len(), 3);
     assert!(find(&facts, "cluster:vm").is_some());
     assert!(find(&facts, "ns:vm:otel-demo").is_some());
+    assert!(find(&facts, "app:vm:otel-demo:otel-demo").is_some());
     assert!(facts.iter().all(|f| f.kind == "topology-node"));
 }
