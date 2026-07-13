@@ -6,6 +6,7 @@ members = [
     "connectors/k8s-mini",
     "connectors/prometheus",
     "connectors/k8s",
+    "handlers/scale-deploy",
 ]
 
 [workspace.package]

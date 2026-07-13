@@ -1,0 +1,22 @@
+[package]
+name = "scale-deploy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Recovery handler - scale_deployment via K8s API (handler-world, Phase 3.9a-3)"
+
+[lib]
+# cdylib 出 wasm32-wasip2 二进制;rlib 让 host 端可链接(Phase 3.9a-3a 仅 WASM 逻辑)
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.component]
+package = "sre:inspection-scale-deploy@0.1.0"
+
+[package.metadata.component.target]
+path  = "../../../specs/wit"
+world = "handler-world"
+
+[dependencies]
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+wit-bindgen = { workspace = true }
