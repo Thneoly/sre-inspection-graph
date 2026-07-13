@@ -35,7 +35,7 @@ mod bindings {
 
 use bindings::sre::inspection::clock::Host as ClockHost;
 use bindings::sre::inspection::http_client::{
-    Error as HttpError, Host as HttpClientHost, Response as HttpResponse,
+    Error as HttpError, Host as HttpClientHost, Response as HttpResponse, WriteRequest,
 };
 use bindings::sre::inspection::logging::{Host as LoggingHost, Level};
 use bindings::ConnectorWorld;
@@ -136,6 +136,28 @@ impl HttpClientHost for State {
             &self.allowed_capabilities,
             &url,
             &headers,
+        )
+        .await
+        .map_err(map_host_err_to_wit)?;
+        Ok(HttpResponse {
+            status: resp.status,
+            body: resp.body,
+        })
+    }
+
+    /// Phase 3.9 -- 委托 [`crate::http_host::http_write`](cap `http-write` gate
+    /// + reqwest PATCH/POST/DELETE),WIT `write-request` -> host 类型平移。
+    async fn write(
+        &mut self,
+        req: WriteRequest,
+    ) -> std::result::Result<HttpResponse, HttpError> {
+        let resp = crate::http_host::http_write(
+            &self.http_client,
+            &self.allowed_capabilities,
+            &req.method,
+            &req.url,
+            &req.headers,
+            req.body.as_deref(),
         )
         .await
         .map_err(map_host_err_to_wit)?;

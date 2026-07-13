@@ -32,6 +32,10 @@ use std::collections::HashSet;
 /// 里出现此值才能调 [`http_get`]。
 pub const CAP_HTTP_CLIENT: &str = "http-client";
 
+/// 申明 http-write capability 时使用的字符串(Phase 3.9)。write 比 read 危险,
+/// 单独 capability deny-by-default,manifest `capabilities = [..., "http-write"]` 才放行。
+pub const CAP_HTTP_WRITE: &str = "http-write";
+
 /// host 侧 HTTP 响应 —— [`crate::runtime`] 把它转 WIT `response` record。
 #[derive(Debug, Clone)]
 pub struct HostHttpResponse {
@@ -92,6 +96,61 @@ pub async fn http_get(
 
     // 状态码分流 —— 401/403 → Unauthorized;404 → NotFound;2xx + 其它 → 返响应(包括 5xx)
     // 注:5xx 不映射成专门 variant —— WIT 没定义,guest 自己看 status 字段处理。
+    if status == 401 || status == 403 {
+        return Err(HostHttpError::Unauthorized(format!(
+            "server returned {status} for {url}"
+        )));
+    }
+    if status == 404 {
+        return Err(HostHttpError::NotFound);
+    }
+
+    let body = resp.bytes().await.map_err(map_reqwest_error)?.to_vec();
+    Ok(HostHttpResponse { status, body })
+}
+
+/// host 端 capability-gated HTTP write(Phase 3.9,供 WASM handler 真改集群)。
+///
+/// 流程:
+/// 1. 查 `allowed_capabilities`,缺 `"http-write"` -> [`HostHttpError::Unauthorized`]
+/// 2. 按 `method`(PATCH/POST/DELETE)建 reqwest 请求,加 headers + body(DELETE 可无)
+/// 3. 拿响应 -> 按状态码映射(同 [`http_get`]:401/403->Unauthorized,404->NotFound)
+///
+/// `body: Option<&[u8]>` -- `None` = 无 body(DELETE);`Some` = 请求 body 字节。
+pub async fn http_write(
+    client: &reqwest::Client,
+    allowed_capabilities: &HashSet<String>,
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> Result<HostHttpResponse, HostHttpError> {
+    if !allowed_capabilities.contains(CAP_HTTP_WRITE) {
+        return Err(HostHttpError::Unauthorized(format!(
+            "capability '{CAP_HTTP_WRITE}' not declared in module manifest"
+        )));
+    }
+
+    let mut req = match method {
+        "PATCH" => client.patch(url),
+        "POST" => client.post(url),
+        "DELETE" => client.delete(url),
+        other => {
+            return Err(HostHttpError::Network(format!(
+                "unsupported http method: {other} (expected PATCH/POST/DELETE)"
+            )))
+        }
+    };
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    if let Some(b) = body {
+        req = req.body(b.to_vec());
+    }
+
+    let resp = req.send().await.map_err(map_reqwest_error)?;
+    let status = resp.status().as_u16();
+
     if status == 401 || status == 403 {
         return Err(HostHttpError::Unauthorized(format!(
             "server returned {status} for {url}"
@@ -282,5 +341,74 @@ mod tests {
         assert_eq!(resp.body, b"ok");
 
         let _ = handle.await;
+    }
+
+    fn allow_http_write() -> HashSet<String> {
+        let mut s = HashSet::new();
+        s.insert(CAP_HTTP_WRITE.to_string());
+        s
+    }
+
+    #[tokio::test]
+    async fn http_write_denies_when_capability_missing() {
+        let client = test_client();
+        let err = http_write(
+            &client,
+            &empty_caps(),
+            "PATCH",
+            "http://127.0.0.1:1/",
+            &[],
+            None,
+        )
+        .await
+        .expect_err("should deny");
+        match err {
+            HostHttpError::Unauthorized(msg) => {
+                assert!(msg.contains("http-write"), "msg should name the cap: {msg}");
+                assert!(msg.contains("not declared"), "msg should explain: {msg}");
+            }
+            other => panic!("expected Unauthorized(cap), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_write_patch_succeeds_for_local_server() {
+        let response = b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        let (port, handle) = spawn_one_shot_http(response).await;
+        let client = test_client();
+        let resp = http_write(
+            &client,
+            &allow_http_write(),
+            "PATCH",
+            &format!("http://127.0.0.1:{port}/"),
+            &[("content-type".to_string(), "application/merge-patch+json".to_string())],
+            Some(br#"{"spec":{"replicas":2}}"#),
+        )
+        .await
+        .expect("ok");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"ok");
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn http_write_rejects_unknown_method() {
+        let client = test_client();
+        let err = http_write(
+            &client,
+            &allow_http_write(),
+            "PUT",
+            "http://127.0.0.1:1/",
+            &[],
+            None,
+        )
+        .await
+        .expect_err("PUT not supported");
+        match err {
+            HostHttpError::Network(msg) => {
+                assert!(msg.contains("PUT"), "msg should name method: {msg}");
+            }
+            other => panic!("expected Network(unsupported method), got {other:?}"),
+        }
     }
 }

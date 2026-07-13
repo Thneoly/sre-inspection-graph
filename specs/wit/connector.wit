@@ -52,6 +52,17 @@ interface http-client {
     }
 
     get: func(url: string, headers: list<tuple<string, string>>) -> result<response, error>;
+
+    /// Phase 3.9:HTTP write(PATCH/POST/DELETE),供 WASM handler 真改集群。
+    /// host 侧 `http-write` capability gate(deny-by-default,write 比 read 危险)。
+    record write-request {
+        method: string,  // "PATCH" | "POST" | "DELETE"
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,  // None = 无 body(DELETE)
+    }
+
+    write: func(req: write-request) -> result<response, error>;
 }
 
 interface connector {
