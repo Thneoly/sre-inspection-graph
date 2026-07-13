@@ -7,10 +7,14 @@ license.workspace = true
 description = "Self-inspection report engine (PRD-003 port) — health score / templates / scheduler / email"
 
 [dependencies]
-engine-core = { workspace = true }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
-chrono      = { workspace = true }
-uuid        = { workspace = true }
+engine-core     = { workspace = true }
+engine-identity = { workspace = true }
+engine-recovery = { workspace = true }
+engine-changes  = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+thiserror       = { workspace = true }
+tracing         = { workspace = true }
+chrono          = { workspace = true }
+uuid            = { workspace = true }
+tera            = "1"

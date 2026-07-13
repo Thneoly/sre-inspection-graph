@@ -8,6 +8,14 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod models;
+pub mod health_score;
+pub mod gatherers;
+pub mod generator;
+
+pub use models::{ReportScope, ReportStatus, ReportStore, ReportTask};
+pub use generator::{generate_report, ReportError};
+
 /// 3 个内置报告模板。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -145,6 +145,8 @@ pub struct AppState {
     pub change_events: Mutex<engine_changes::ChangeRegistry>,
     /// Phase 3.6 - alert 注册表(无 live 源,k8s-watch/webhook 延后;仅手动 record_alert)。
     pub alerts: Mutex<engine_changes::AlertRegistry>,
+    /// Phase 4.1 - 报告注册表(内存;SQLite 持久化留后续)。
+    pub reports: Mutex<engine_reports::ReportStore>,
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
@@ -206,6 +208,7 @@ pub fn run() {
                 recovery_chains: Mutex::new(recovery_chains),
                 change_events: Mutex::new(change_events),
                 alerts: Mutex::new(alerts),
+                reports: Mutex::new(engine_reports::ReportStore::new()),
             });
             Ok(())
         })
@@ -253,6 +256,10 @@ pub fn run() {
             get_alert,
             resolve_alert,
             correlate_changes_for_alert,
+            // Phase 4.1 - reports (PRD-003)
+            commands::reports::generate_report_cmd,
+            commands::reports::list_reports,
+            commands::reports::get_report,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
