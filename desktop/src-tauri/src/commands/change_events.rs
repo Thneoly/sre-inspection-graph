@@ -107,7 +107,7 @@ pub async fn record_change_event(
     let req: engine_changes::ChangeRequest = req.into();
     let topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let event = {
-        let mut reg = state.change_events.lock().map_err(|e| e.to_string())?;
+        let mut reg = state.change_events.lock().await;
         engine_changes::record_change(&mut reg, &topo, &req).map_err(|e| e.to_string())?
     };
     state.storage.upsert_change_event(&event).await.map_err(|e| e.to_string())?;
@@ -116,7 +116,7 @@ pub async fn record_change_event(
 
 /// 列变更事件(可按 type/target/source/since/until 过滤,changed_at 倒序)。
 #[tauri::command]
-pub fn list_change_events(
+pub async fn list_change_events(
     state: State<'_, AppState>,
     change_type: Option<String>,
     target_resource_id: Option<String>,
@@ -125,7 +125,7 @@ pub fn list_change_events(
     until: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<Value>, String> {
-    let reg = state.change_events.lock().map_err(|e| e.to_string())?;
+    let reg = state.change_events.lock().await;
     let filter = engine_changes::ChangeFilter {
         change_type: change_type.as_deref().and_then(engine_changes::ChangeType::from_name),
         target_resource_id,
@@ -147,8 +147,8 @@ pub fn list_change_events(
 
 /// 取单个变更事件(序列化,含 propagated_count)。
 #[tauri::command]
-pub fn get_change_event(state: State<'_, AppState>, change_event_id: String) -> Result<Value, String> {
-    let reg = state.change_events.lock().map_err(|e| e.to_string())?;
+pub async fn get_change_event(state: State<'_, AppState>, change_event_id: String) -> Result<Value, String> {
+    let reg = state.change_events.lock().await;
     let event = reg
         .get(&change_event_id)
         .ok_or_else(|| format!("[404] change_event not found: {change_event_id}"))?;
@@ -167,7 +167,7 @@ pub async fn correlated_changes(
 ) -> Result<engine_changes::CorrelatedResult, String> {
     let topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let result = {
-        let reg = state.change_events.lock().map_err(|e| e.to_string())?;
+        let reg = state.change_events.lock().await;
         engine_changes::correlated_changes(
             &reg,
             &topo,
@@ -183,14 +183,14 @@ pub async fn correlated_changes(
 
 /// 过频变更检测(按 target 分桶,count > threshold)。
 #[tauri::command]
-pub fn frequent_changes(
+pub async fn frequent_changes(
     state: State<'_, AppState>,
     window: Option<i64>,
     threshold: Option<usize>,
 ) -> Result<FrequentChangesResponse, String> {
     let win = window.unwrap_or(engine_changes::DEFAULT_WINDOW_SECONDS);
     let thr = threshold.unwrap_or(engine_changes::DEFAULT_THRESHOLD);
-    let reg = state.change_events.lock().map_err(|e| e.to_string())?;
+    let reg = state.change_events.lock().await;
     let frequent = engine_changes::detect_frequent_changes(&reg, win, thr);
     Ok(FrequentChangesResponse {
         frequent,
@@ -207,7 +207,7 @@ pub async fn change_event_impact(
 ) -> Result<ChangeEventImpactResponse, String> {
     let topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let event = {
-        let reg = state.change_events.lock().map_err(|e| e.to_string())?;
+        let reg = state.change_events.lock().await;
         reg.get(&change_event_id)
             .cloned()
             .ok_or_else(|| format!("[404] change_event not found: {change_event_id}"))?
@@ -237,7 +237,7 @@ pub async fn change_event_recovery_suggestion(
 ) -> Result<engine_changes::RecoverySuggestionResult, String> {
     let topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let result = {
-        let reg = state.change_events.lock().map_err(|e| e.to_string())?;
+        let reg = state.change_events.lock().await;
         engine_changes::get_recovery_suggestion(&reg, &topo, &change_event_id)
             .map_err(|e| e.to_string())?
     };
@@ -256,8 +256,8 @@ pub async fn change_event_alerts(
 ) -> Result<engine_changes::CorrelateAlertsResult, String> {
     let win = window.unwrap_or(engine_changes::DEFAULT_ALERT_WINDOW_SECONDS);
     let result = {
-        let reg = state.change_events.lock().map_err(|e| e.to_string())?;
-        let alerts = state.alerts.lock().map_err(|e| e.to_string())?;
+        let reg = state.change_events.lock().await;
+        let alerts = state.alerts.lock().await;
         engine_changes::correlate_alerts(&reg, &alerts, &change_event_id, win).map_err(|e| e.to_string())?
     };
     Ok(result)

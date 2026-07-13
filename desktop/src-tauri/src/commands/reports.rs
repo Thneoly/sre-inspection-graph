@@ -49,8 +49,8 @@ pub async fn generate_report_cmd(
 
     // 采集:materialized topology + change_events + recovery_executions(锁内同步调用,不跨 await)
     let topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
-    let changes = state.change_events.lock().map_err(|e| e.to_string())?;
-    let execs = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+    let changes = state.change_events.lock().await;
+    let execs = state.recovery_executions.lock().await;
     let md = engine_reports::generate_report(&task, &topo, &changes, &execs, &now)
         .map_err(|e| e.to_string())?;
     drop(changes);
@@ -61,13 +61,13 @@ pub async fn generate_report_cmd(
     task.progress = 100;
     task.current_step.clear();
     task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-    state.reports.lock().map_err(|e| e.to_string())?.add(task.clone());
+    state.reports.lock().await.add(task.clone());
     Ok(task)
 }
 
 /// 列报告(新到旧,可按 template_id / application_id 过滤)。
 #[tauri::command]
-pub fn list_reports(
+pub async fn list_reports(
     state: State<'_, AppState>,
     template_id: Option<String>,
     application_id: Option<String>,
@@ -76,17 +76,16 @@ pub fn list_reports(
         Some(t) => Some(parse_template(t)?),
         None => None,
     };
-    let reg = state.reports.lock().map_err(|e| e.to_string())?;
+    let reg = state.reports.lock().await;
     Ok(reg.list(tid, application_id.as_deref()).into_iter().cloned().collect())
 }
 
 /// 取报告详情(含 markdown)。
 #[tauri::command]
-pub fn get_report(state: State<'_, AppState>, report_id: String) -> Result<ReportTask, String> {
+pub async fn get_report(state: State<'_, AppState>, report_id: String) -> Result<ReportTask, String> {
     state
         .reports
-        .lock()
-        .map_err(|e| e.to_string())?
+        .lock().await
         .get(&report_id)
         .cloned()
         .ok_or_else(|| format!("report not found: {report_id}"))

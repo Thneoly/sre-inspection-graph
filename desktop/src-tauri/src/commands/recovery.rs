@@ -103,7 +103,7 @@ async fn persist_exec(state: &State<'_, AppState>, exec: &engine_recovery::Recov
         .map_err(|e| e.to_string())?;
     if let Some(rb_id) = &exec.rollback_execution_id {
         let rb = {
-            let reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+            let reg = state.recovery_executions.lock().await;
             reg.get(rb_id).cloned()
         };
         if let Some(rb) = rb {
@@ -126,7 +126,7 @@ async fn persist_chain(state: &State<'_, AppState>, chain: &engine_recovery::Rec
         .map_err(|e| e.to_string())?;
     let step_ids = chain.step_executions.clone();
     let execs: Vec<engine_recovery::RecoveryExecution> = {
-        let reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+        let reg = state.recovery_executions.lock().await;
         step_ids.iter().filter_map(|id| reg.get(id).cloned()).collect()
     };
     for e in &execs {
@@ -143,7 +143,7 @@ async fn persist_chain(state: &State<'_, AppState>, chain: &engine_recovery::Rec
 
 /// 列动作模板(可按 target_type / category / risk_level 过滤)。
 #[tauri::command]
-pub fn list_recovery_actions(
+pub async fn list_recovery_actions(
     target_type: Option<String>,
     category: Option<String>,
     risk_level: Option<String>,
@@ -156,7 +156,7 @@ pub fn list_recovery_actions(
 
 /// 取单个动作模板。
 #[tauri::command]
-pub fn get_recovery_action(action_id: String) -> Result<engine_recovery::ActionDef, String> {
+pub async fn get_recovery_action(action_id: String) -> Result<engine_recovery::ActionDef, String> {
     engine_recovery::get_action(&action_id)
         .copied()
         .ok_or_else(|| format!("[404] unknown action_id: {action_id}"))
@@ -176,7 +176,7 @@ pub async fn dry_run_recovery(
 
 /// rule -> action 推荐(对齐 reference `GET /suggestions?rule_id=`)。
 #[tauri::command]
-pub fn recovery_suggestions_for_rule(rule_id: String) -> Vec<engine_recovery::ActionSuggestion> {
+pub async fn recovery_suggestions_for_rule(rule_id: String) -> Vec<engine_recovery::ActionSuggestion> {
     engine_recovery::suggest_for_rule(&rule_id).to_vec()
 }
 
@@ -195,7 +195,7 @@ pub async fn execute_recovery(
 ) -> Result<engine_recovery::RecoveryExecution, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let exec = {
-        let mut reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+        let mut reg = state.recovery_executions.lock().await;
         let mut exec = engine_recovery::execute(
             &mut reg,
             &action_id,
@@ -206,6 +206,7 @@ pub async fn execute_recovery(
             &request_reason.unwrap_or_default(),
             &engine_recovery::MockHandlerExecutor,
         )
+        .await
         .map_err(|e| e.to_string())?;
         if let Some(fid) = &finding_id {
             if let Some(stored) = reg.get_mut(&exec.execution_id) {
@@ -222,14 +223,14 @@ pub async fn execute_recovery(
 /// 列 execution(新到旧,可按 status / action_id / target 过滤)。读内存 registry
 /// (与 storage 经 upsert-after-mutation + 启动载入保持一致)。
 #[tauri::command]
-pub fn list_recovery_executions(
+pub async fn list_recovery_executions(
     state: State<'_, AppState>,
     status: Option<String>,
     action_id: Option<String>,
     target_resource_id: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<engine_recovery::RecoveryExecution>, String> {
-    let reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+    let reg = state.recovery_executions.lock().await;
     let status_filter = status.as_deref().and_then(parse_recovery_status);
     let listed = reg.list_filtered(
         status_filter,
@@ -242,11 +243,11 @@ pub fn list_recovery_executions(
 
 /// 取单个 execution。
 #[tauri::command]
-pub fn get_recovery_execution(
+pub async fn get_recovery_execution(
     state: State<'_, AppState>,
     execution_id: String,
 ) -> Result<engine_recovery::RecoveryExecution, String> {
-    let reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+    let reg = state.recovery_executions.lock().await;
     reg.get(&execution_id)
         .cloned()
         .ok_or_else(|| format!("[404] execution not found: {execution_id}"))
@@ -261,8 +262,8 @@ pub async fn confirm_recovery_execution(
 ) -> Result<engine_recovery::RecoveryExecution, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let exec = {
-        let mut reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
-        engine_recovery::confirm_execution(&mut reg, &execution_id, &mut topo, &approval_comment.unwrap_or_default(), &engine_recovery::MockHandlerExecutor)
+        let mut reg = state.recovery_executions.lock().await;
+        engine_recovery::confirm_execution(&mut reg, &execution_id, &mut topo, &approval_comment.unwrap_or_default(), &engine_recovery::MockHandlerExecutor).await
             .map_err(|e| e.to_string())?
     };
     persist_exec(&state, &exec).await?;
@@ -276,7 +277,7 @@ pub async fn cancel_recovery_execution(
     execution_id: String,
 ) -> Result<engine_recovery::RecoveryExecution, String> {
     let exec = {
-        let mut reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+        let mut reg = state.recovery_executions.lock().await;
         engine_recovery::cancel_execution(&mut reg, &execution_id).map_err(|e| e.to_string())?
     };
     state.storage.upsert_recovery_execution(&exec).await.map_err(|e| e.to_string())?;
@@ -293,7 +294,7 @@ pub async fn rollback_recovery_execution(
 ) -> Result<engine_recovery::RecoveryExecution, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let (rb, orig) = {
-        let mut reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+        let mut reg = state.recovery_executions.lock().await;
         let rb = engine_recovery::rollback(
             &mut reg,
             &execution_id,
@@ -302,6 +303,7 @@ pub async fn rollback_recovery_execution(
             &reason.unwrap_or_default(),
             &engine_recovery::MockHandlerExecutor,
         )
+        .await
         .map_err(|e| e.to_string())?;
         let orig = reg.get(&execution_id).cloned();
         (rb, orig)
@@ -322,8 +324,8 @@ pub async fn reverify_recovery_execution(
 ) -> Result<engine_recovery::RecoveryExecution, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let exec = {
-        let mut reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
-        engine_recovery::reverify(&mut reg, &execution_id, &mut topo, &engine_recovery::MockHandlerExecutor).map_err(|e| e.to_string())?
+        let mut reg = state.recovery_executions.lock().await;
+        engine_recovery::reverify(&mut reg, &execution_id, &mut topo, &engine_recovery::MockHandlerExecutor).await.map_err(|e| e.to_string())?
     };
     state.storage.upsert_recovery_execution(&exec).await.map_err(|e| e.to_string())?;
     Ok(exec)
@@ -333,7 +335,7 @@ pub async fn reverify_recovery_execution(
 
 /// 列全部 chain 模板(前端选择用)。
 #[tauri::command]
-pub fn list_chain_templates() -> Vec<ChainTemplateDto> {
+pub async fn list_chain_templates() -> Vec<ChainTemplateDto> {
     engine_recovery::list_chain_template_ids()
         .into_iter()
         .filter_map(engine_recovery::get_chain_template)
@@ -343,7 +345,7 @@ pub fn list_chain_templates() -> Vec<ChainTemplateDto> {
 
 /// 取单个 chain 模板。
 #[tauri::command]
-pub fn get_chain_template(template_id: String) -> Result<ChainTemplateDto, String> {
+pub async fn get_chain_template(template_id: String) -> Result<ChainTemplateDto, String> {
     engine_recovery::get_chain_template(&template_id)
         .map(ChainTemplateDto::from)
         .ok_or_else(|| format!("[404] unknown chain template: {template_id}"))
@@ -362,8 +364,8 @@ pub async fn execute_chain(
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let on_failure = on_failure_override.as_deref().and_then(parse_on_failure);
     let chain = {
-        let mut chain_reg = state.recovery_chains.lock().map_err(|e| e.to_string())?;
-        let mut exec_reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
+        let mut chain_reg = state.recovery_chains.lock().await;
+        let mut exec_reg = state.recovery_executions.lock().await;
         engine_recovery::execute_chain(
             &mut chain_reg,
             &mut exec_reg,
@@ -375,6 +377,7 @@ pub async fn execute_chain(
             &request_reason.unwrap_or_default(),
             &engine_recovery::MockHandlerExecutor,
         )
+        .await
         .map_err(|e| e.to_string())?
     };
     persist_chain(&state, &chain).await?;
@@ -390,9 +393,9 @@ pub async fn confirm_chain(
 ) -> Result<engine_recovery::RecoveryChain, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let chain = {
-        let mut chain_reg = state.recovery_chains.lock().map_err(|e| e.to_string())?;
-        let mut exec_reg = state.recovery_executions.lock().map_err(|e| e.to_string())?;
-        engine_recovery::confirm_chain(&mut chain_reg, &mut exec_reg, &mut topo, &chain_id, &approval_comment.unwrap_or_default(), &engine_recovery::MockHandlerExecutor)
+        let mut chain_reg = state.recovery_chains.lock().await;
+        let mut exec_reg = state.recovery_executions.lock().await;
+        engine_recovery::confirm_chain(&mut chain_reg, &mut exec_reg, &mut topo, &chain_id, &approval_comment.unwrap_or_default(), &engine_recovery::MockHandlerExecutor).await
             .map_err(|e| e.to_string())?
     };
     persist_chain(&state, &chain).await?;
@@ -403,7 +406,7 @@ pub async fn confirm_chain(
 #[tauri::command]
 pub async fn cancel_chain(state: State<'_, AppState>, chain_id: String) -> Result<engine_recovery::RecoveryChain, String> {
     let chain = {
-        let mut chain_reg = state.recovery_chains.lock().map_err(|e| e.to_string())?;
+        let mut chain_reg = state.recovery_chains.lock().await;
         engine_recovery::cancel_chain(&mut chain_reg, &chain_id).map_err(|e| e.to_string())?
     };
     state.storage.upsert_recovery_chain(&chain).await.map_err(|e| e.to_string())?;
@@ -418,7 +421,7 @@ pub async fn abort_chain(
     reason: Option<String>,
 ) -> Result<engine_recovery::RecoveryChain, String> {
     let chain = {
-        let mut chain_reg = state.recovery_chains.lock().map_err(|e| e.to_string())?;
+        let mut chain_reg = state.recovery_chains.lock().await;
         engine_recovery::abort_chain(&mut chain_reg, &chain_id, &reason.unwrap_or_default()).map_err(|e| e.to_string())?
     };
     state.storage.upsert_recovery_chain(&chain).await.map_err(|e| e.to_string())?;
@@ -427,12 +430,12 @@ pub async fn abort_chain(
 
 /// 列 chain(新到旧,可按 status 过滤)。
 #[tauri::command]
-pub fn list_recovery_chains(
+pub async fn list_recovery_chains(
     state: State<'_, AppState>,
     status: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<engine_recovery::RecoveryChain>, String> {
-    let chain_reg = state.recovery_chains.lock().map_err(|e| e.to_string())?;
+    let chain_reg = state.recovery_chains.lock().await;
     let status_filter = status.as_deref().and_then(parse_chain_status);
     let limit = limit.unwrap_or(100);
     let mut chains: Vec<engine_recovery::RecoveryChain> = chain_reg
@@ -448,11 +451,11 @@ pub fn list_recovery_chains(
 
 /// 取单个 chain。
 #[tauri::command]
-pub fn get_recovery_chain(
+pub async fn get_recovery_chain(
     state: State<'_, AppState>,
     chain_id: String,
 ) -> Result<engine_recovery::RecoveryChain, String> {
-    let chain_reg = state.recovery_chains.lock().map_err(|e| e.to_string())?;
+    let chain_reg = state.recovery_chains.lock().await;
     chain_reg
         .get(&chain_id)
         .cloned()

@@ -75,7 +75,7 @@ pub async fn record_alert(state: State<'_, AppState>, req: RecordAlertRequest) -
     alert.cluster_id = req.cluster_id;
 
     {
-        let mut reg = state.alerts.lock().map_err(|e| e.to_string())?;
+        let mut reg = state.alerts.lock().await;
         reg.add(alert.clone());
     }
     state.storage.upsert_alert_event(&alert).await.map_err(|e| e.to_string())?;
@@ -84,7 +84,7 @@ pub async fn record_alert(state: State<'_, AppState>, req: RecordAlertRequest) -
 
 /// 列 alerts(可按 resource_ref / severity / status / since / until 过滤,fired_at 倒序)。
 #[tauri::command]
-pub fn list_alerts(
+pub async fn list_alerts(
     state: State<'_, AppState>,
     resource_ref: Option<String>,
     severity: Option<String>,
@@ -93,7 +93,7 @@ pub fn list_alerts(
     until: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<engine_changes::AlertEvent>, String> {
-    let reg = state.alerts.lock().map_err(|e| e.to_string())?;
+    let reg = state.alerts.lock().await;
     let sev = severity.as_deref().and_then(parse_severity);
     let st = status.as_deref().and_then(parse_status);
     let mut alerts: Vec<engine_changes::AlertEvent> = reg
@@ -113,8 +113,8 @@ pub fn list_alerts(
 
 /// 取单个 alert。
 #[tauri::command]
-pub fn get_alert(state: State<'_, AppState>, alert_event_id: String) -> Result<engine_changes::AlertEvent, String> {
-    let reg = state.alerts.lock().map_err(|e| e.to_string())?;
+pub async fn get_alert(state: State<'_, AppState>, alert_event_id: String) -> Result<engine_changes::AlertEvent, String> {
+    let reg = state.alerts.lock().await;
     reg.get(&alert_event_id)
         .cloned()
         .ok_or_else(|| format!("[404] alert not found: {alert_event_id}"))
@@ -124,7 +124,7 @@ pub fn get_alert(state: State<'_, AppState>, alert_event_id: String) -> Result<e
 #[tauri::command]
 pub async fn resolve_alert(state: State<'_, AppState>, alert_event_id: String) -> Result<engine_changes::AlertEvent, String> {
     let alert = {
-        let mut reg = state.alerts.lock().map_err(|e| e.to_string())?;
+        let mut reg = state.alerts.lock().await;
         let a = reg
             .get_mut(&alert_event_id)
             .ok_or_else(|| format!("[404] alert not found: {alert_event_id}"))?;
@@ -149,8 +149,8 @@ pub async fn correlate_changes_for_alert(
 ) -> Result<engine_changes::CorrelateChangesForAlertResult, String> {
     let win = window.unwrap_or(engine_changes::DEFAULT_CHANGE_WINDOW_SECONDS);
     let result = {
-        let reg = state.change_events.lock().map_err(|e| e.to_string())?;
-        let alerts = state.alerts.lock().map_err(|e| e.to_string())?;
+        let reg = state.change_events.lock().await;
+        let alerts = state.alerts.lock().await;
         engine_changes::correlate_changes_for_alert(
             &reg,
             &alerts,

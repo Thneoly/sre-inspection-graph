@@ -137,16 +137,16 @@ pub struct AppState {
     pub proxy: Mutex<Option<tokio::process::Child>>,
     /// Phase 3.6 - recovery 执行注册表(单机确认门 + mock handler twin)。启动从
     /// `recovery_executions` 表载入;每次 execute/confirm/rollback 后 upsert 回写。
-    pub recovery_executions: Mutex<engine_recovery::ExecutionRegistry>,
+    pub recovery_executions: tokio::sync::Mutex<engine_recovery::ExecutionRegistry>,
     /// Phase 3.6 - recovery chain 注册表。启动从 `recovery_chains` 表载入。
-    pub recovery_chains: Mutex<engine_recovery::ChainRegistry>,
+    pub recovery_chains: tokio::sync::Mutex<engine_recovery::ChainRegistry>,
     /// Phase 3.6 - change event 注册表。启动从 `change_events` 表载入;
     /// `record_change_event` 后 upsert。
-    pub change_events: Mutex<engine_changes::ChangeRegistry>,
+    pub change_events: tokio::sync::Mutex<engine_changes::ChangeRegistry>,
     /// Phase 3.6 - alert 注册表(无 live 源,k8s-watch/webhook 延后;仅手动 record_alert)。
-    pub alerts: Mutex<engine_changes::AlertRegistry>,
+    pub alerts: tokio::sync::Mutex<engine_changes::AlertRegistry>,
     /// Phase 4.1 - 报告注册表(内存;SQLite 持久化留后续)。
-    pub reports: Mutex<engine_reports::ReportStore>,
+    pub reports: tokio::sync::Mutex<engine_reports::ReportStore>,
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
@@ -204,11 +204,11 @@ pub fn run() {
                 runtime,
                 storage,
                 proxy: Mutex::new(None),
-                recovery_executions: Mutex::new(recovery_executions),
-                recovery_chains: Mutex::new(recovery_chains),
-                change_events: Mutex::new(change_events),
-                alerts: Mutex::new(alerts),
-                reports: Mutex::new(engine_reports::ReportStore::new()),
+                recovery_executions: tokio::sync::Mutex::new(recovery_executions),
+                recovery_chains: tokio::sync::Mutex::new(recovery_chains),
+                change_events: tokio::sync::Mutex::new(change_events),
+                alerts: tokio::sync::Mutex::new(alerts),
+                reports: tokio::sync::Mutex::new(engine_reports::ReportStore::new()),
             });
             Ok(())
         })
