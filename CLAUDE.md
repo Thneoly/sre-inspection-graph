@@ -34,7 +34,7 @@ graph_data/
 │       ├── engine-identity/    # ✅ Identity Resolver v0(resolve/diff/topology_to_graph + Phase 2.7 health_merge)
 │       ├── engine-recovery/    # ✅ Phase 3.1-3.3:action_defs + dry_run + execution/approval/rollback + verifiers/auto-rollback + chains
 │       ├── engine-changes/     # ✅ Phase 3.4-3.5:ChangeEvent + record_change + propagation + frequency + alert 关联 + yaml_diff + correlated_changes + suggest_for_change 桥
-│       └── engine-reports/     # 骨架(Phase 4:PRD-003 复刻)
+│       └── engine-reports/     # ✅ Phase 4.1:application_health 模板(PRD-003 复刻)
 ├── desktop/            # Tauri 2.x 桌面(React 18 + AntD + Cytoscape)
 │   └── src-tauri/src/
 │       ├── lib.rs              # ✅ 启动 WasmRuntime + SqliteStorage → .manage(AppState)
@@ -169,7 +169,9 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 - [x] Phase 3.7:k8s connector 边富化(`topology-edge` fact:SCHEDULED_ON[pod->node]/ROUTES_TO[svc->pod selector 匹配]/USES[pod->cm/secret,volumes+envFrom]+ ConfigMap/Secret node[只存 data_keys 不存值]);`facts_to_graph` 分流 topology-node/topology-edge(各自 dedup,edge 悬空+自环过滤,与派生 CONTAINS 合并);`latest_topology_facts` SQL `kind IN ('topology-node','topology-edge')`;engine-identity/engine-storage 零改(diff/apply 已支持任意 edge_type);engine-recovery/changes 零改(算法认全 8 白名单边,富化后自动生效)。真集群 headless:engine-cli tick k8s -> 78 node(含 4 cm+3 secret)+ 47 edge(22 SCHEDULED_ON+22 ROUTES_TO+3 USES)。**偏差**:不产 BELONGS_TO/DEPLOYED_AS/RUNS/EXPOSES(需 application/component 层);USES 只解析 volumes+envFrom(对齐 reference,不解析 env.valueFrom);Secret 只存 data_keys;edge id=`{src}->{tgt}`(K8s 同对资源无多关系不撞)。clippy+测试绿(engine-core 20/identity 17/storage 15/k8s mapper 11/changes 66/recovery 61)
 - [x] Phase 3.8:k8s connector Application/Component/Middleware 层(从 deploy 派生:`normalize_component_name`[strip release prefix + 砍 service + 拆混淆名] + `detect_middleware`[valkey/redis/kafka/postgres/mysql] + `is_infra`[loadgenerator/otelcol/prometheus-server/jaeger/opensearch/grafana/kibana];`CONTAINS`[app->comp,comp.parent 派生] + `DEPLOYED_AS`[comp/mw->deploy] + `BELONGS_TO`[deploy->comp, comp->app 反向边,action BELONGS_TO forward 规则需要] edge fact;`ClusterInput` 加 `release_prefix`[默认 otel-demo];engine-core/identity/storage/changes/recovery 零改(3.7 已支持任意 edge_type + node type)。真集群 headless:engine-cli tick k8s -> 1 Application + 16 ApplicationComponent + 1 Redis + 1 Kafka + 97 edge(32 BELONGS_TO + 18 DEPLOYED_AS + 22 SCHEDULED_ON + 22 ROUTES_TO + 3 USES)。**偏差**:产 BELONGS_TO 反向边(reference k8s_mapper 不产,action BELONGS_TO forward 需要);Application parent=ns(reference 无 parent);component 名=normalize(deploy_name)不用 labels component;infra deploy 不挂 application。clippy+测试绿(k8s mapper 15[+4 3.8]/engine 回归 全绿)
 - [ ] Phase 3 延后:真 handler(write-capability WIT)+ k8s-watch connector + webhook(桌面架构冲突,可能跳过)+ RUNS/EXPOSES 边(需 trace/ingress 层)
-- [ ] Phase 4:engine-reports(PRD-003)复刻
+- [x] Phase 4.1:engine-reports application_health 模板(ReportTask + ReportStore + health_score[compute_health_score 公式 100-critical×10-warning×3-fault_pod×2,rating >=80 健康/60-79 健康警告/40-59 风险中/0-39 风险高]+ 5 采集器[health_score/seven_views/risk_list/recommended_actions/historical_trends,I/O-free 吃 &Topology/&ChangeRegistry/&ExecutionRegistry]+ Tera 模板[替 Jinja2]+ generator[按 modules 采集 + Tera 渲染]+ desktop commands[generate_report_cmd/list_reports/get_report]+ AppState reports Mutex)。6 测试绿 + clippy 绿。**偏差**:丢 fault injection(fault 空,fault_pod=0);丢 Neo4j 持久化(内存);丢调度+SMTP(Phase 4.3);Tera 替 Jinja2;1 模板(application_health),cluster_overview/incident_report 留 Phase 4.2
+- [ ] Phase 4.2:engine-reports cluster_overview + incident_report 模板 + 采集器
+- [ ] Phase 4.3:engine-reports 调度(tokio-cron)+ SMTP(lettre)
 
 ---
 
