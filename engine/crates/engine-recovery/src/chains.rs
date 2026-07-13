@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::action_defs::get_action;
 use crate::cascade::dry_run;
 use crate::execution::{derive_cluster_id, do_rollback, run_handler, ExecutionRegistry};
+use crate::executor::HandlerExecutor;
 use crate::models::{
     ChainStatus, ExecutionError, OnFailureStrategy, RecoveryChain, RecoveryExecution, RecoveryStatus,
 };
@@ -151,6 +152,7 @@ pub fn execute_chain(
     initiated_by: &str,
     on_failure_override: Option<OnFailureStrategy>,
     request_reason: &str,
+    executor: &dyn HandlerExecutor,
 ) -> Result<RecoveryChain, ExecutionError> {
     let template = get_chain_template(template_id)
         .ok_or_else(|| ExecutionError::with_code(format!("unknown chain template: {template_id}"), 404))?;
@@ -208,7 +210,7 @@ pub fn execute_chain(
         let c = chain_reg.get_mut(&chain_id).unwrap();
         c.status = ChainStatus::Executing;
     }
-    run_chain_steps(chain_reg, exec_reg, topology, &chain_id);
+    run_chain_steps(chain_reg, exec_reg, topology, &chain_id, executor);
     Ok(chain_reg.get(&chain_id).cloned().unwrap())
 }
 
@@ -219,6 +221,7 @@ pub fn confirm_chain(
     topology: &mut Topology,
     chain_id: &str,
     approval_comment: &str,
+    executor: &dyn HandlerExecutor,
 ) -> Result<RecoveryChain, ExecutionError> {
     {
         let c = chain_reg
@@ -238,7 +241,7 @@ pub fn confirm_chain(
         c.approved_at = now_iso();
         c.approval_comment = approval_comment.to_string();
     }
-    run_chain_steps(chain_reg, exec_reg, topology, chain_id);
+    run_chain_steps(chain_reg, exec_reg, topology, chain_id, executor);
     Ok(chain_reg.get(chain_id).cloned().unwrap())
 }
 
@@ -288,6 +291,7 @@ fn run_chain_steps(
     exec_reg: &mut ExecutionRegistry,
     topology: &mut Topology,
     chain_id: &str,
+    executor: &dyn HandlerExecutor,
 ) {
     let template_id = chain_reg.get(chain_id).unwrap().template_id.clone();
     let template = match get_chain_template(&template_id) {
@@ -312,7 +316,7 @@ fn run_chain_steps(
             break;
         }
         let step = &steps[current_idx];
-        let ex = run_single_step(&chain_id_owned, &initiated_by, &target, current_idx, step, exec_reg, topology);
+        let ex = run_single_step(&chain_id_owned, &initiated_by, &target, current_idx, step, exec_reg, topology, executor);
         let ex_id = ex.execution_id.clone();
         let step_ok = ex.status == RecoveryStatus::Succeeded
             && (!step.verify_required
@@ -339,7 +343,7 @@ fn run_chain_steps(
                 continue;
             }
             // stop / rollback_all
-            handle_step_failure(chain_reg, exec_reg, topology, chain_id, current_idx, &ex);
+            handle_step_failure(chain_reg, exec_reg, topology, chain_id, current_idx, &ex, executor);
             return;
         }
     }
@@ -357,6 +361,7 @@ fn handle_step_failure(
     chain_id: &str,
     failed_idx: usize,
     failed_ex: &RecoveryExecution,
+    executor: &dyn HandlerExecutor,
 ) {
     let reason = failed_ex
         .result
@@ -394,6 +399,7 @@ fn handle_step_failure(
                 "chain-rollback_all",
                 &format!("chain {chain_id} rollback_all triggered by step {failed_idx}"),
                 true,
+                executor,
             );
             rolled += 1;
         }
@@ -411,6 +417,7 @@ fn handle_step_failure(
 }
 
 /// 跑单步:创建 execution(chain_id/chain_step_index 标记)+ run_handler(auto_rollback=false)。
+#[allow(clippy::too_many_arguments)]
 fn run_single_step(
     chain_id: &str,
     initiated_by: &str,
@@ -419,6 +426,7 @@ fn run_single_step(
     step: &ChainStep,
     exec_reg: &mut ExecutionRegistry,
     topology: &mut Topology,
+    executor: &dyn HandlerExecutor,
 ) -> RecoveryExecution {
     let action_id = step.action_id;
     let action = get_action(action_id);
@@ -451,7 +459,7 @@ fn run_single_step(
     let ex_id = ex.execution_id.clone();
     exec_reg.insert(ex);
     // step:auto_rollback=false(失败由 chain on_failure 接管);verify=step.verify_required
-    run_handler(exec_reg, &ex_id, topology, false, step.verify_required);
+    run_handler(exec_reg, &ex_id, topology, false, step.verify_required, executor);
     exec_reg.get(&ex_id).cloned().expect("just inserted")
 }
 
@@ -462,6 +470,7 @@ fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MockHandlerExecutor;
     use crate::cascade::tests::fixture_topology;
     use crate::models::VerifyStatus;
 
@@ -492,7 +501,7 @@ mod tests {
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
         let c = execute_chain(
-            &mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "",
+            &mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "", &MockHandlerExecutor,
         )
         .expect("execute_chain");
         assert_eq!(c.status, ChainStatus::AwaitingApproval);
@@ -506,10 +515,10 @@ mod tests {
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
         let c = execute_chain(
-            &mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "",
+            &mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "", &MockHandlerExecutor,
         )
         .expect("execute_chain");
-        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "ok").expect("confirm");
+        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "ok", &MockHandlerExecutor).expect("confirm");
         assert_eq!(c2.status, ChainStatus::Succeeded);
         assert_eq!(c2.step_executions.len(), 3);
         // step executions 都标了 chain_id
@@ -524,7 +533,7 @@ mod tests {
         let mut cr = ChainRegistry::new();
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
-        let c = execute_chain(&mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "").expect("execute_chain");
+        let c = execute_chain(&mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "", &MockHandlerExecutor).expect("execute_chain");
         let c2 = cancel_chain(&mut cr, &c.chain_id).expect("cancel");
         assert_eq!(c2.status, ChainStatus::Failed);
         assert!(c2.step_executions.is_empty());
@@ -535,7 +544,7 @@ mod tests {
         let mut cr = ChainRegistry::new();
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
-        let c = execute_chain(&mut cr, &mut er, &mut t, "drain_node_safely", "node:worker-1", "tester", None, "").expect("execute_chain");
+        let c = execute_chain(&mut cr, &mut er, &mut t, "drain_node_safely", "node:worker-1", "tester", None, "", &MockHandlerExecutor).expect("execute_chain");
         // drain_node_safely 含 drain_node(high) -> awaiting_approval
         assert_eq!(c.status, ChainStatus::AwaitingApproval);
         let aborted = abort_chain(&mut cr, &c.chain_id, "").expect("abort");
@@ -547,7 +556,7 @@ mod tests {
         let mut cr = ChainRegistry::new();
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
-        let c = execute_chain(&mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "").expect("execute_chain");
+        let c = execute_chain(&mut cr, &mut er, &mut t, "safe_rollback_deployment", "deploy:order-api", "tester", None, "", &MockHandlerExecutor).expect("execute_chain");
         cancel_chain(&mut cr, &c.chain_id).expect("cancel"); // -> failed
         let err = abort_chain(&mut cr, &c.chain_id, "").unwrap_err();
         assert_eq!(err.code, 409);
@@ -558,7 +567,7 @@ mod tests {
         let mut cr = ChainRegistry::new();
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
-        let err = execute_chain(&mut cr, &mut er, &mut t, "nonexistent", "deploy:order-api", "tester", None, "").unwrap_err();
+        let err = execute_chain(&mut cr, &mut er, &mut t, "nonexistent", "deploy:order-api", "tester", None, "", &MockHandlerExecutor).unwrap_err();
         assert_eq!(err.code, 404);
     }
 
@@ -568,7 +577,7 @@ mod tests {
         let mut cr = ChainRegistry::new();
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
-        let err = execute_chain(&mut cr, &mut er, &mut t, "safe_rollback_deployment", "node:worker-1", "tester", None, "").unwrap_err();
+        let err = execute_chain(&mut cr, &mut er, &mut t, "safe_rollback_deployment", "node:worker-1", "tester", None, "", &MockHandlerExecutor).unwrap_err();
         assert_eq!(err.code, 400);
         assert!(err.message.contains("mismatch"));
     }
@@ -593,8 +602,8 @@ mod tests {
         let mut cr = ChainRegistry::new();
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
-        let c = execute_chain(&mut cr, &mut er, &mut t, "drain_node_safely", "node:worker-1", "tester", None, "").expect("execute_chain");
-        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "").expect("confirm");
+        let c = execute_chain(&mut cr, &mut er, &mut t, "drain_node_safely", "node:worker-1", "tester", None, "", &MockHandlerExecutor).expect("execute_chain");
+        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "", &MockHandlerExecutor).expect("confirm");
         assert_eq!(c2.status, ChainStatus::Succeeded);
         let ex = er.get(&c2.step_executions[0]).unwrap();
         assert_eq!(ex.action_id, "drain_node");

@@ -27,6 +27,7 @@ pub mod action_defs;
 pub mod cascade;
 pub mod chains;
 pub mod execution;
+pub mod executor;
 pub mod handlers;
 pub mod models;
 pub mod verifiers;
@@ -41,6 +42,7 @@ pub use chains::{
     abort_chain, cancel_chain, confirm_chain, execute_chain, get_chain_template,
     list_chain_template_ids, ChainRegistry, ChainStep, ChainTemplate,
 };
+pub use executor::{HandlerExecutor, HandlerOutcome, MockHandlerExecutor};
 pub use execution::{
     cancel_execution, confirm_execution, execute, reverify, rollback, ExecutionRegistry,
 };
