@@ -33,6 +33,16 @@ mod bindings {
     });
 }
 
+// Phase 3.9a-3b2a - handler-world bindgen(与 connector-world 共用 specs/wit)
+mod handler_bindings {
+    wasmtime::component::bindgen!({
+        world: "handler-world",
+        path: "../../../specs/wit",
+        imports: { default: async },
+        exports: { default: async },
+    });
+}
+
 use bindings::sre::inspection::clock::Host as ClockHost;
 use bindings::sre::inspection::http_client::{
     Error as HttpError, Host as HttpClientHost, Response as HttpResponse, WriteRequest,
@@ -168,10 +178,112 @@ impl HttpClientHost for State {
     }
 }
 
-/// host 侧 [`http_host::HostHttpError`] → WIT binding `HttpError` 的一一映射。
-///
-/// `Unauthorized` / `NotFound` / `Timeout` 无负载,直接对位;`Network(String)`
-/// 透出底层错误字符串,guest 自己决定怎么处理。
+// host 侧 [`http_host::HostHttpError`] → WIT binding `HttpError` 的一一映射。
+//
+// `Unauthorized` / `NotFound` / `Timeout` 无负载,直接对位;`Network(String)`
+// 透出底层错误字符串,guest 自己决定怎么处理。
+// ============================================================================
+// State impl handler_bindings Host traits(Phase 3.9a-3b2a)
+// ============================================================================
+// wasmtime bindgen 每 world 生成独立 Host trait,即使 WIT interface 相同。
+// handler-world 的 logging/clock/http_client 与 connector-world 相同 interface,
+// 但 trait 类型不同。State 需 impl 两套(委托同一 http_host 纯函数)。
+
+impl handler_bindings::sre::inspection::logging::Host for State {
+    async fn log(
+        &mut self,
+        level: handler_bindings::sre::inspection::logging::Level,
+        message: String,
+    ) {
+        match level {
+            handler_bindings::sre::inspection::logging::Level::Debug => {
+                tracing::debug!(target: "wasm-guest", "{}", message)
+            }
+            handler_bindings::sre::inspection::logging::Level::Info => {
+                tracing::info!(target: "wasm-guest", "{}", message)
+            }
+            handler_bindings::sre::inspection::logging::Level::Warn => {
+                tracing::warn!(target: "wasm-guest", "{}", message)
+            }
+            handler_bindings::sre::inspection::logging::Level::Error => {
+                tracing::error!(target: "wasm-guest", "{}", message)
+            }
+        }
+    }
+}
+
+impl handler_bindings::sre::inspection::clock::Host for State {
+    async fn now_seconds(&mut self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+}
+
+impl handler_bindings::sre::inspection::http_client::Host for State {
+    async fn get(
+        &mut self,
+        url: String,
+        headers: Vec<(String, String)>,
+    ) -> std::result::Result<
+        handler_bindings::sre::inspection::http_client::Response,
+        handler_bindings::sre::inspection::http_client::Error,
+    > {
+        let resp = crate::http_host::http_get(
+            &self.http_client,
+            &self.allowed_capabilities,
+            &url,
+            &headers,
+        )
+        .await
+        .map_err(map_host_err_to_handler)?;
+        Ok(handler_bindings::sre::inspection::http_client::Response {
+            status: resp.status,
+            body: resp.body,
+        })
+    }
+
+    async fn write(
+        &mut self,
+        req: handler_bindings::sre::inspection::http_client::WriteRequest,
+    ) -> std::result::Result<
+        handler_bindings::sre::inspection::http_client::Response,
+        handler_bindings::sre::inspection::http_client::Error,
+    > {
+        let resp = crate::http_host::http_write(
+            &self.http_client,
+            &self.allowed_capabilities,
+            &req.method,
+            &req.url,
+            &req.headers,
+            req.body.as_deref(),
+        )
+        .await
+        .map_err(map_host_err_to_handler)?;
+        Ok(handler_bindings::sre::inspection::http_client::Response {
+            status: resp.status,
+            body: resp.body,
+        })
+    }
+}
+
+fn map_host_err_to_handler(
+    e: crate::http_host::HostHttpError,
+) -> handler_bindings::sre::inspection::http_client::Error {
+    use crate::http_host::HostHttpError;
+    match e {
+        HostHttpError::Unauthorized(_) => {
+            handler_bindings::sre::inspection::http_client::Error::Unauthorized
+        }
+        HostHttpError::NotFound => handler_bindings::sre::inspection::http_client::Error::NotFound,
+        HostHttpError::Timeout => handler_bindings::sre::inspection::http_client::Error::Timeout,
+        HostHttpError::Network(m) => {
+            handler_bindings::sre::inspection::http_client::Error::Network(m)
+        }
+    }
+}
+
 fn map_host_err_to_wit(e: crate::http_host::HostHttpError) -> HttpError {
     use crate::http_host::HostHttpError;
     match e {
@@ -291,8 +403,127 @@ impl WasmConnector {
     }
 }
 
-/// host 端组装好的 sync 结果。
+// host 端组装好的 sync 结果。
+// ============================================================================
+// WasmHandler - handler-world 的 host-side 句柄(Phase 3.9a-3b2a)
+// ============================================================================
+
+/// 单个 WASM handler 实例的 host-side 句柄(Phase 3.9a-3b2a)。
+///
+/// 与 [`WasmConnector`] 同构:各自的 bindgen world(connector-world vs handler-world)+
+/// `Store<State>` + bindings。handler-world export `handler{dry-run/execute/verify}`,
+/// host 经 [`WasmHandler::execute`] 调 `call_execute`。
+///
+/// `State` 复用 [`WasmConnector`] 的(LoggingHost/ClockHost/HttpClientHost 含 write),
+/// handler-world import logging/clock/http-client 与 connector-world 相同。
+pub struct WasmHandler {
+    store: Store<State>,
+    bindings: handler_bindings::HandlerWorld,
+}
+
+impl WasmHandler {
+    /// 加载 handler-world .wasm Component 并实例化。
+    ///
+    /// 与 [`WasmConnector::load_with_http`] 同,但 `HandlerWorld::add_to_linker`
+    /// (handler-world import logging/clock/http-client,与 connector-world 共用 State impl)。
+    pub async fn load_with_http(
+        wasm_path: &Path,
+        capabilities: HashSet<String>,
+        client: reqwest::Client,
+    ) -> Result<Self> {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).map_err(wasm_err)?;
+
+        let mut linker = Linker::<State>::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(wasm_err)?;
+        handler_bindings::HandlerWorld::add_to_linker::<State, wasmtime::component::HasSelf<State>>(
+            &mut linker,
+            |s| s,
+        )
+        .map_err(wasm_err)?;
+
+        let mut store = Store::new(
+            &engine,
+            State {
+                table: ResourceTable::new(),
+                wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+                http_client: client,
+                allowed_capabilities: capabilities,
+            },
+        );
+
+        let component = Component::from_file(&engine, wasm_path)
+            .map_err(|e| anyhow!("load handler wasm component from {}: {e}", wasm_path.display()))?;
+
+        let bindings = handler_bindings::HandlerWorld::instantiate_async(&mut store, &component, &linker)
+            .await
+            .map_err(wasm_err)?;
+
+        Ok(Self { store, bindings })
+    }
+
+    /// 便捷加载(默认 reqwest Client)。
+    pub async fn load(wasm_path: &Path, capabilities: HashSet<String>) -> Result<Self> {
+        Self::load_with_http(wasm_path, capabilities, default_http_client()).await
+    }
+
+    /// 调 guest handler `execute(ctx)` -> 返回 [`ExecResult`] 或 [`ExecError`]。
+    ///
+    /// 双层 Result:外层 wasmtime 调用成败(trap 等);内层 WIT `execution-error`
+    /// (precondition-failed / capability-denied / upstream-api / timeout)。
+    ///
+    /// 高层 API:接 &str(内部构造 WIT ExecutionContext),返 host 侧简单类型
+    /// (避免暴露 handler_bindings WIT 类型)。
+    pub async fn execute(
+        &mut self,
+        action_id: &str,
+        target_resource_id: &str,
+        params_json: &str,
+        initiated_by: &str,
+    ) -> Result<Result<ExecResult, ExecError>, anyhow::Error> {
+        let ctx = handler_bindings::exports::sre::inspection::handler::ExecutionContext {
+            action_id: action_id.to_string(),
+            target_resource_id: target_resource_id.to_string(),
+            params_json: params_json.to_string(),
+            initiated_by: initiated_by.to_string(),
+        };
+        let raw = self
+            .bindings
+            .sre_inspection_handler()
+            .call_execute(&mut self.store, &ctx)
+            .await
+            .map_err(wasm_err)?;
+        Ok(raw
+            .map(|r| ExecResult {
+                success: r.success,
+                message: r.message,
+                attributes_json: r.attributes_json,
+            })
+            .map_err(|e| ExecError(format!("{e:?}"))))
+    }
+}
+
+/// handler 执行结果(host 侧简单类型,避免暴露 handler_bindings WIT 类型)。
 #[derive(Debug, Clone)]
+pub struct ExecResult {
+    /// 是否成功。
+    pub success: bool,
+    /// 人读消息。
+    pub message: String,
+    /// 动作生效后的新 attrs JSON 字符串。
+    pub attributes_json: String,
+}
+
+/// handler 执行错误(host 侧简单类型)。
+#[derive(Debug, Clone)]
+pub struct ExecError(
+    /// 错误描述(WIT execution-error variant 的 Debug)。
+    pub String,
+);
+
+#[derive(Debug, Clone)]
+/// host 端组装好的 sync 结果。
 pub struct SyncOutcome {
     /// 本轮采集的 fact。
     pub facts: Vec<HostFact>,

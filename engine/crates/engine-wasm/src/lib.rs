@@ -19,7 +19,7 @@ pub mod http_host;
 pub mod multi;
 
 pub use multi::{select_config, ConnectorEntry, SyncSummary, WasmRuntime};
-pub use runtime::{HostFact, SyncOutcome, WasmConnector};
+pub use runtime::{ExecError, ExecResult, HostFact, SyncOutcome, WasmConnector, WasmHandler};
 
 /// 模块声明使用的 WASI ABI 版本。
 ///
