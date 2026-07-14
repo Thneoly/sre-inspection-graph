@@ -15,7 +15,17 @@ use engine_wasm::WasmHandler;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-/// WASM handler 执行器:scale_deployment 走 WasmHandler,其他走 MockHandlerExecutor。
+/// 6 个 k8s action 走 WasmHandler;kill_query/clear_cache 留 Mock。
+const K8S_ACTIONS: &[&str] = &[
+    "scale_deployment",
+    "restart_pod",
+    "rollback_deployment",
+    "refresh_secret",
+    "drain_node",
+    "restart_service",
+];
+
+/// WASM handler 执行器:6 k8s action 走 WasmHandler,其他走 MockHandlerExecutor。
 pub struct WasmHandlerExecutor {
     handler: Arc<Mutex<WasmHandler>>,
     mock: MockHandlerExecutor,
@@ -44,8 +54,8 @@ impl HandlerExecutor for WasmHandlerExecutor {
         params: &Value,
         ctx: &ExecutionContext,
     ) -> HandlerOutcome {
-        // 只 scale_deployment 走 WasmHandler;其他 action Mock fallback
-        if action_id != "scale_deployment" {
+        // 6 k8s action 走 WasmHandler;其他(kill_query/clear_cache)Mock fallback
+        if !K8S_ACTIONS.contains(&action_id) {
             return self.mock.execute(action_id, target, params, ctx).await;
         }
 

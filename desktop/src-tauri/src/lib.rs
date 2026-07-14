@@ -205,7 +205,7 @@ pub fn run() {
             let scale_handler = runtime
                 .handlers
                 .iter()
-                .find(|h| h.name == "scale-deploy")
+                .find(|h| h.name == "k8s-handler")
                 .map(|h| h.handler.clone());
             let handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor> =
                 if let Some(h) = scale_handler {
