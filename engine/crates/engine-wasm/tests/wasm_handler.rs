@@ -23,6 +23,15 @@ fn handler_caps() -> HashSet<String> {
     caps
 }
 
+fn k8s_handler_wasm_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../modules/target/wasm32-wasip2/release/k8s_handler.wasm")
+}
+
+fn proxy_ready() -> bool {
+    std::net::TcpStream::connect("127.0.0.1:8001").is_ok()
+}
+
 #[tokio::test]
 async fn handler_execute_mock_returns_attributes_json() {
     let wasm = scale_deploy_wasm_path();
@@ -128,4 +137,87 @@ async fn handler_execute_real_patches_scale_and_rolls_back() {
         "attributes should show desired_replicas=1 (rollback), got: {}",
         ok_dn.attributes_json
     );
+}
+
+// ===== k8s-handler(6 action)tests =====
+
+#[tokio::test]
+async fn k8s_handler_mock_all_6_actions() {
+    let wasm = k8s_handler_wasm_path();
+    if !wasm.exists() {
+        eprintln!("skip: k8s_handler.wasm not found");
+        return;
+    }
+    let mut handler = WasmHandler::load(&wasm, handler_caps())
+        .await
+        .expect("load WasmHandler");
+
+    // mock 模式:6 action 都 success(不调 http)
+    let cases = [
+        ("scale_deployment", "deploy:vm:otel-demo:test", r#"{"replicas_delta":1,"_config":{"real_mode":false,"old_replicas":3}}"#),
+        ("restart_pod", "pod:vm:otel-demo:test-pod", r#"{"_config":{"real_mode":false}}"#),
+        ("rollback_deployment", "deploy:vm:otel-demo:test", r#"{"_config":{"real_mode":false}}"#),
+        ("refresh_secret", "secret:vm:otel-demo:test-secret", r#"{"_config":{"real_mode":false}}"#),
+        ("drain_node", "node:vm:vm1", r#"{"_config":{"real_mode":false}}"#),
+        ("restart_service", "service:vm:otel-demo:test-svc", r#"{"_config":{"real_mode":false}}"#),
+    ];
+    for (action, target, params) in &cases {
+        let raw = handler.execute(action, target, params, "test").await.expect("call");
+        let ok = raw.expect(&format!("{action} returned ExecError"));
+        assert!(ok.success, "mock {action} should succeed");
+    }
+}
+
+#[tokio::test]
+async fn k8s_handler_real_drain_node_and_uncordon() {
+    let wasm = k8s_handler_wasm_path();
+    if !wasm.exists() || !proxy_ready() {
+        eprintln!("skip: k8s_handler.wasm or proxy not available");
+        return;
+    }
+    let mut handler = WasmHandler::load(&wasm, handler_caps())
+        .await
+        .expect("load WasmHandler");
+
+    // drain_node(cordon vm1)
+    let params = r#"{"_config":{"api_base":"http://127.0.0.1:8001","real_mode":true}}"#;
+    let raw = handler
+        .execute("drain_node", "node:vm-cluster:vm1", params, "test")
+        .await
+        .expect("call drain_node");
+    let ok = raw.expect("drain_node ExecError");
+    assert!(ok.success, "real drain_node should succeed");
+
+    // uncordon(恢复:PATCH unschedulable=false)
+    let req = reqwest::Client::new();
+    let _ = req
+        .patch("http://127.0.0.1:8001/api/v1/nodes/vm1")
+        .header("content-type", "application/merge-patch+json")
+        .body(r#"{"spec":{"unschedulable":false}}"#)
+        .send()
+        .await;
+}
+
+#[tokio::test]
+async fn k8s_handler_real_restart_service() {
+    let wasm = k8s_handler_wasm_path();
+    if !wasm.exists() || !proxy_ready() {
+        eprintln!("skip: k8s_handler.wasm or proxy not available");
+        return;
+    }
+    let mut handler = WasmHandler::load(&wasm, handler_caps())
+        .await
+        .expect("load WasmHandler");
+
+    // restart_service(DELETE endpoints,控制器重建)
+    let params = r#"{"_config":{"api_base":"http://127.0.0.1:8001","real_mode":true}}"#;
+    let raw = handler
+        .execute("restart_service", "service:vm-cluster:otel-demo:otel-demo-frontend", params, "test")
+        .await
+        .expect("call restart_service");
+    let ok = raw.expect("restart_service ExecError");
+    assert!(ok.success, "real restart_service should succeed");
+
+    // 等待控制器重建 endpoints
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 }
