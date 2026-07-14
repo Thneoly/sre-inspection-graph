@@ -18,7 +18,7 @@ pub mod http_host;
 /// `sync_all` 一次跑完,`tick_loop` 周期跑。
 pub mod multi;
 
-pub use multi::{select_config, ConnectorEntry, SyncSummary, WasmRuntime};
+pub use multi::{select_config, ConnectorEntry, HandlerEntry, SyncSummary, WasmRuntime};
 pub use runtime::{ExecError, ExecResult, HostFact, SyncOutcome, WasmConnector, WasmHandler};
 
 /// 模块声明使用的 WASI ABI 版本。

@@ -26,10 +26,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
+use std::sync::Arc;
 use engine_core::FactBatch;
 use tokio::sync::Mutex;
 
-use crate::runtime::{SyncOutcome, WasmConnector};
+use crate::runtime::{SyncOutcome, WasmConnector, WasmHandler};
 use crate::{ManifestFile, ModuleManifest};
 
 /// 选某 connector 的 sync config:manifest `config` 优先,缺则回退全局 broadcast。
@@ -94,7 +95,20 @@ pub struct WasmRuntime {
     /// 已成功加载的 connector 列表。
     pub entries: Vec<ConnectorEntry>,
     /// 加载过程中失败的模块及错误(module_name → error message)。
+    /// 已成功加载的 handler 列表(Phase 3.9a-3b2b)。
+    pub handlers: Vec<HandlerEntry>,
+    /// 加载过程中失败的模块及错误(module_name -> error message)。
     pub load_errors: Vec<(String, String)>,
+}
+
+/// 单个已加载 handler 的运行时条目(Phase 3.9a-3b2b)。
+pub struct HandlerEntry {
+    /// handler 名(`manifest.name`)。
+    pub name: String,
+    /// 原 manifest 完整副本。
+    pub manifest: ModuleManifest,
+    /// 加载好的 WasmHandler -- Arc<Mutex> 因 wasmtime Store !Sync,但允许 async lock。
+    pub handler: Arc<Mutex<WasmHandler>>,
 }
 
 impl WasmRuntime {
@@ -153,9 +167,42 @@ impl WasmRuntime {
             }
         }
 
+        // Phase 3.9a-3b2b: 加载 kind == "handler" 的模块(WasmHandler)
+        let mut handlers = Vec::new();
+        for module in &manifest.modules {
+            if module.kind != "handler" {
+                continue;
+            }
+            if !module.enabled {
+                tracing::debug!(name = %module.name, "handler module disabled, skipping");
+                continue;
+            }
+            let wasm_path = modules_root.join(&module.wasm_path);
+            if !wasm_path.exists() {
+                load_errors.push((
+                    module.name.clone(),
+                    format!("handler wasm not found: {}", wasm_path.display()),
+                ));
+                continue;
+            }
+            let capabilities: std::collections::HashSet<String> =
+                module.capabilities.iter().cloned().collect();
+            match WasmHandler::load(&wasm_path, capabilities).await {
+                Ok(h) => handlers.push(HandlerEntry {
+                    name: module.name.clone(),
+                    manifest: module.clone(),
+                    handler: Arc::new(Mutex::new(h)),
+                }),
+                Err(e) => {
+                    load_errors.push((module.name.clone(), format!("handler load failed: {e}")));
+                }
+            }
+        }
+
         Ok(Self {
             modules_root: modules_root.to_path_buf(),
             entries,
+            handlers,
             load_errors,
         })
     }
@@ -168,6 +215,7 @@ impl WasmRuntime {
         Self {
             modules_root: modules_root.into(),
             entries: Vec::new(),
+            handlers: Vec::new(),
             load_errors: Vec::new(),
         }
     }
