@@ -147,6 +147,7 @@ pub struct AppState {
     pub alerts: tokio::sync::Mutex<engine_changes::AlertRegistry>,
     /// Phase 4.1 - 报告注册表(内存;SQLite 持久化留后续)。
     pub reports: tokio::sync::Mutex<engine_reports::ReportStore>,
+    pub handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor>,
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
@@ -200,6 +201,22 @@ pub fn run() {
                     ))
                 })?;
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
+            // Phase 3.9a-3b2b - handler_executor:WasmHandlerExecutor if scale-deploy 加载,else Mock
+            let scale_handler = runtime
+                .handlers
+                .iter()
+                .find(|h| h.name == "scale-deploy")
+                .map(|h| h.handler.clone());
+            let handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor> =
+                if let Some(h) = scale_handler {
+                    std::sync::Arc::new(commands::handler_executor::WasmHandlerExecutor::new(
+                        h,
+                        "http://127.0.0.1:8001".to_string(),
+                        false,
+                    ))
+                } else {
+                    std::sync::Arc::new(engine_recovery::MockHandlerExecutor)
+                };
             app.manage(AppState {
                 runtime,
                 storage,
@@ -209,6 +226,7 @@ pub fn run() {
                 change_events: tokio::sync::Mutex::new(change_events),
                 alerts: tokio::sync::Mutex::new(alerts),
                 reports: tokio::sync::Mutex::new(engine_reports::ReportStore::new()),
+                handler_executor,
             });
             Ok(())
         })

@@ -17,3 +17,4 @@ pub mod recovery;
 pub mod change_events;
 pub mod alerts;
 pub mod reports;
+pub mod handler_executor;

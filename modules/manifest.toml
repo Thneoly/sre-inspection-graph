@@ -80,5 +80,17 @@ wasi_version = "p2"
 sha256 = ""
 config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo", release_prefix = "otel-demo" }
 
+# Phase 3.9a-3b2b - scale-deploy handler(handler-world,real_mode 经 http-write PATCH scale)
+[[modules]]
+name = "scale-deploy"
+type = "handler"
+wasm_path = "target/wasm32-wasip2/release/scale_deploy.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "http-client", "http-write"]
+sync_interval_seconds = 60
+enabled = true
+wasi_version = "p2"
+sha256 = ""
+
 # Phase 3+ 起在这里追加 jaeger / flagd / k8s-events real connector
 # 以及 8 个 PRD-001 handler。

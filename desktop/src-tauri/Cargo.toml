@@ -46,6 +46,7 @@ engine-wasm     = { path = "../../engine/crates/engine-wasm" }
 engine-recovery = { path = "../../engine/crates/engine-recovery" }
 engine-changes  = { path = "../../engine/crates/engine-changes" }
 engine-reports  = { path = "../../engine/crates/engine-reports" }
+async-trait = "0.1"
 chrono = "0.4"
 
 [features]
