@@ -13,10 +13,12 @@ use tera::{Context, Tera};
 use thiserror::Error;
 
 use crate::gatherers;
+use crate::cluster_gatherers;
 use crate::models::{ReportTask};
 use crate::ReportTemplate;
 
 const APP_HEALTH_TEMPLATE: &str = include_str!("templates/application_health.md");
+const CLUSTER_OVERVIEW_TEMPLATE: &str = include_str!("templates/cluster_overview.md");
 
 #[derive(Debug, Error)]
 pub enum ReportError {
@@ -41,6 +43,9 @@ pub fn generate_report(
     match task.template_id {
         ReportTemplate::ApplicationHealth => {
             generate_app_health(task, topology, changes, executions, generated_at)
+        }
+        ReportTemplate::ClusterOverview => {
+            generate_cluster_overview(task, topology, changes, executions, generated_at)
         }
         _ => Err(ReportError::UnsupportedTemplate(task.template_id)),
     }
@@ -98,6 +103,58 @@ fn generate_app_health(
     tera.add_raw_template("application_health.md", APP_HEALTH_TEMPLATE)
         .map_err(|e| ReportError::Setup(e.to_string()))?;
     tera.render("application_health.md", &ctx)
+        .map_err(|e| ReportError::Render(e.to_string()))
+}
+
+fn generate_cluster_overview(
+    task: &ReportTask,
+    topology: &Topology,
+    changes: &ChangeRegistry,
+    executions: &ExecutionRegistry,
+    generated_at: &str,
+) -> Result<String, ReportError> {
+    let cluster_id = task.scope.cluster_id.as_deref();
+
+    // modules: task.modules 指定启用的;空 = 全模块(对齐 reference 默认)
+    let all_modules = ReportTask::valid_modules(ReportTemplate::ClusterOverview);
+    let enabled: std::collections::HashSet<&str> = if task.modules.is_empty() {
+        all_modules.iter().copied().collect()
+    } else {
+        task.modules.iter().map(|s| s.as_str()).collect()
+    };
+    let modules: HashMap<String, bool> = all_modules
+        .iter()
+        .map(|m| (m.to_string(), enabled.contains(m)))
+        .collect();
+
+    let mut ctx = Context::new();
+    ctx.insert("scope", &task.scope);
+    ctx.insert("generated_at", generated_at);
+    ctx.insert("report_id", &task.report_id);
+    ctx.insert("modules", &modules);
+
+    if modules.get("cluster_health").copied().unwrap_or(false) {
+        let ch = cluster_gatherers::gather_cluster_health(topology, cluster_id);
+        ctx.insert("cluster_health", &ch);
+    }
+    if modules.get("cluster_risk_top_n").copied().unwrap_or(false) {
+        // top_n 默认 5(对齐 reference cluster_risk_top_n 默认;cluster_changes top_targets 同样截 5)
+        let rt = cluster_gatherers::gather_cluster_risk_top_n(topology, changes, cluster_id, 5);
+        ctx.insert("cluster_risk_top_n", &rt);
+    }
+    if modules.get("cluster_changes").copied().unwrap_or(false) {
+        let cc = cluster_gatherers::gather_cluster_changes(changes, cluster_id);
+        ctx.insert("cluster_changes", &cc);
+    }
+    if modules.get("cluster_recoveries").copied().unwrap_or(false) {
+        let cr = cluster_gatherers::gather_cluster_recoveries(executions, cluster_id);
+        ctx.insert("cluster_recoveries", &cr);
+    }
+
+    let mut tera = Tera::default();
+    tera.add_raw_template("cluster_overview.md", CLUSTER_OVERVIEW_TEMPLATE)
+        .map_err(|e| ReportError::Setup(e.to_string()))?;
+    tera.render("cluster_overview.md", &ctx)
         .map_err(|e| ReportError::Render(e.to_string()))
 }
 
@@ -171,7 +228,7 @@ mod tests {
     fn unsupported_template_errors() {
         let task = ReportTask {
             report_id: "rpt-x".into(),
-            template_id: ReportTemplate::ClusterOverview,
+            template_id: ReportTemplate::IncidentReport,
             scope: ReportScope::default(),
             modules: vec![],
             format: "markdown".into(),
@@ -188,5 +245,46 @@ mod tests {
         let er = ExecutionRegistry::new();
         let err = generate_report(&task, &t, &cr, &er, "").unwrap_err();
         assert!(matches!(err, ReportError::UnsupportedTemplate(_)));
+    }
+
+    #[test]
+    fn generates_cluster_overview_markdown() {
+        // cluster_id="otel-demo" 过滤:order+payment 命中,cart(prod)被滤掉
+        let task = ReportTask {
+            report_id: "rpt-cluster".into(),
+            template_id: ReportTemplate::ClusterOverview,
+            scope: ReportScope {
+                cluster_id: Some("otel-demo".into()),
+                ..Default::default()
+            },
+            modules: vec![],
+            format: "markdown".into(),
+            status: ReportStatus::Generating,
+            progress: 0,
+            current_step: "".into(),
+            error_message: None,
+            markdown: None,
+            created_at: "2026-07-20T00:00:00Z".into(),
+            completed_at: None,
+        };
+        let topology = Topology {
+            nodes: vec![
+                node("otel-demo:app:order", "Application", "normal"),
+                node("otel-demo:app:payment", "Application", "normal"),
+                node("prod:app:cart", "Application", "normal"),
+            ],
+            edges: vec![],
+        };
+        let cr = ChangeRegistry::new();
+        let er = ExecutionRegistry::new();
+        let md = generate_report(&task, &topology, &cr, &er, "2026-07-20T00:00:00Z").expect("render");
+        assert!(md.contains("# 集群健康总览"));
+        assert!(md.contains("应用总数:**2**")); // 2 apps 命中 otel-demo
+        assert!(md.contains("otel-demo:app:order"));
+        assert!(md.contains("otel-demo:app:payment"));
+        assert!(!md.contains("prod:app:cart")); // 被集群过滤
+        assert!(md.contains("## 2. 风险 Top-N"));
+        assert!(md.contains("## 3. 跨应用变更汇总"));
+        assert!(md.contains("## 4. 跨应用恢复执行"));
     }
 }

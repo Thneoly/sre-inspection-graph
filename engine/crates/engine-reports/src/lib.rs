@@ -11,6 +11,7 @@
 pub mod models;
 pub mod health_score;
 pub mod gatherers;
+pub mod cluster_gatherers;
 pub mod generator;
 
 pub use models::{ReportScope, ReportStatus, ReportStore, ReportTask};
