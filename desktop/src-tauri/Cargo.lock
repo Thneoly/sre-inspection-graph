@@ -5088,6 +5088,7 @@ name = "sre-graph-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "engine-changes",
  "engine-core",
