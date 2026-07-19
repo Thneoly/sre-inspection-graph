@@ -28,6 +28,10 @@ pub struct ReportScope {
     pub application_id: Option<String>,
     /// 集群 ID(cluster_overview 模板用;None = 全集群)。
     pub cluster_id: Option<String>,
+    /// 事件锚点:变更事件 ID(incident_report 模板用;优先于 fault_id)。
+    pub change_event_id: Option<String>,
+    /// 事件锚点:故障注入 ID(incident_report 模板用;Rust 无 fault injection -> 解析失败)。
+    pub fault_id: Option<String>,
     /// 时间范围起点(ISO8601)。
     pub time_range_start: Option<String>,
     /// 时间范围终点(ISO8601)。

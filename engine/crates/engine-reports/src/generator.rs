@@ -14,16 +14,20 @@ use thiserror::Error;
 
 use crate::gatherers;
 use crate::cluster_gatherers;
+use crate::incident_gatherers;
 use crate::models::{ReportTask};
 use crate::ReportTemplate;
 
 const APP_HEALTH_TEMPLATE: &str = include_str!("templates/application_health.md");
 const CLUSTER_OVERVIEW_TEMPLATE: &str = include_str!("templates/cluster_overview.md");
+const INCIDENT_REPORT_TEMPLATE: &str = include_str!("templates/incident_report.md");
 
 #[derive(Debug, Error)]
 pub enum ReportError {
     #[error("unsupported template: {0:?}")]
     UnsupportedTemplate(ReportTemplate),
+    #[error("incident anchor not found: {0}")]
+    AnchorNotFound(String),
     #[error("tera setup failed: {0}")]
     Setup(String),
     #[error("tera render failed: {0}")]
@@ -47,7 +51,9 @@ pub fn generate_report(
         ReportTemplate::ClusterOverview => {
             generate_cluster_overview(task, topology, changes, executions, generated_at)
         }
-        _ => Err(ReportError::UnsupportedTemplate(task.template_id)),
+        ReportTemplate::IncidentReport => {
+            generate_incident_report(task, topology, changes, executions, generated_at)
+        }
     }
 }
 
@@ -158,13 +164,74 @@ fn generate_cluster_overview(
         .map_err(|e| ReportError::Render(e.to_string()))
 }
 
+fn generate_incident_report(
+    task: &ReportTask,
+    topology: &Topology,
+    changes: &ChangeRegistry,
+    executions: &ExecutionRegistry,
+    generated_at: &str,
+) -> Result<String, ReportError> {
+    // 锚点解析:change_event_id(Rust 仅此;fault_id -> AnchorNotFound)
+    let anchor = incident_gatherers::resolve_anchor(changes, &task.scope)
+        .map_err(ReportError::AnchorNotFound)?;
+
+    let all_modules = ReportTask::valid_modules(ReportTemplate::IncidentReport);
+    let enabled: std::collections::HashSet<&str> = if task.modules.is_empty() {
+        all_modules.iter().copied().collect()
+    } else {
+        task.modules.iter().map(|s| s.as_str()).collect()
+    };
+    let modules: HashMap<String, bool> = all_modules
+        .iter()
+        .map(|m| (m.to_string(), enabled.contains(m)))
+        .collect();
+
+    let mut ctx = Context::new();
+    ctx.insert("scope", &task.scope);
+    ctx.insert("generated_at", generated_at);
+    ctx.insert("report_id", &task.report_id);
+    ctx.insert("modules", &modules);
+    // 头部锚点显示(Rust 仅 change 锚点)
+    ctx.insert("anchor_id", &anchor.anchor_id);
+    ctx.insert(
+        "anchor_kind_label",
+        &incident_gatherers::anchor_kind_label(&anchor.kind),
+    );
+
+    if modules.get("incident_summary").copied().unwrap_or(false) {
+        let s = incident_gatherers::gather_incident_summary(&anchor, topology);
+        ctx.insert("incident_summary", &s);
+    }
+    if modules.get("incident_timeline").copied().unwrap_or(false) {
+        // window 默认 3600 秒(对齐 reference gather_incident_timeline 默认)
+        let t = incident_gatherers::gather_incident_timeline(
+            &anchor,
+            topology,
+            changes,
+            executions,
+            3600,
+        );
+        ctx.insert("incident_timeline", &t);
+    }
+    if modules.get("incident_recoveries").copied().unwrap_or(false) {
+        let r = incident_gatherers::gather_incident_recoveries(&anchor, topology, executions);
+        ctx.insert("incident_recoveries", &r);
+    }
+
+    let mut tera = Tera::default();
+    tera.add_raw_template("incident_report.md", INCIDENT_REPORT_TEMPLATE)
+        .map_err(|e| ReportError::Setup(e.to_string()))?;
+    tera.render("incident_report.md", &ctx)
+        .map_err(|e| ReportError::Render(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{ReportScope, ReportStatus};
-    use engine_changes::ChangeRegistry;
+    use engine_changes::{ChangeRegistry, ChangeRequest, record_change};
     use engine_identity::{ResolvedEdge, ResolvedNode, Topology};
-    use engine_recovery::ExecutionRegistry;
+    use engine_recovery::{ExecutionRegistry, RecoveryExecution, RecoveryStatus};
 
     fn node(rid: &str, rtype: &str, health: &str) -> ResolvedNode {
         ResolvedNode {
@@ -225,11 +292,11 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_template_errors() {
+    fn incident_report_anchor_not_found_without_change_event_id() {
         let task = ReportTask {
-            report_id: "rpt-x".into(),
+            report_id: "rpt-inc".into(),
             template_id: ReportTemplate::IncidentReport,
-            scope: ReportScope::default(),
+            scope: ReportScope::default(), // 无 change_event_id / fault_id
             modules: vec![],
             format: "markdown".into(),
             status: ReportStatus::Pending,
@@ -244,7 +311,78 @@ mod tests {
         let cr = ChangeRegistry::new();
         let er = ExecutionRegistry::new();
         let err = generate_report(&task, &t, &cr, &er, "").unwrap_err();
-        assert!(matches!(err, ReportError::UnsupportedTemplate(_)));
+        assert!(matches!(err, ReportError::AnchorNotFound(_)));
+    }
+
+    #[test]
+    fn generates_incident_report_markdown() {
+        // 拓扑:app -CONTAINS-> comp -DEPLOYED_AS-> deploy
+        // change 锚点 target=deploy:order-api -> 反向 BFS 受影响 [comp, app]
+        let topology = Topology {
+            nodes: vec![
+                node("app:order", "Application", "normal"),
+                node("comp:order-api", "ApplicationComponent", "normal"),
+                node("deploy:order-api", "Deployment", "warning"),
+            ],
+            edges: vec![
+                ResolvedEdge { id: "e1".into(), source: "app:order".into(), target: "comp:order-api".into(), edge_type: "CONTAINS".into() },
+                ResolvedEdge { id: "e2".into(), source: "comp:order-api".into(), target: "deploy:order-api".into(), edge_type: "DEPLOYED_AS".into() },
+            ],
+        };
+
+        let mut cr = ChangeRegistry::new();
+        let req = ChangeRequest {
+            change_type: "configmap_updated".into(),
+            target_resource_id: "deploy:order-api".into(),
+            changed_at: Some("2026-07-20T10:00:00Z".into()),
+            ..Default::default()
+        };
+        let event = record_change(&mut cr, &topology, &req).unwrap();
+        let ce_id = event.change_event_id.clone();
+
+        // 一条窗口内恢复执行(target=deploy:order-api 在 propagated ∪ {target} 集合)
+        let mut er = ExecutionRegistry::new();
+        er.insert(RecoveryExecution {
+            execution_id: "ex-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            action_id: "restart_service".into(),
+            target_resource_id: "deploy:order-api".into(),
+            status: RecoveryStatus::Succeeded,
+            initiated_at: "2026-07-20T10:05:00Z".into(),
+            completed_at: "2026-07-20T10:05:30Z".into(),
+            initiated_by: "ops".into(),
+            ..Default::default()
+        });
+
+        let task = ReportTask {
+            report_id: "rpt-inc".into(),
+            template_id: ReportTemplate::IncidentReport,
+            scope: ReportScope {
+                change_event_id: Some(ce_id),
+                ..Default::default()
+            },
+            modules: vec![],
+            format: "markdown".into(),
+            status: ReportStatus::Generating,
+            progress: 0,
+            current_step: "".into(),
+            error_message: None,
+            markdown: None,
+            created_at: "2026-07-20T10:10:00Z".into(),
+            completed_at: None,
+        };
+
+        let md = generate_report(&task, &topology, &cr, &er, "2026-07-20T10:10:00Z").expect("render");
+        assert!(md.contains("# 事件报告"));
+        assert!(md.contains("变更事件")); // anchor_kind_label
+        assert!(md.contains("## 1. 事件摘要"));
+        assert!(md.contains("deploy:order-api")); // 锚点目标
+        assert!(md.contains("受影响节点总数**:**2**")); // comp + app(模板加粗致冒号两侧各 ** )
+        assert!(md.contains("ApplicationComponent"));
+        assert!(md.contains("## 2. 事件时间线"));
+        assert!(md.contains("configmap_updated")); // change 事件入时间线
+        assert!(md.contains("restart_service")); // recovery 事件入时间线 + 已执行
+        assert!(md.contains("## 3. 已执行恢复 & 推荐后续"));
+        assert!(md.contains("rollback_deployment")); // configmap_updated -> 推荐
     }
 
     #[test]

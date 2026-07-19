@@ -22,12 +22,16 @@ pub async fn generate_report_cmd(
     template_id: String,
     application_id: Option<String>,
     cluster_id: Option<String>,
+    change_event_id: Option<String>,
+    fault_id: Option<String>,
     modules: Option<Vec<String>>,
 ) -> Result<ReportTask, String> {
     let template = parse_template(&template_id)?;
     let scope = ReportScope {
         application_id,
         cluster_id,
+        change_event_id,
+        fault_id,
         ..Default::default()
     };
     let report_id = format!("rpt-{}", uuid::Uuid::new_v4().simple());
