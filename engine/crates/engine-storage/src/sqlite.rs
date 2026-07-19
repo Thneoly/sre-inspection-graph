@@ -1403,7 +1403,9 @@ mod tests {
             &mut topo,
             "tester",
             "test",
+            &engine_recovery::MockHandlerExecutor,
         )
+        .await
         .expect("execute");
         assert_eq!(e.status, engine_recovery::RecoveryStatus::Succeeded);
         assert_eq!(e.result["new_replicas"], 5);

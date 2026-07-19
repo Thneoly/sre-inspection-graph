@@ -163,7 +163,7 @@ async fn k8s_handler_mock_all_6_actions() {
     ];
     for (action, target, params) in &cases {
         let raw = handler.execute(action, target, params, "test").await.expect("call");
-        let ok = raw.expect(&format!("{action} returned ExecError"));
+        let ok = raw.unwrap_or_else(|_| panic!("{action} returned ExecError"));
         assert!(ok.success, "mock {action} should succeed");
     }
 }
