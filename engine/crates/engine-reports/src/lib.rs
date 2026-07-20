@@ -1,7 +1,7 @@
 //! engine-reports
 //!
-//! PRD-003 复刻 — Markdown 报告生成 + 3 模板 + APScheduler 替换为 tokio-cron
-//! + SMTP via lettre。Phase 1 占位,Phase 4 复刻。
+//! PRD-003 复刻 - Markdown 报告生成 + 3 模板 + 订阅/调度(cron crate + 自写 tokio loop)
+//! + SMTP(lettre;InMemory 回退)。Phase 4.1-4.3 完成。
 //!
 //! 模板引擎选 Tera(Rust 原生)替换 Jinja2,语法兼容度 ~90%。
 
