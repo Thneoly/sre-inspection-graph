@@ -229,6 +229,10 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 "namespace": ns,
                 "name": name,
                 "parent_resource_id": format!("ns:{c}:{ns}"),
+                "current_revision": deploy_revision(d),
+                "images": deploy_images(d),
+                "replicas_desired": deploy_replicas_desired(d),
+                "replicas_ready": deploy_replicas_ready(d),
                 "health_status": "normal",
                 "risk_level": "low",
             }),
@@ -446,6 +450,51 @@ fn items(list: &Value) -> &[Value] {
 /// metadata.name。
 fn meta_name(obj: &Value) -> Option<&str> {
     obj.get("metadata")?.get("name")?.as_str()
+}
+
+/// Deployment `metadata.annotations["deployment.kubernetes.io/revision"]`(变更检测信号)。
+fn deploy_revision(d: &Value) -> String {
+    d.get("metadata")
+        .and_then(|m| m.get("annotations"))
+        .and_then(|a| a.get("deployment.kubernetes.io/revision"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Deployment `spec.template.spec.containers[].image`(排序去重,逗号分隔;变更检测信号)。
+fn deploy_images(d: &Value) -> String {
+    let mut imgs: Vec<String> = d
+        .get("spec")
+        .and_then(|s| s.get("template"))
+        .and_then(|t| t.get("spec"))
+        .and_then(|s| s.get("containers"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.get("image").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    imgs.sort();
+    imgs.dedup();
+    imgs.join(",")
+}
+
+/// Deployment `spec.replicas`(缺失 -> 0;变更检测信号)。
+fn deploy_replicas_desired(d: &Value) -> i64 {
+    d.get("spec")
+        .and_then(|s| s.get("replicas"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+/// Deployment `status.readyReplicas`(缺失 -> 0;变更检测信号)。
+fn deploy_replicas_ready(d: &Value) -> i64 {
+    d.get("status")
+        .and_then(|s| s.get("readyReplicas"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
 }
 
 /// ReplicaSet name -> 拥有它的 Deployment name。

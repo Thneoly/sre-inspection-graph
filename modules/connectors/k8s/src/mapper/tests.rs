@@ -362,3 +362,55 @@ fn empty_or_null_lists_yield_only_cluster_namespace_application() {
     assert!(find(&facts, "app:vm:otel-demo:otel-demo").is_some());
     assert!(facts.iter().all(|f| f.kind == "topology-node"));
 }
+
+#[test]
+fn deployment_extracts_rollout_signal_fields() {
+    // Phase 4.3 后续:Deployment attrs 补 current_revision/images/replicas_*(变更检测信号)
+    let input = ClusterInput {
+        cluster: "vm".into(),
+        namespace: "otel-demo".into(),
+        now: 1_700_000_000,
+        release_prefix: "otel-demo".into(),
+        deployments: json!({ "items": [
+            {
+                "metadata": {
+                    "name": "frontend",
+                    "annotations": { "deployment.kubernetes.io/revision": "3" }
+                },
+                "spec": {
+                    "replicas": 2,
+                    "template": { "spec": { "containers": [
+                        { "image": "otel/demo:v1" },
+                        { "image": "otel/init:v2" }
+                    ] } }
+                },
+                "status": { "readyReplicas": 1 }
+            }
+        ]}),
+        nodes: json!({ "items": [{ "metadata": { "name": "vm1" } }] }),
+        replicasets: json!({ "items": [] }),
+        pods: json!({ "items": [] }),
+        services: json!({ "items": [] }),
+        configmaps: json!({ "items": [] }),
+        secrets: json!({ "items": [] }),
+    };
+    let facts = map_cluster(&input);
+    let deploy = find(&facts, "deploy:vm:otel-demo:frontend").unwrap();
+    assert_eq!(attr(deploy, "current_revision"), json!("3"));
+    // images 排序去重:otel/demo:v1,otel/init:v2
+    assert_eq!(attr(deploy, "images"), json!("otel/demo:v1,otel/init:v2"));
+    assert_eq!(attr(deploy, "replicas_desired"), json!(2));
+    assert_eq!(attr(deploy, "replicas_ready"), json!(1));
+
+    // 缺失字段 -> 默认值(revision="", images="", replicas=0)
+    let input2 = ClusterInput {
+        deployments: json!({ "items": [{ "metadata": { "name": "bare" } }] }),
+        ..input
+    };
+    let facts2 = map_cluster(&input2);
+    let bare = find(&facts2, "deploy:vm:otel-demo:bare").unwrap();
+    assert_eq!(attr(bare, "current_revision"), json!(""));
+    assert_eq!(attr(bare, "images"), json!(""));
+    assert_eq!(attr(bare, "replicas_desired"), json!(0));
+    assert_eq!(attr(bare, "replicas_ready"), json!(0));
+}
