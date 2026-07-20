@@ -196,6 +196,9 @@ pub async fn trigger_subscription_now(
         .upsert_report(&r.task)
         .await
         .map_err(|e| e.to_string())?;
+    if let Err(e) = state.storage.prune_reports(100).await {
+        tracing::warn!("prune_reports: {e}");
+    }
     let snap = {
         let mut reg = state.subscriptions.lock().await;
         if let Some(s) = reg.get_mut(&subscription_id) {

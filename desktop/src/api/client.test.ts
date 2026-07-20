@@ -10,6 +10,7 @@ import {
   recordChangeEvent, executeRecovery, listRecoveryExecutions, listChainTemplates,
   recordAlert, changeEventRecoverySuggestion,
   generateReport, listReports, createSubscription, triggerSubscriptionNow, listSentEmails,
+  clearReports,
 } from "./client";
 
 const mockedInvoke = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -124,5 +125,11 @@ describe("api/client invoke wrappers (Phase 3.6)", () => {
     mockedInvoke.mockResolvedValueOnce([]);
     await listSentEmails();
     expect(mockedInvoke).toHaveBeenCalledWith("list_sent_emails");
+  });
+
+  it("clearReports sends clear_reports with no args (Phase 4.3 后续)", async () => {
+    mockedInvoke.mockResolvedValueOnce(3);
+    await clearReports();
+    expect(mockedInvoke).toHaveBeenCalledWith("clear_reports");
   });
 });

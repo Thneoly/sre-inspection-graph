@@ -6,7 +6,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  listReports, generateReport, getReport,
+  listReports, generateReport, getReport, clearReports,
   type ReportTask, type ReportTemplate,
 } from "../../api/client";
 
@@ -37,6 +37,12 @@ export default function ReportsView() {
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["reports"] });
 
+  const clearM = useMutation({
+    mutationFn: () => clearReports(),
+    onSuccess: (n) => { message.success(`已清空 ${n} 条报告`); setSelectedId(null); invalidate(); },
+    onError: (e) => message.error(String(e)),
+  });
+
   const { data: selected } = useQuery({
     queryKey: ["report", selectedId],
     queryFn: () => getReport(selectedId!),
@@ -51,7 +57,10 @@ export default function ReportsView() {
   ];
 
   return (
-    <Card title="报告" extra={<Button type="primary" onClick={() => setGenOpen(true)}>生成报告</Button>}>
+    <Card title="报告" extra={<Space>
+      <Button onClick={() => Modal.confirm({ title: "清空所有报告历史?", content: "不可恢复", onOk: () => clearM.mutate() })} loading={clearM.isPending}>清空历史</Button>
+      <Button type="primary" onClick={() => setGenOpen(true)}>生成报告</Button>
+    </Space>}>
       <Table
         rowKey="report_id"
         size="small"

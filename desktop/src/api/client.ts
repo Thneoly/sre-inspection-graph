@@ -535,6 +535,9 @@ export async function listReports(opts?: {
 export async function getReport(reportId: string): Promise<ReportTask> {
   return invoke<ReportTask>("get_report", { reportId });
 }
+export async function clearReports(): Promise<number> {
+  return invoke<number>("clear_reports");
+}
 
 export async function createSubscription(opts: {
   templateId: string;

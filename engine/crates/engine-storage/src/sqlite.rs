@@ -1116,6 +1116,27 @@ impl SqliteStorage {
             .await?;
         Ok(res.rows_affected() > 0)
     }
+
+    /// 保留最近 `keep_n` 条报告(按 created_at 降序),删余;返删除数。bounded 增长。
+    pub async fn prune_reports(&self, keep_n: i64) -> Result<usize, StorageError> {
+        let res = sqlx::query(
+            r#"DELETE FROM report_tasks WHERE report_id NOT IN (
+                SELECT report_id FROM report_tasks ORDER BY created_at DESC LIMIT ?1
+            )"#,
+        )
+        .bind(keep_n)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() as usize)
+    }
+
+    /// 清空所有报告;返删除数。
+    pub async fn clear_reports(&self) -> Result<usize, StorageError> {
+        let res = sqlx::query(r#"DELETE FROM report_tasks"#)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() as usize)
+    }
 }
 
 /// 把一行 recovery_executions 解析成 [`RecoveryExecution`]。
@@ -2034,5 +2055,40 @@ mod tests {
         // delete
         assert!(store.delete_report("rpt-test1").await.expect("del"));
         assert!(store.get_report("rpt-test1").await.expect("get").is_none());
+    }
+
+    #[tokio::test]
+    async fn report_prune_and_clear_sqlite() {
+        let store = migrated_store().await;
+        // 插 5 条,created_at 升序(rpt-1 最旧)
+        for i in 1..=5 {
+            let t = engine_reports::ReportTask {
+                report_id: format!("rpt-{i}"),
+                template_id: engine_reports::ReportTemplate::ApplicationHealth,
+                scope: engine_reports::ReportScope::default(),
+                modules: vec![],
+                format: "markdown".into(),
+                status: engine_reports::ReportStatus::Completed,
+                progress: 100,
+                current_step: "".into(),
+                error_message: None,
+                markdown: None,
+                created_at: format!("2026-07-20T09:0{i}:00Z"),
+                completed_at: None,
+            };
+            store.upsert_report(&t).await.expect("upsert");
+        }
+        // prune keep 2 -> 删最旧 3(rpt-1/2/3),留 rpt-4/5
+        let deleted = store.prune_reports(2).await.expect("prune");
+        assert_eq!(deleted, 3);
+        let listed = store.list_reports(100).await.expect("list");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].report_id, "rpt-5"); // 最新的在前
+        assert_eq!(listed[1].report_id, "rpt-4");
+
+        // clear -> 全删
+        let cleared = store.clear_reports().await.expect("clear");
+        assert_eq!(cleared, 2);
+        assert!(store.list_reports(100).await.expect("list2").is_empty());
     }
 }

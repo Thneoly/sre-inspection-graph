@@ -71,6 +71,10 @@ pub async fn generate_report_cmd(
         .upsert_report(&task)
         .await
         .map_err(|e| e.to_string())?;
+    // 自动保留最近 100 条(bounded 增长;失败不阻断生成)
+    if let Err(e) = state.storage.prune_reports(100).await {
+        tracing::warn!("prune_reports: {e}");
+    }
     Ok(task)
 }
 
@@ -98,4 +102,11 @@ pub async fn get_report(state: State<'_, AppState>, report_id: String) -> Result
         .get(&report_id)
         .cloned()
         .ok_or_else(|| format!("report not found: {report_id}"))
+}
+
+/// 清空所有报告历史(storage + 内存 registry);返删除数。
+#[tauri::command]
+pub async fn clear_reports(state: State<'_, AppState>) -> Result<usize, String> {
+    state.reports.lock().await.clear();
+    state.storage.clear_reports().await.map_err(|e| e.to_string())
 }

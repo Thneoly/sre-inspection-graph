@@ -333,6 +333,7 @@ pub fn run() {
             commands::reports::generate_report_cmd,
             commands::reports::list_reports,
             commands::reports::get_report,
+            commands::reports::clear_reports,
             // Phase 4.3 - report subscriptions / scheduling (PRD-003)
             create_subscription,
             list_subscriptions,

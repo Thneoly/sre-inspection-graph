@@ -93,6 +93,9 @@ async fn fire_subscription(app: &AppHandle, sub: &ReportSubscription, now_iso: &
     if let Err(e) = state.storage.upsert_report(&r.task).await {
         tracing::warn!("scheduler upsert_report {}: {e}", r.report_id);
     }
+    if let Err(e) = state.storage.prune_reports(100).await {
+        tracing::warn!("scheduler prune_reports: {e}");
+    }
 
     // 回写订阅 last_*
     let snap = {
