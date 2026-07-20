@@ -17,6 +17,7 @@ engine-core     = { workspace = true }
 engine-identity = { workspace = true }
 engine-recovery = { workspace = true }
 engine-changes  = { workspace = true }
+engine-reports  = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }

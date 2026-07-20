@@ -15,6 +15,8 @@
 //! reports, connectors, fault_simulation}.rs`。
 
 pub mod commands;
+pub mod email_smtp;
+pub mod scheduler;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -41,6 +43,10 @@ use commands::recovery::{
 use commands::system::get_app_version;
 use commands::topology::{get_graph, get_topology};
 use commands::wasm::{list_connectors, sync_all_now};
+use commands::reports_scheduler::{
+    create_subscription, delete_subscription, get_subscription, list_sent_emails,
+    list_subscriptions, trigger_subscription_now, update_subscription,
+};
 
 /// 解析 modules/ 根目录。
 ///
@@ -147,6 +153,14 @@ pub struct AppState {
     pub alerts: tokio::sync::Mutex<engine_changes::AlertRegistry>,
     /// Phase 4.1 - 报告注册表(内存;SQLite 持久化留后续)。
     pub reports: tokio::sync::Mutex<engine_reports::ReportStore>,
+    /// Phase 4.3 - 报告订阅注册表。启动从 `report_subscriptions` 表载入;
+    /// create/update/delete + 调度触发后 upsert 回写。
+    pub subscriptions: tokio::sync::Mutex<engine_reports::SubscriptionStore>,
+    /// Phase 4.3 - 邮件发送器(SMTP_HOST 空 -> InMemory 回退)。
+    pub email_sender: std::sync::Arc<dyn engine_reports::EmailSender>,
+    /// Phase 4.3 - 调度循环 task handle。`std::sync::Mutex` 便于 `RunEvent::Exit`
+    /// 同步回调 abort;command 端不持锁。
+    pub scheduler_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor>,
 }
 
@@ -166,7 +180,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             let storage_path = resolve_storage_path(app.handle())?;
-            let (storage, recovery_executions, recovery_chains, change_events, alerts) =
+            let (storage, recovery_executions, recovery_chains, change_events, alerts, subscriptions) =
                 tauri::async_runtime::block_on(async {
                     let storage = SqliteStorage::connect(&storage_path)
                         .await
@@ -192,15 +206,23 @@ pub fn run() {
                         .list_alert_events(1000)
                         .await
                         .map_err(|e| format!("load alert_events: {e}"))?;
+                    // Phase 4.3 - 载入报告订阅(调度配置不能丢)
+                    let subs = storage
+                        .list_subscriptions(1000)
+                        .await
+                        .map_err(|e| format!("load report_subscriptions: {e}"))?;
                     Ok::<_, String>((
                         storage,
                         engine_recovery::ExecutionRegistry::from_executions(execs),
                         engine_recovery::ChainRegistry::from_chains(chains),
                         engine_changes::ChangeRegistry::from_events(changes),
                         engine_changes::AlertRegistry::from_alerts(alerts),
+                        engine_reports::SubscriptionStore::from_subscriptions(subs),
                     ))
                 })?;
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
+            // Phase 4.3 - 邮件发送器(SMTP_HOST 空 -> InMemory 回退)
+            let email_sender = email_smtp::get_email_sender();
             // Phase 3.9a-3b2b - handler_executor:WasmHandlerExecutor if scale-deploy 加载,else Mock
             let scale_handler = runtime
                 .handlers
@@ -226,8 +248,19 @@ pub fn run() {
                 change_events: tokio::sync::Mutex::new(change_events),
                 alerts: tokio::sync::Mutex::new(alerts),
                 reports: tokio::sync::Mutex::new(engine_reports::ReportStore::new()),
+                subscriptions: tokio::sync::Mutex::new(subscriptions),
+                email_sender,
+                scheduler_handle: Mutex::new(None),
                 handler_executor,
             });
+            // Phase 4.3 - 起调度循环(60s tick);存 handle 供 RunEvent::Exit abort
+            let app_handle = app.handle().clone();
+            let join = tauri::async_runtime::spawn(scheduler::scheduler_loop(app_handle));
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Ok(mut guard) = state.scheduler_handle.lock() {
+                    *guard = Some(join);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -278,16 +311,29 @@ pub fn run() {
             commands::reports::generate_report_cmd,
             commands::reports::list_reports,
             commands::reports::get_report,
+            // Phase 4.3 - report subscriptions / scheduling (PRD-003)
+            create_subscription,
+            list_subscriptions,
+            get_subscription,
+            update_subscription,
+            delete_subscription,
+            trigger_subscription_now,
+            list_sent_emails,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // 退出时杀掉托管的 kubectl proxy,不留孤儿进程。
+            // 退出时杀掉托管的 kubectl proxy + abort 调度循环,不留孤儿。
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Ok(mut guard) = state.proxy.lock() {
                         if let Some(mut child) = guard.take() {
                             let _ = child.start_kill();
+                        }
+                    }
+                    if let Ok(mut guard) = state.scheduler_handle.lock() {
+                        if let Some(join) = guard.take() {
+                            join.abort();
                         }
                     }
                 }

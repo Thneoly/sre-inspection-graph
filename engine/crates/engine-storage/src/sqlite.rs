@@ -9,6 +9,7 @@ use engine_changes::{AlertEvent, ChangeEvent};
 use engine_recovery::{
     DryRunResult, RecoveryChain, RecoveryExecution, RecoveryStatus, VerifyStatus,
 };
+use engine_reports::ReportSubscription;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -261,6 +262,39 @@ impl SqliteStorage {
               cluster_id TEXT NOT NULL,
               resolved_at TEXT NOT NULL
             )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 4.3 - report_subscriptions 表(ReportSubscription 持久化;调度配置不能丢)。
+        // enum 列(template_id / last_status)存 snake_case JSON 文本;scope/modules/recipients
+        // 存 JSON 文本(对齐 3.6 模式)。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS report_subscriptions (
+              subscription_id TEXT PRIMARY KEY,
+              template_id TEXT NOT NULL,
+              scope TEXT NOT NULL,
+              modules TEXT NOT NULL,
+              cron TEXT NOT NULL,
+              recipients TEXT NOT NULL,
+              enabled INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              last_run_at TEXT NOT NULL,
+              last_status TEXT NOT NULL,
+              last_error TEXT NOT NULL,
+              last_report_id TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_report_subscriptions_created_at
+              ON report_subscriptions(created_at DESC)
             "#,
         )
         .execute(&self.pool)
@@ -883,6 +917,95 @@ impl SqliteStorage {
             .await?;
         rows.into_iter().map(row_to_alert_event).collect()
     }
+
+    // ===== Phase 4.3: report_subscriptions =====
+
+    /// Insert or update a [`ReportSubscription`]。按 `subscription_id` 幂等。
+    pub async fn upsert_subscription(
+        &self,
+        s: &ReportSubscription,
+    ) -> Result<(), StorageError> {
+        let template_id = serde_json::to_string(&s.template_id)
+            .map_err(|e| StorageError::Clock(e.to_string()))?;
+        let scope = serde_json::to_string(&s.scope).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let modules =
+            serde_json::to_string(&s.modules).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let recipients = serde_json::to_string(&s.recipients)
+            .map_err(|e| StorageError::Clock(e.to_string()))?;
+        let last_status = serde_json::to_string(&s.last_status)
+            .map_err(|e| StorageError::Clock(e.to_string()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO report_subscriptions (
+                subscription_id, template_id, scope, modules, cron, recipients,
+                enabled, created_at, last_run_at, last_status, last_error, last_report_id
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+            )
+            ON CONFLICT(subscription_id) DO UPDATE SET
+                template_id = excluded.template_id,
+                scope = excluded.scope,
+                modules = excluded.modules,
+                cron = excluded.cron,
+                recipients = excluded.recipients,
+                enabled = excluded.enabled,
+                created_at = excluded.created_at,
+                last_run_at = excluded.last_run_at,
+                last_status = excluded.last_status,
+                last_error = excluded.last_error,
+                last_report_id = excluded.last_report_id
+            "#,
+        )
+        .bind(&s.subscription_id)
+        .bind(&template_id)
+        .bind(&scope)
+        .bind(&modules)
+        .bind(&s.cron)
+        .bind(&recipients)
+        .bind(s.enabled as i64)
+        .bind(&s.created_at)
+        .bind(&s.last_run_at)
+        .bind(&last_status)
+        .bind(&s.last_error)
+        .bind(&s.last_report_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 取单个 [`ReportSubscription`];不存在返 None。
+    pub async fn get_subscription(
+        &self,
+        subscription_id: &str,
+    ) -> Result<Option<ReportSubscription>, StorageError> {
+        let row = sqlx::query(r#"SELECT * FROM report_subscriptions WHERE subscription_id = ?1"#)
+            .bind(subscription_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_subscription).transpose()
+    }
+
+    /// 列 [`ReportSubscription`](新到旧,按 created_at 降序)。
+    pub async fn list_subscriptions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ReportSubscription>, StorageError> {
+        let rows =
+            sqlx::query(r#"SELECT * FROM report_subscriptions ORDER BY created_at DESC LIMIT ?1"#)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter().map(row_to_subscription).collect()
+    }
+
+    /// 删除 [`ReportSubscription`];存在返 true。
+    pub async fn delete_subscription(&self, subscription_id: &str) -> Result<bool, StorageError> {
+        let res = sqlx::query(r#"DELETE FROM report_subscriptions WHERE subscription_id = ?1"#)
+            .bind(subscription_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
 }
 
 /// 把一行 recovery_executions 解析成 [`RecoveryExecution`]。
@@ -1008,6 +1131,33 @@ fn row_to_alert_event(row: sqlx::sqlite::SqliteRow) -> Result<AlertEvent, Storag
         description: row.try_get("description")?,
         cluster_id: row.try_get("cluster_id")?,
         resolved_at: row.try_get("resolved_at")?,
+    })
+}
+
+/// 把一行 report_subscriptions 解析成 [`ReportSubscription`]。
+fn row_to_subscription(row: sqlx::sqlite::SqliteRow) -> Result<ReportSubscription, StorageError> {
+    let template_id: String = row.try_get("template_id")?;
+    let scope: String = row.try_get("scope")?;
+    let modules: String = row.try_get("modules")?;
+    let recipients: String = row.try_get("recipients")?;
+    let last_status: String = row.try_get("last_status")?;
+    let enabled: i64 = row.try_get("enabled")?;
+    Ok(ReportSubscription {
+        subscription_id: row.try_get("subscription_id")?,
+        template_id: serde_json::from_str(&template_id)
+            .map_err(|e| StorageError::Clock(format!("template_id parse: {e}")))?,
+        scope: serde_json::from_str(&scope).map_err(|e| StorageError::Clock(format!("scope parse: {e}")))?,
+        modules: serde_json::from_str(&modules).map_err(|e| StorageError::Clock(format!("modules parse: {e}")))?,
+        cron: row.try_get("cron")?,
+        recipients: serde_json::from_str(&recipients)
+            .map_err(|e| StorageError::Clock(format!("recipients parse: {e}")))?,
+        enabled: enabled != 0,
+        created_at: row.try_get("created_at")?,
+        last_run_at: row.try_get("last_run_at")?,
+        last_status: serde_json::from_str(&last_status)
+            .map_err(|e| StorageError::Clock(format!("last_status parse: {e}")))?,
+        last_error: row.try_get("last_error")?,
+        last_report_id: row.try_get("last_report_id")?,
     })
 }
 
@@ -1632,5 +1782,65 @@ mod tests {
 
         let listed = store.list_alert_events(10).await.expect("list");
         assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subscription_round_trips_sqlite() {
+        let store = migrated_store().await;
+        let sub = engine_reports::ReportSubscription {
+            subscription_id: "sub-test1".into(),
+            template_id: engine_reports::ReportTemplate::ApplicationHealth,
+            scope: engine_reports::ReportScope {
+                application_id: Some("app:order".into()),
+                cluster_id: None,
+                change_event_id: None,
+                fault_id: None,
+                time_range_start: None,
+                time_range_end: None,
+            },
+            modules: vec!["health_score".into(), "risk_list".into()],
+            cron: "0 9 * * 1".into(),
+            recipients: vec!["ops@example.com".into(), "sre@example.com".into()],
+            enabled: true,
+            created_at: "2026-07-20T00:00:00Z".into(),
+            last_run_at: "2026-07-20T09:00:00Z".into(),
+            last_status: engine_reports::SubscriptionStatus::Ok,
+            last_error: String::new(),
+            last_report_id: "rpt-abc".into(),
+        };
+        store.upsert_subscription(&sub).await.expect("upsert");
+
+        let got = store
+            .get_subscription(&sub.subscription_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.subscription_id, "sub-test1");
+        assert_eq!(got.template_id, engine_reports::ReportTemplate::ApplicationHealth);
+        assert_eq!(got.scope.application_id.as_deref(), Some("app:order"));
+        assert_eq!(got.modules, vec!["health_score".to_string(), "risk_list".to_string()]);
+        assert_eq!(got.cron, "0 9 * * 1");
+        assert_eq!(got.recipients, vec!["ops@example.com".to_string(), "sre@example.com".to_string()]);
+        assert!(got.enabled);
+        assert_eq!(got.last_status, engine_reports::SubscriptionStatus::Ok);
+        assert_eq!(got.last_report_id, "rpt-abc");
+
+        // upsert 幂等(更新 last_status)
+        let mut updated = got;
+        updated.last_status = engine_reports::SubscriptionStatus::Failed;
+        updated.last_error = "boom".into();
+        store.upsert_subscription(&updated).await.expect("upsert2");
+        let got2 = store.get_subscription("sub-test1").await.expect("get").expect("present");
+        assert_eq!(got2.last_status, engine_reports::SubscriptionStatus::Failed);
+        assert_eq!(got2.last_error, "boom");
+
+        // list
+        let listed = store.list_subscriptions(10).await.expect("list");
+        assert_eq!(listed.len(), 1);
+
+        // delete
+        assert!(store.delete_subscription("sub-test1").await.expect("del"));
+        assert!(store.get_subscription("sub-test1").await.expect("get").is_none());
+        assert!(!store.delete_subscription("sub-test1").await.expect("del2"));
     }
 }

@@ -48,6 +48,8 @@ engine-changes  = { path = "../../engine/crates/engine-changes" }
 engine-reports  = { path = "../../engine/crates/engine-reports" }
 async-trait = "0.1"
 chrono = "0.4"
+# Phase 4.3 - SMTP 发送(SmtpEmailSender;InMemory 回退在 engine-reports)
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1-native-tls", "hostname"] }
 
 [features]
 default = ["custom-protocol"]

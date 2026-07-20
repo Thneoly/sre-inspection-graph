@@ -6,7 +6,7 @@ use engine_reports::{ReportScope, ReportStatus, ReportTask, ReportTemplate};
 
 use crate::AppState;
 
-fn parse_template(s: &str) -> Result<ReportTemplate, String> {
+pub(crate) fn parse_template(s: &str) -> Result<ReportTemplate, String> {
     match s {
         "application_health" => Ok(ReportTemplate::ApplicationHealth),
         "cluster_overview" => Ok(ReportTemplate::ClusterOverview),

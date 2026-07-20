@@ -21,7 +21,7 @@ pub mod runner;
 
 pub use models::{ReportScope, ReportStatus, ReportStore, ReportTask};
 pub use generator::{generate_report, ReportError};
-pub use subscription::{parse_cron, ReportSubscription, SubscriptionStatus, SubscriptionStore};
+pub use subscription::{parse_cron, validate_subscription, ReportSubscription, SubscriptionStatus, SubscriptionStore};
 pub use email::{EmailError, EmailSender, InMemoryEmailSender, SentEmail};
 pub use scheduler::{check_fire, default_grace, FireDecision, DEFAULT_GRACE_SECS};
 pub use runner::{run_subscription, RunError, RunResult};
