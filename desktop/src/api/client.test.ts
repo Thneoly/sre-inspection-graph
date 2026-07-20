@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   recordChangeEvent, executeRecovery, listRecoveryExecutions, listChainTemplates,
   recordAlert, changeEventRecoverySuggestion,
+  generateReport, listReports, createSubscription, triggerSubscriptionNow, listSentEmails,
 } from "./client";
 
 const mockedInvoke = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -78,5 +79,50 @@ describe("api/client invoke wrappers (Phase 3.6)", () => {
     expect(mockedInvoke).toHaveBeenCalledWith("change_event_recovery_suggestion", {
       changeEventId: "ce-1",
     });
+  });
+
+  it("generateReport sends generate_report_cmd with camelCase opts (Phase 4.1)", async () => {
+    mockedInvoke.mockResolvedValueOnce({ report_id: "rpt-1", status: "completed" });
+    await generateReport({ templateId: "application_health", applicationId: "app:order" });
+    expect(mockedInvoke).toHaveBeenCalledWith("generate_report_cmd", {
+      templateId: "application_health",
+      applicationId: "app:order",
+    });
+  });
+
+  it("listReports sends list_reports with empty opts when none given (Phase 4.1)", async () => {
+    mockedInvoke.mockResolvedValueOnce([]);
+    await listReports();
+    expect(mockedInvoke).toHaveBeenCalledWith("list_reports", {});
+  });
+
+  it("createSubscription sends create_subscription with cron + recipients (Phase 4.3)", async () => {
+    mockedInvoke.mockResolvedValueOnce({ subscription_id: "sub-1" });
+    await createSubscription({
+      templateId: "cluster_overview",
+      clusterId: "otel-demo",
+      cron: "0 9 * * 1",
+      recipients: ["ops@example.com"],
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("create_subscription", {
+      templateId: "cluster_overview",
+      clusterId: "otel-demo",
+      cron: "0 9 * * 1",
+      recipients: ["ops@example.com"],
+    });
+  });
+
+  it("triggerSubscriptionNow sends trigger_subscription_now (Phase 4.3)", async () => {
+    mockedInvoke.mockResolvedValueOnce({ report_id: "rpt-2", status: "completed" });
+    await triggerSubscriptionNow("sub-1");
+    expect(mockedInvoke).toHaveBeenCalledWith("trigger_subscription_now", {
+      subscriptionId: "sub-1",
+    });
+  });
+
+  it("listSentEmails sends list_sent_emails with no args (Phase 4.3)", async () => {
+    mockedInvoke.mockResolvedValueOnce([]);
+    await listSentEmails();
+    expect(mockedInvoke).toHaveBeenCalledWith("list_sent_emails");
   });
 });

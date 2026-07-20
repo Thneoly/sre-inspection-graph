@@ -4,12 +4,13 @@ import MainLayout from "./components/Layout/MainLayout";
 import TopologyPage from "./pages/TopologyPage";
 import RecoveryPage from "./pages/RecoveryPage";
 import ChangesPage from "./pages/ChangesPage";
+import ReportsPage from "./pages/ReportsPage";
 import { getAppVersion } from "./api/client";
 
 /**
  * Phase 3.6 - router shell。HashRouter(main.tsx 包)下嵌套布局路由:父路由
- * 渲染 `MainLayout`(Sider 菜单 + Outlet),子路由 Topology / Recovery / Changes
- * 渲染进 Outlet。版本经 react-query 拉一次喂给 Header。
+ * 渲染 `MainLayout`(Sider 菜单 + Outlet),子路由 Topology / Recovery / Changes /
+ * Reports 渲染进 Outlet。版本经 react-query 拉一次喂给 Header。
  */
 export default function App() {
   const { data: version } = useQuery({ queryKey: ["app-version"], queryFn: getAppVersion });
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/" element={<TopologyPage />} />
         <Route path="/recovery" element={<RecoveryPage />} />
         <Route path="/changes" element={<ChangesPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
       </Route>
     </Routes>
   );

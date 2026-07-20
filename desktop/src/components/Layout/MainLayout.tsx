@@ -1,14 +1,14 @@
 import { Layout, Menu, Typography } from "antd";
-import { DashboardOutlined, ToolOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { DashboardOutlined, ToolOutlined, ThunderboltOutlined, FileTextOutlined } from "@ant-design/icons";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
 const { Sider, Header, Content } = Layout;
 const { Text } = Typography;
 
 /**
- * Phase 3.6 - AntD Layout shell(移植自 reference `MainLayout.tsx`,精简到三视图)。
+ * Phase 3.6 - AntD Layout shell(移植自 reference `MainLayout.tsx`,精简到四视图)。
  *
- * Sider 菜单:Topology / Recovery / Changes(启用);Reports / Connectors / Fault-sim
+ * Sider 菜单:Topology / Recovery / Changes / Reports(启用);Connectors / Fault-sim
  * 占位禁用(Phase 4+)。Content 走 react-router `<Outlet />`。Header 显示 app 名 +
  * 版本(react-query 拉一次)。
  */
@@ -26,8 +26,8 @@ export default function MainLayout({ version }: { version: string }) {
           { key: "topology", icon: <DashboardOutlined />, label: <Link to="/">Topology</Link> },
           { key: "recovery", icon: <ToolOutlined />, label: <Link to="/recovery">Recovery</Link> },
           { key: "changes", icon: <ThunderboltOutlined />, label: <Link to="/changes">Changes</Link> },
+          { key: "reports", icon: <FileTextOutlined />, label: <Link to="/reports">Reports</Link> },
           { type: "group", label: "Phase 4+", children: [
-            { key: "reports", label: "Reports", disabled: true },
             { key: "connectors", label: "Connectors", disabled: true },
             { key: "faultsim", label: "Fault Sim", disabled: true },
           ] },

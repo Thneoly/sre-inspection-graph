@@ -465,3 +465,113 @@ export async function correlateChangesForAlert(opts: {
 }): Promise<CorrelateChangesForAlertResult> {
   return invoke<CorrelateChangesForAlertResult>("correlate_changes_for_alert", opts);
 }
+
+// ===== Phase 4.1/4.3 - reports / subscriptions (PRD-003) =====
+
+export type ReportTemplate = "application_health" | "cluster_overview" | "incident_report";
+export type ReportStatus = "pending" | "generating" | "completed" | "failed";
+export type SubscriptionStatus = "never" | "ok" | "failed";
+
+export interface ReportScope {
+  application_id?: string | null;
+  cluster_id?: string | null;
+  change_event_id?: string | null;
+  fault_id?: string | null;
+  time_range_start?: string | null;
+  time_range_end?: string | null;
+}
+export interface ReportTask {
+  report_id: string;
+  template_id: ReportTemplate;
+  scope: ReportScope;
+  modules: string[];
+  format: string;
+  status: ReportStatus;
+  progress: number;
+  current_step: string;
+  error_message: string | null;
+  markdown: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+export interface ReportSubscription {
+  subscription_id: string;
+  template_id: ReportTemplate;
+  scope: ReportScope;
+  modules: string[];
+  cron: string;
+  recipients: string[];
+  enabled: boolean;
+  created_at: string;
+  last_run_at: string;
+  last_status: SubscriptionStatus;
+  last_error: string;
+  last_report_id: string;
+}
+export interface SentEmail {
+  recipients: string[];
+  subject: string;
+  body: string;
+  attachment_filename: string;
+  attachment_content: string;
+}
+
+export async function generateReport(opts: {
+  templateId: string;
+  applicationId?: string;
+  clusterId?: string;
+  changeEventId?: string;
+  faultId?: string;
+  modules?: string[];
+}): Promise<ReportTask> {
+  return invoke<ReportTask>("generate_report_cmd", opts);
+}
+export async function listReports(opts?: {
+  templateId?: string;
+  applicationId?: string;
+}): Promise<ReportTask[]> {
+  return invoke<ReportTask[]>("list_reports", opts ?? {});
+}
+export async function getReport(reportId: string): Promise<ReportTask> {
+  return invoke<ReportTask>("get_report", { reportId });
+}
+
+export async function createSubscription(opts: {
+  templateId: string;
+  applicationId?: string;
+  clusterId?: string;
+  changeEventId?: string;
+  faultId?: string;
+  modules?: string[];
+  cron: string;
+  recipients: string[];
+  enabled?: boolean;
+}): Promise<ReportSubscription> {
+  return invoke<ReportSubscription>("create_subscription", opts);
+}
+export async function listSubscriptions(opts?: {
+  templateId?: string;
+}): Promise<ReportSubscription[]> {
+  return invoke<ReportSubscription[]>("list_subscriptions", opts ?? {});
+}
+export async function getSubscription(subscriptionId: string): Promise<ReportSubscription> {
+  return invoke<ReportSubscription>("get_subscription", { subscriptionId });
+}
+export async function updateSubscription(opts: {
+  subscriptionId: string;
+  cron?: string;
+  recipients?: string[];
+  enabled?: boolean;
+  modules?: string[];
+}): Promise<ReportSubscription> {
+  return invoke<ReportSubscription>("update_subscription", opts);
+}
+export async function deleteSubscription(subscriptionId: string): Promise<boolean> {
+  return invoke<boolean>("delete_subscription", { subscriptionId });
+}
+export async function triggerSubscriptionNow(subscriptionId: string): Promise<ReportTask> {
+  return invoke<ReportTask>("trigger_subscription_now", { subscriptionId });
+}
+export async function listSentEmails(): Promise<SentEmail[]> {
+  return invoke<SentEmail[]>("list_sent_emails");
+}
