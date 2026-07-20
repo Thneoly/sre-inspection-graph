@@ -161,6 +161,9 @@ pub struct AppState {
     /// Phase 4.3 - 调度循环 task handle。`std::sync::Mutex` 便于 `RunEvent::Exit`
     /// 同步回调 abort;command 端不持锁。
     pub scheduler_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// Phase 4.3 后续 - k8s 变更自动录:首次 sync 抑制(对齐 reference first_sync,
+    /// 防重启录历史 burst + 时间戳误导)。首次 sync 后置 true,后续 sync 跑 detect_changes。
+    pub first_sync_done: std::sync::atomic::AtomicBool,
     pub handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor>,
 }
 
@@ -257,6 +260,7 @@ pub fn run() {
                 subscriptions: tokio::sync::Mutex::new(subscriptions),
                 email_sender,
                 scheduler_handle: Mutex::new(None),
+                first_sync_done: std::sync::atomic::AtomicBool::new(false),
                 handler_executor,
             });
             // Phase 4.3 - 起调度循环(60s tick);存 handle 供 RunEvent::Exit abort

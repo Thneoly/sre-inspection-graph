@@ -23,6 +23,7 @@ pub mod frequency;
 pub mod iso;
 pub mod models;
 pub mod propagation;
+pub mod watch;
 pub mod yaml_diff;
 
 pub use alert_correlation::{
@@ -47,6 +48,7 @@ pub use propagation::{
     DEFAULT_PROPAGATION_DEPTH, PROPAGATION_EDGES,
 };
 pub use yaml_diff::{compute_yaml_diff, summarize_diff, DiffSummary, NOISE_KEYS};
+pub use watch::detect_changes;
 
 /// Crate version。
 pub fn version() -> &'static str {

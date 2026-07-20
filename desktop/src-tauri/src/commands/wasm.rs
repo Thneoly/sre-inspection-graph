@@ -180,6 +180,38 @@ pub async fn sync_all_now(
         .await
         .map_err(|e| e.to_string())?;
     let change_set = engine_identity::diff(&current, &next);
+    // Phase 4.3 后续 - k8s 变更自动录(poll-diff):非首次 sync 时,detect_changes(current,next)
+    // -> record_change。首次 sync 抑制(对齐 reference first_sync,防重启录历史 burst)。
+    // 必须在 apply_change_set 之前读 current 旧 attrs(之后 materialized 表被覆盖)。
+    if state
+        .first_sync_done
+        .swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        let reqs = engine_changes::detect_changes(&current, &next);
+        if !reqs.is_empty() {
+            let events: Vec<engine_changes::ChangeEvent> = {
+                let mut reg = state.change_events.lock().await;
+                reqs.iter()
+                    .filter_map(|req| {
+                        engine_changes::record_change(&mut reg, &next, req)
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    "record_change {} failed: {e}",
+                                    req.target_resource_id
+                                );
+                                e
+                            })
+                            .ok()
+                    })
+                    .collect()
+            };
+            for event in events {
+                if let Err(e) = state.storage.upsert_change_event(&event).await {
+                    tracing::warn!("upsert_change_event {}: {e}", event.change_event_id);
+                }
+            }
+        }
+    }
     state
         .storage
         .apply_change_set(&change_set)
