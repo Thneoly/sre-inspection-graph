@@ -180,7 +180,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             let storage_path = resolve_storage_path(app.handle())?;
-            let (storage, recovery_executions, recovery_chains, change_events, alerts, subscriptions) =
+            let (storage, recovery_executions, recovery_chains, change_events, alerts, subscriptions, reports) =
                 tauri::async_runtime::block_on(async {
                     let storage = SqliteStorage::connect(&storage_path)
                         .await
@@ -211,6 +211,11 @@ pub fn run() {
                         .list_subscriptions(1000)
                         .await
                         .map_err(|e| format!("load report_subscriptions: {e}"))?;
+                    // Phase 4.3 后续 - 载入报告历史(跨重启恢复)
+                    let rpts = storage
+                        .list_reports(1000)
+                        .await
+                        .map_err(|e| format!("load report_tasks: {e}"))?;
                     Ok::<_, String>((
                         storage,
                         engine_recovery::ExecutionRegistry::from_executions(execs),
@@ -218,6 +223,7 @@ pub fn run() {
                         engine_changes::ChangeRegistry::from_events(changes),
                         engine_changes::AlertRegistry::from_alerts(alerts),
                         engine_reports::SubscriptionStore::from_subscriptions(subs),
+                        engine_reports::ReportStore::from_tasks(rpts),
                     ))
                 })?;
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
@@ -247,7 +253,7 @@ pub fn run() {
                 recovery_chains: tokio::sync::Mutex::new(recovery_chains),
                 change_events: tokio::sync::Mutex::new(change_events),
                 alerts: tokio::sync::Mutex::new(alerts),
-                reports: tokio::sync::Mutex::new(engine_reports::ReportStore::new()),
+                reports: tokio::sync::Mutex::new(reports),
                 subscriptions: tokio::sync::Mutex::new(subscriptions),
                 email_sender,
                 scheduler_handle: Mutex::new(None),

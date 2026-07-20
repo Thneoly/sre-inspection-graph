@@ -9,7 +9,7 @@ use engine_changes::{AlertEvent, ChangeEvent};
 use engine_recovery::{
     DryRunResult, RecoveryChain, RecoveryExecution, RecoveryStatus, VerifyStatus,
 };
-use engine_reports::ReportSubscription;
+use engine_reports::{ReportSubscription, ReportTask};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
@@ -295,6 +295,39 @@ impl SqliteStorage {
             r#"
             CREATE INDEX IF NOT EXISTS idx_report_subscriptions_created_at
               ON report_subscriptions(created_at DESC)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Phase 4.3 后续 - report_tasks 表(ReportTask 持久化;报告跨重启历史)。
+        // enum 列(template_id / status)存 snake_case JSON 文本;scope/modules 存 JSON 文本;
+        // markdown / error_message 可空(TEXT,nullable via 空串占位)。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS report_tasks (
+              report_id TEXT PRIMARY KEY,
+              template_id TEXT NOT NULL,
+              scope TEXT NOT NULL,
+              modules TEXT NOT NULL,
+              format TEXT NOT NULL,
+              status TEXT NOT NULL,
+              progress INTEGER NOT NULL,
+              current_step TEXT NOT NULL,
+              error_message TEXT NOT NULL,
+              markdown TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              completed_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_report_tasks_created_at
+              ON report_tasks(created_at DESC)
             "#,
         )
         .execute(&self.pool)
@@ -1006,6 +1039,83 @@ impl SqliteStorage {
             .await?;
         Ok(res.rows_affected() > 0)
     }
+
+    // ===== Phase 4.3 后续: report_tasks(报告跨重启历史) =====
+
+    /// Insert or update a [`ReportTask`]。按 `report_id` 幂等。
+    pub async fn upsert_report(&self, t: &ReportTask) -> Result<(), StorageError> {
+        let template_id = serde_json::to_string(&t.template_id)
+            .map_err(|e| StorageError::Clock(e.to_string()))?;
+        let scope = serde_json::to_string(&t.scope).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let modules =
+            serde_json::to_string(&t.modules).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let status =
+            serde_json::to_string(&t.status).map_err(|e| StorageError::Clock(e.to_string()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO report_tasks (
+                report_id, template_id, scope, modules, format, status, progress,
+                current_step, error_message, markdown, created_at, completed_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+            )
+            ON CONFLICT(report_id) DO UPDATE SET
+                template_id = excluded.template_id,
+                scope = excluded.scope,
+                modules = excluded.modules,
+                format = excluded.format,
+                status = excluded.status,
+                progress = excluded.progress,
+                current_step = excluded.current_step,
+                error_message = excluded.error_message,
+                markdown = excluded.markdown,
+                created_at = excluded.created_at,
+                completed_at = excluded.completed_at
+            "#,
+        )
+        .bind(&t.report_id)
+        .bind(&template_id)
+        .bind(&scope)
+        .bind(&modules)
+        .bind(&t.format)
+        .bind(&status)
+        .bind(t.progress as i64)
+        .bind(&t.current_step)
+        .bind(t.error_message.as_deref().unwrap_or(""))
+        .bind(t.markdown.as_deref().unwrap_or(""))
+        .bind(&t.created_at)
+        .bind(t.completed_at.as_deref().unwrap_or(""))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 取单个 [`ReportTask`];不存在返 None。
+    pub async fn get_report(&self, report_id: &str) -> Result<Option<ReportTask>, StorageError> {
+        let row = sqlx::query(r#"SELECT * FROM report_tasks WHERE report_id = ?1"#)
+            .bind(report_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_report_task).transpose()
+    }
+
+    /// 列 [`ReportTask`](新到旧,按 created_at 降序)。
+    pub async fn list_reports(&self, limit: i64) -> Result<Vec<ReportTask>, StorageError> {
+        let rows = sqlx::query(r#"SELECT * FROM report_tasks ORDER BY created_at DESC LIMIT ?1"#)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(row_to_report_task).collect()
+    }
+
+    /// 删除 [`ReportTask`];存在返 true。
+    pub async fn delete_report(&self, report_id: &str) -> Result<bool, StorageError> {
+        let res = sqlx::query(r#"DELETE FROM report_tasks WHERE report_id = ?1"#)
+            .bind(report_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
 }
 
 /// 把一行 recovery_executions 解析成 [`RecoveryExecution`]。
@@ -1158,6 +1268,32 @@ fn row_to_subscription(row: sqlx::sqlite::SqliteRow) -> Result<ReportSubscriptio
             .map_err(|e| StorageError::Clock(format!("last_status parse: {e}")))?,
         last_error: row.try_get("last_error")?,
         last_report_id: row.try_get("last_report_id")?,
+    })
+}
+
+/// 把一行 report_tasks 解析成 [`ReportTask`]。
+fn row_to_report_task(row: sqlx::sqlite::SqliteRow) -> Result<ReportTask, StorageError> {
+    let template_id: String = row.try_get("template_id")?;
+    let scope: String = row.try_get("scope")?;
+    let modules: String = row.try_get("modules")?;
+    let status: String = row.try_get("status")?;
+    let error_message: String = row.try_get("error_message")?;
+    let markdown: String = row.try_get("markdown")?;
+    let completed_at: String = row.try_get("completed_at")?;
+    Ok(ReportTask {
+        report_id: row.try_get("report_id")?,
+        template_id: serde_json::from_str(&template_id)
+            .map_err(|e| StorageError::Clock(format!("template_id parse: {e}")))?,
+        scope: serde_json::from_str(&scope).map_err(|e| StorageError::Clock(format!("scope parse: {e}")))?,
+        modules: serde_json::from_str(&modules).map_err(|e| StorageError::Clock(format!("modules parse: {e}")))?,
+        format: row.try_get("format")?,
+        status: serde_json::from_str(&status).map_err(|e| StorageError::Clock(format!("status parse: {e}")))?,
+        progress: row.try_get("progress")?,
+        current_step: row.try_get("current_step")?,
+        error_message: if error_message.is_empty() { None } else { Some(error_message) },
+        markdown: if markdown.is_empty() { None } else { Some(markdown) },
+        created_at: row.try_get("created_at")?,
+        completed_at: if completed_at.is_empty() { None } else { Some(completed_at) },
     })
 }
 
@@ -1842,5 +1978,61 @@ mod tests {
         assert!(store.delete_subscription("sub-test1").await.expect("del"));
         assert!(store.get_subscription("sub-test1").await.expect("get").is_none());
         assert!(!store.delete_subscription("sub-test1").await.expect("del2"));
+    }
+
+    #[tokio::test]
+    async fn report_task_round_trips_sqlite() {
+        let store = migrated_store().await;
+        let task = engine_reports::ReportTask {
+            report_id: "rpt-test1".into(),
+            template_id: engine_reports::ReportTemplate::ApplicationHealth,
+            scope: engine_reports::ReportScope {
+                application_id: Some("app:order".into()),
+                ..Default::default()
+            },
+            modules: vec!["health_score".into()],
+            format: "markdown".into(),
+            status: engine_reports::ReportStatus::Completed,
+            progress: 100,
+            current_step: "".into(),
+            error_message: None,
+            markdown: Some("# 应用健康报告\n\nbody".into()),
+            created_at: "2026-07-20T09:00:00Z".into(),
+            completed_at: Some("2026-07-20T09:00:05Z".into()),
+        };
+        store.upsert_report(&task).await.expect("upsert");
+
+        let got = store
+            .get_report(&task.report_id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(got.report_id, "rpt-test1");
+        assert_eq!(got.template_id, engine_reports::ReportTemplate::ApplicationHealth);
+        assert_eq!(got.scope.application_id.as_deref(), Some("app:order"));
+        assert_eq!(got.modules, vec!["health_score".to_string()]);
+        assert_eq!(got.status, engine_reports::ReportStatus::Completed);
+        assert_eq!(got.progress, 100);
+        assert_eq!(got.markdown.as_deref(), Some("# 应用健康报告\n\nbody"));
+        assert_eq!(got.completed_at.as_deref(), Some("2026-07-20T09:00:05Z"));
+
+        // upsert 幂等 + 可清空 markdown(failed 报告)
+        let mut updated = got;
+        updated.status = engine_reports::ReportStatus::Failed;
+        updated.error_message = Some("boom".into());
+        updated.markdown = None;
+        store.upsert_report(&updated).await.expect("upsert2");
+        let got2 = store.get_report("rpt-test1").await.expect("get").expect("present");
+        assert_eq!(got2.status, engine_reports::ReportStatus::Failed);
+        assert_eq!(got2.error_message.as_deref(), Some("boom"));
+        assert!(got2.markdown.is_none());
+
+        // list
+        let listed = store.list_reports(10).await.expect("list");
+        assert_eq!(listed.len(), 1);
+
+        // delete
+        assert!(store.delete_report("rpt-test1").await.expect("del"));
+        assert!(store.get_report("rpt-test1").await.expect("get").is_none());
     }
 }

@@ -88,8 +88,11 @@ async fn fire_subscription(app: &AppHandle, sub: &ReportSubscription, now_iso: &
     };
     let r = result.map_err(|e| e.to_string())?;
 
-    // 存报告(ReportStore 内存)
+    // 存报告(ReportStore 内存 + SQLite 持久化)
     state.reports.lock().await.add(r.task.clone());
+    if let Err(e) = state.storage.upsert_report(&r.task).await {
+        tracing::warn!("scheduler upsert_report {}: {e}", r.report_id);
+    }
 
     // 回写订阅 last_*
     let snap = {

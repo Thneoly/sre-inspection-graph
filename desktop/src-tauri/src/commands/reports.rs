@@ -66,6 +66,11 @@ pub async fn generate_report_cmd(
     task.current_step.clear();
     task.completed_at = Some(chrono::Utc::now().to_rfc3339());
     state.reports.lock().await.add(task.clone());
+    state
+        .storage
+        .upsert_report(&task)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(task)
 }
 
