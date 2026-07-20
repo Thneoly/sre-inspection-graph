@@ -18,3 +18,7 @@ tracing         = { workspace = true }
 chrono          = { workspace = true }
 uuid            = { workspace = true }
 tera            = "1"
+# Phase 4.3:调度(cron 解析)+ 邮件(EmailSender async trait)
+cron            = { workspace = true }
+async-trait     = "0.1"
+tokio           = { workspace = true }

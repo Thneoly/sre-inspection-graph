@@ -14,9 +14,17 @@ pub mod gatherers;
 pub mod cluster_gatherers;
 pub mod incident_gatherers;
 pub mod generator;
+pub mod subscription;
+pub mod email;
+pub mod scheduler;
+pub mod runner;
 
 pub use models::{ReportScope, ReportStatus, ReportStore, ReportTask};
 pub use generator::{generate_report, ReportError};
+pub use subscription::{parse_cron, ReportSubscription, SubscriptionStatus, SubscriptionStore};
+pub use email::{EmailError, EmailSender, InMemoryEmailSender, SentEmail};
+pub use scheduler::{check_fire, default_grace, FireDecision, DEFAULT_GRACE_SECS};
+pub use runner::{run_subscription, RunError, RunResult};
 
 /// 3 个内置报告模板。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
