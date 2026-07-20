@@ -141,7 +141,16 @@ pub async fn sync_all_now(
     config_json: Option<String>,
 ) -> Result<SyncSummaryDto, String> {
     let cfg = config_json.as_deref().unwrap_or("{}");
-    let summary = state.runtime.sync_all(cfg).await;
+    run_sync(&state, cfg).await
+}
+
+/// sync 管线主体(sync -> upsert facts -> resolve+merge+diff -> detect_changes 自动录
+/// -> apply_change_set -> 返回增量)。`sync_all_now` command 与后台 `sync_loop` 共用。
+pub async fn run_sync(
+    state: &AppState,
+    config_json: &str,
+) -> Result<SyncSummaryDto, String> {
+    let summary = state.runtime.sync_all(config_json).await;
 
     // 1. raw facts 落 append-only 真相源
     state

@@ -17,6 +17,7 @@
 pub mod commands;
 pub mod email_smtp;
 pub mod scheduler;
+pub mod sync_loop;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -161,6 +162,8 @@ pub struct AppState {
     /// Phase 4.3 - 调度循环 task handle。`std::sync::Mutex` 便于 `RunEvent::Exit`
     /// 同步回调 abort;command 端不持锁。
     pub scheduler_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// Phase 4.3 后续 - 后台 sync 循环 task handle(同上,RunEvent::Exit abort)。
+    pub sync_loop_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Phase 4.3 后续 - k8s 变更自动录:首次 sync 抑制(对齐 reference first_sync,
     /// 防重启录历史 burst + 时间戳误导)。首次 sync 后置 true,后续 sync 跑 detect_changes。
     pub first_sync_done: std::sync::atomic::AtomicBool,
@@ -260,6 +263,7 @@ pub fn run() {
                 subscriptions: tokio::sync::Mutex::new(subscriptions),
                 email_sender,
                 scheduler_handle: Mutex::new(None),
+                sync_loop_handle: Mutex::new(None),
                 first_sync_done: std::sync::atomic::AtomicBool::new(false),
                 handler_executor,
             });
@@ -269,6 +273,14 @@ pub fn run() {
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(mut guard) = state.scheduler_handle.lock() {
                     *guard = Some(join);
+                }
+            }
+            // Phase 4.3 后续 - 起后台 sync 循环(默认 30s,env 可配/禁用);detect_changes 自动触发
+            let app_handle2 = app.handle().clone();
+            let join2 = tauri::async_runtime::spawn(sync_loop::sync_loop(app_handle2));
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Ok(mut guard) = state.sync_loop_handle.lock() {
+                    *guard = Some(join2);
                 }
             }
             Ok(())
@@ -342,6 +354,11 @@ pub fn run() {
                         }
                     }
                     if let Ok(mut guard) = state.scheduler_handle.lock() {
+                        if let Some(join) = guard.take() {
+                            join.abort();
+                        }
+                    }
+                    if let Ok(mut guard) = state.sync_loop_handle.lock() {
                         if let Some(join) = guard.take() {
                             join.abort();
                         }
