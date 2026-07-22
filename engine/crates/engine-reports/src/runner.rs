@@ -12,7 +12,7 @@ use engine_recovery::ExecutionRegistry;
 
 use crate::email::{EmailError, EmailSender};
 use crate::generator::{generate_report, ReportError};
-use crate::models::{ReportStatus, ReportTask};
+use crate::models::{ReportStatus, ReportTask, TriggerSource};
 use crate::subscription::ReportSubscription;
 use crate::ReportTemplate;
 
@@ -68,7 +68,8 @@ fn build_subject(sub: &ReportSubscription) -> String {
 
 /// 立即执行一次订阅(trigger_now / 调度触发共用)。
 ///
-/// `now` 由调用方传(ISO8601),避免引擎依赖时钟。
+/// `now` 由调用方传(ISO8601),避免引擎依赖时钟;`trigger_source` 标记
+/// scheduled / trigger_now(写进 ReportTask 供前端区分)。
 pub async fn run_subscription(
     sub: &ReportSubscription,
     topology: &Topology,
@@ -76,6 +77,7 @@ pub async fn run_subscription(
     executions: &ExecutionRegistry,
     email_sender: &dyn EmailSender,
     now: &str,
+    trigger_source: TriggerSource,
 ) -> Result<RunResult, RunError> {
     let report_id = format!("rpt-{}", uuid::Uuid::new_v4().simple());
     let task = ReportTask {
@@ -91,6 +93,7 @@ pub async fn run_subscription(
         markdown: None,
         created_at: now.to_string(),
         completed_at: None,
+        trigger_source,
     };
     let markdown = generate_report(&task, topology, changes, executions, now)?;
 
@@ -173,13 +176,14 @@ mod tests {
         let sender = InMemoryEmailSender::new();
         let now = "2026-07-20T09:00:30Z";
 
-        let result = run_subscription(&sub, &t, &cr, &er, &sender, now).await.unwrap();
+        let result = run_subscription(&sub, &t, &cr, &er, &sender, now, TriggerSource::TriggerNow).await.unwrap();
 
         // 报告生成
         assert!(result.markdown.contains("# 应用健康报告"));
         assert!(result.report_id.starts_with("rpt-"));
         // completed task
         assert_eq!(result.task.status, ReportStatus::Completed);
+        assert_eq!(result.task.trigger_source, TriggerSource::TriggerNow);
         assert_eq!(result.task.markdown.as_deref(), Some(result.markdown.as_str()));
         assert_eq!(result.task.completed_at.as_deref(), Some(now));
         // 邮件发送
@@ -208,7 +212,7 @@ mod tests {
         let cr = ChangeRegistry::new();
         let er = ExecutionRegistry::new();
         let sender = InMemoryEmailSender::new();
-        let err = run_subscription(&sub, &t, &cr, &er, &sender, "2026-07-20T09:00:30Z").await.unwrap_err();
+        let err = run_subscription(&sub, &t, &cr, &er, &sender, "2026-07-20T09:00:30Z", TriggerSource::Scheduled).await.unwrap_err();
         assert!(matches!(err, RunError::Generate(_)));
         // 生成失败不应发邮件
         assert!(sender.list_sent().await.is_empty());

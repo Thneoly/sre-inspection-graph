@@ -278,6 +278,7 @@ mod tests {
             markdown: None,
             created_at: "2026-07-13T00:00:00Z".into(),
             completed_at: None,
+            trigger_source: Default::default(),
         };
         let t = topo();
         let cr = ChangeRegistry::new();
@@ -306,6 +307,7 @@ mod tests {
             markdown: None,
             created_at: "".into(),
             completed_at: None,
+            trigger_source: Default::default(),
         };
         let t = Topology::default();
         let cr = ChangeRegistry::new();
@@ -369,6 +371,7 @@ mod tests {
             markdown: None,
             created_at: "2026-07-20T10:10:00Z".into(),
             completed_at: None,
+            trigger_source: Default::default(),
         };
 
         let md = generate_report(&task, &topology, &cr, &er, "2026-07-20T10:10:00Z").expect("render");
@@ -404,6 +407,7 @@ mod tests {
             markdown: None,
             created_at: "2026-07-20T00:00:00Z".into(),
             completed_at: None,
+            trigger_source: Default::default(),
         };
         let topology = Topology {
             nodes: vec![

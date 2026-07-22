@@ -21,6 +21,19 @@ pub enum ReportStatus {
     Failed,
 }
 
+/// 报告触发来源(reference 无此字段,Rust 增量:区分手动命令 / 调度 fire / 订阅立即触发)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerSource {
+    /// `generate_report_cmd` 手动生成(默认;兼容 4.3 前旧行)。
+    #[default]
+    ManualCmd,
+    /// 订阅调度 fire(scheduler 循环)。
+    Scheduled,
+    /// 订阅 `trigger_now` 立即触发。
+    TriggerNow,
+}
+
 /// 报告范围(对齐 reference `ReportTask.scope`)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReportScope {
@@ -65,6 +78,8 @@ pub struct ReportTask {
     pub created_at: String,
     /// 完成时间(ISO8601)。
     pub completed_at: Option<String>,
+    /// 触发来源(manual_cmd / scheduled / trigger_now)。
+    pub trigger_source: TriggerSource,
 }
 
 impl ReportTask {

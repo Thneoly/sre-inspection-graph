@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 
 use engine_reports::{
     parse_cron, run_subscription, ReportScope, ReportSubscription, ReportTask, SubscriptionStatus,
-    validate_subscription,
+    validate_subscription, TriggerSource,
 };
 
 use crate::commands::reports::parse_template;
@@ -183,7 +183,7 @@ pub async fn trigger_subscription_now(
     let result = {
         let changes = state.change_events.lock().await;
         let execs = state.recovery_executions.lock().await;
-        run_subscription(&sub, &topo, &changes, &execs, &*state.email_sender, &now)
+        run_subscription(&sub, &topo, &changes, &execs, &*state.email_sender, &now, TriggerSource::TriggerNow)
             .await
             .map_err(|e| e.to_string())
     };

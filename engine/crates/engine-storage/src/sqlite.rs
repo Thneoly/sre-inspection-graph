@@ -317,7 +317,8 @@ impl SqliteStorage {
               error_message TEXT NOT NULL,
               markdown TEXT NOT NULL,
               created_at TEXT NOT NULL,
-              completed_at TEXT NOT NULL
+              completed_at TEXT NOT NULL,
+              trigger_source TEXT NOT NULL DEFAULT '"manual_cmd"'
             )
             "#,
         )
@@ -332,6 +333,24 @@ impl SqliteStorage {
         )
         .execute(&self.pool)
         .await?;
+
+        // 既有库(4.3 前建的 report_tasks 无 trigger_source 列)补列;新库 CREATE 已含 -> no-op。
+        // 字面量 SQL(sqlx 0.9 SqlSafeStr 禁动态串);后续列迁移多了再抽 helper + AssertSqlSafe。
+        let cols = sqlx::query(r#"PRAGMA table_info(report_tasks)"#)
+            .fetch_all(&self.pool)
+            .await?;
+        let has_trigger_source = cols.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == "trigger_source")
+                .unwrap_or(false)
+        });
+        if !has_trigger_source {
+            sqlx::query(
+                r#"ALTER TABLE report_tasks ADD COLUMN trigger_source TEXT NOT NULL DEFAULT '"manual_cmd"'"#,
+            )
+            .execute(&self.pool)
+            .await?;
+        }
 
         Ok(())
     }
@@ -1051,13 +1070,16 @@ impl SqliteStorage {
             serde_json::to_string(&t.modules).map_err(|e| StorageError::Clock(e.to_string()))?;
         let status =
             serde_json::to_string(&t.status).map_err(|e| StorageError::Clock(e.to_string()))?;
+        let trigger_source = serde_json::to_string(&t.trigger_source)
+            .map_err(|e| StorageError::Clock(e.to_string()))?;
         sqlx::query(
             r#"
             INSERT INTO report_tasks (
                 report_id, template_id, scope, modules, format, status, progress,
-                current_step, error_message, markdown, created_at, completed_at
+                current_step, error_message, markdown, created_at, completed_at,
+                trigger_source
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
             )
             ON CONFLICT(report_id) DO UPDATE SET
                 template_id = excluded.template_id,
@@ -1070,7 +1092,8 @@ impl SqliteStorage {
                 error_message = excluded.error_message,
                 markdown = excluded.markdown,
                 created_at = excluded.created_at,
-                completed_at = excluded.completed_at
+                completed_at = excluded.completed_at,
+                trigger_source = excluded.trigger_source
             "#,
         )
         .bind(&t.report_id)
@@ -1085,6 +1108,7 @@ impl SqliteStorage {
         .bind(t.markdown.as_deref().unwrap_or(""))
         .bind(&t.created_at)
         .bind(t.completed_at.as_deref().unwrap_or(""))
+        .bind(&trigger_source)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1301,6 +1325,7 @@ fn row_to_report_task(row: sqlx::sqlite::SqliteRow) -> Result<ReportTask, Storag
     let error_message: String = row.try_get("error_message")?;
     let markdown: String = row.try_get("markdown")?;
     let completed_at: String = row.try_get("completed_at")?;
+    let trigger_source: String = row.try_get("trigger_source")?;
     Ok(ReportTask {
         report_id: row.try_get("report_id")?,
         template_id: serde_json::from_str(&template_id)
@@ -1315,6 +1340,8 @@ fn row_to_report_task(row: sqlx::sqlite::SqliteRow) -> Result<ReportTask, Storag
         markdown: if markdown.is_empty() { None } else { Some(markdown) },
         created_at: row.try_get("created_at")?,
         completed_at: if completed_at.is_empty() { None } else { Some(completed_at) },
+        trigger_source: serde_json::from_str(&trigger_source)
+            .map_err(|e| StorageError::Clock(format!("trigger_source parse: {e}")))?,
     })
 }
 
@@ -2020,6 +2047,7 @@ mod tests {
             markdown: Some("# 应用健康报告\n\nbody".into()),
             created_at: "2026-07-20T09:00:00Z".into(),
             completed_at: Some("2026-07-20T09:00:05Z".into()),
+            trigger_source: engine_reports::TriggerSource::TriggerNow,
         };
         store.upsert_report(&task).await.expect("upsert");
 
@@ -2036,6 +2064,7 @@ mod tests {
         assert_eq!(got.progress, 100);
         assert_eq!(got.markdown.as_deref(), Some("# 应用健康报告\n\nbody"));
         assert_eq!(got.completed_at.as_deref(), Some("2026-07-20T09:00:05Z"));
+        assert_eq!(got.trigger_source, engine_reports::TriggerSource::TriggerNow);
 
         // upsert 幂等 + 可清空 markdown(failed 报告)
         let mut updated = got;
@@ -2075,6 +2104,7 @@ mod tests {
                 markdown: None,
                 created_at: format!("2026-07-20T09:0{i}:00Z"),
                 completed_at: None,
+                trigger_source: Default::default(),
             };
             store.upsert_report(&t).await.expect("upsert");
         }
@@ -2090,5 +2120,56 @@ mod tests {
         let cleared = store.clear_reports().await.expect("clear");
         assert_eq!(cleared, 2);
         assert!(store.list_reports(100).await.expect("list2").is_empty());
+    }
+
+    #[tokio::test]
+    async fn migrate_backfills_trigger_source_on_old_report_tasks() {
+        // 模拟 4.3 前旧库:report_tasks 无 trigger_source 列 + 一行旧数据
+        let store = SqliteStorage::connect_in_memory().await.expect("connect");
+        sqlx::query(
+            r#"
+            CREATE TABLE report_tasks (
+              report_id TEXT PRIMARY KEY,
+              template_id TEXT NOT NULL,
+              scope TEXT NOT NULL,
+              modules TEXT NOT NULL,
+              format TEXT NOT NULL,
+              status TEXT NOT NULL,
+              progress INTEGER NOT NULL,
+              current_step TEXT NOT NULL,
+              error_message TEXT NOT NULL,
+              markdown TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              completed_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&store.pool)
+        .await
+        .expect("create old schema");
+        sqlx::query(
+            r#"INSERT INTO report_tasks VALUES (
+                'rpt-old', '"application_health"', '{}', '[]', 'markdown',
+                '"completed"', 100, '', '', '# old', '2026-07-01T00:00:00Z', ''
+            )"#,
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed old row");
+
+        store.migrate().await.expect("migrate");
+
+        // 旧行补默认值 manual_cmd;读路径可解析
+        let got = store.get_report("rpt-old").await.expect("get").expect("present");
+        assert_eq!(got.trigger_source, engine_reports::TriggerSource::ManualCmd);
+        // 新 upsert 带 trigger_source 正常落列
+        let mut t2 = got.clone();
+        t2.report_id = "rpt-new".into();
+        t2.trigger_source = engine_reports::TriggerSource::Scheduled;
+        store.upsert_report(&t2).await.expect("upsert new");
+        let got2 = store.get_report("rpt-new").await.expect("get2").expect("present2");
+        assert_eq!(got2.trigger_source, engine_reports::TriggerSource::Scheduled);
+        // migrate 幂等(已有列 -> no-op)
+        store.migrate().await.expect("migrate2");
     }
 }

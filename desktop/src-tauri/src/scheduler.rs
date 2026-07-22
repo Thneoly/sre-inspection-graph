@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager};
 
 use engine_reports::{
     check_fire, default_grace, parse_cron, run_subscription, FireDecision, ReportSubscription,
-    SubscriptionStatus,
+    SubscriptionStatus, TriggerSource,
 };
 
 use crate::AppState;
@@ -84,7 +84,7 @@ async fn fire_subscription(app: &AppHandle, sub: &ReportSubscription, now_iso: &
     let result = {
         let changes = state.change_events.lock().await;
         let execs = state.recovery_executions.lock().await;
-        run_subscription(sub, &topo, &changes, &execs, &*state.email_sender, now_iso).await
+        run_subscription(sub, &topo, &changes, &execs, &*state.email_sender, now_iso, TriggerSource::Scheduled).await
     };
     let r = result.map_err(|e| e.to_string())?;
 

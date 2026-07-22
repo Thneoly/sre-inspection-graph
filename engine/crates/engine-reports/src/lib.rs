@@ -19,7 +19,7 @@ pub mod email;
 pub mod scheduler;
 pub mod runner;
 
-pub use models::{ReportScope, ReportStatus, ReportStore, ReportTask};
+pub use models::{ReportScope, ReportStatus, ReportStore, ReportTask, TriggerSource};
 pub use generator::{generate_report, ReportError};
 pub use subscription::{parse_cron, validate_subscription, ReportSubscription, SubscriptionStatus, SubscriptionStore};
 pub use email::{EmailError, EmailSender, InMemoryEmailSender, SentEmail};

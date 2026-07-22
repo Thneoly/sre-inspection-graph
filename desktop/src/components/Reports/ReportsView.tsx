@@ -14,6 +14,14 @@ const STATUS_COLOR: Record<string, string> = {
   completed: "green", generating: "blue", failed: "red", pending: "default",
 };
 
+// trigger_source -> Tag 配色 + 中文 label(区分手动 / 调度 / 立即触发)。
+const TRIGGER_COLOR: Record<string, string> = {
+  manual_cmd: "default", scheduled: "purple", trigger_now: "gold",
+};
+const TRIGGER_LABEL: Record<string, string> = {
+  manual_cmd: "手动", scheduled: "调度", trigger_now: "立即触发",
+};
+
 const TEMPLATES: { value: ReportTemplate; label: string }[] = [
   { value: "application_health", label: "应用健康报告 (application_health)" },
   { value: "cluster_overview", label: "集群总览 (cluster_overview)" },
@@ -53,6 +61,7 @@ export default function ReportsView() {
     { title: "report_id", dataIndex: "report_id", ellipsis: true, render: (s: string) => <code>{s.slice(0, 16)}</code> },
     { title: "template", dataIndex: "template_id", width: 160, render: (t: string) => <code>{t}</code> },
     { title: "status", dataIndex: "status", width: 110, render: (s: string) => <Tag color={STATUS_COLOR[s] ?? "default"}>{s}</Tag> },
+    { title: "source", dataIndex: "trigger_source", width: 120, render: (s: string) => <Tag color={TRIGGER_COLOR[s] ?? "default"}>{TRIGGER_LABEL[s] ?? s}</Tag> },
     { title: "created", dataIndex: "created_at", ellipsis: true },
   ];
 
@@ -79,6 +88,7 @@ export default function ReportsView() {
             <Space wrap size="small" style={{ marginBottom: 8 }}>
               <Tag color={STATUS_COLOR[selected.status] ?? "default"}>{selected.status}</Tag>
               <Tag>{selected.template_id}</Tag>
+              <Tag color={TRIGGER_COLOR[selected.trigger_source] ?? "default"}>{TRIGGER_LABEL[selected.trigger_source] ?? selected.trigger_source}</Tag>
               {selected.error_message && <Tag color="red">error</Tag>}
             </Space>
             {selected.error_message && (

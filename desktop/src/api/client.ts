@@ -480,6 +480,7 @@ export interface ReportScope {
   time_range_start?: string | null;
   time_range_end?: string | null;
 }
+export type TriggerSource = "manual_cmd" | "scheduled" | "trigger_now";
 export interface ReportTask {
   report_id: string;
   template_id: ReportTemplate;
@@ -493,6 +494,7 @@ export interface ReportTask {
   markdown: string | null;
   created_at: string;
   completed_at: string | null;
+  trigger_source: TriggerSource;
 }
 export interface ReportSubscription {
   subscription_id: string;

@@ -2,7 +2,7 @@
 
 use tauri::State;
 
-use engine_reports::{ReportScope, ReportStatus, ReportTask, ReportTemplate};
+use engine_reports::{ReportScope, ReportStatus, ReportTask, ReportTemplate, TriggerSource};
 
 use crate::AppState;
 
@@ -49,6 +49,7 @@ pub async fn generate_report_cmd(
         markdown: None,
         created_at: now.clone(),
         completed_at: None,
+        trigger_source: TriggerSource::ManualCmd,
     };
 
     // 采集:materialized topology + change_events + recovery_executions(锁内同步调用,不跨 await)
