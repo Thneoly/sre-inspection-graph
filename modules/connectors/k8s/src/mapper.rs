@@ -14,18 +14,28 @@
 //! - `service:{cluster}:{ns}:{name}`            Service   -> namespace
 //! - `cm:{cluster}:{ns}:{name}`                 ConfigMap -> namespace
 //! - `secret:{cluster}:{ns}:{name}`             Secret    -> namespace
+//! - `container:{cluster}:{ns}:{pod}:{name}`    Container -> (无 parent;经 RUNS 边挂 pod)
 //!
 //! 父子关系写进 `attributes_json.parent_resource_id` -- host 侧
 //! `engine_core::facts_to_graph` / `engine_identity::resolve` 据此建 `CONTAINS` 边。
 //!
-//! ## 富化边(Phase 3.7,作 `topology-edge` fact,对照 reference k8s_mapper)
+//! ## 富化边(Phase 3.7+,作 `topology-edge` fact,对照 reference k8s_mapper)
 //!
 //! - `SCHEDULED_ON`(pod -> node):`pod.spec.nodeName`
 //! - `ROUTES_TO`(svc -> pod):`service.spec.selector` 匹配 `pod.metadata.labels`
 //! - `USES`(pod -> configmap/secret):`spec.volumes`(configMap/secret)
 //!   + `envFrom`(configMapRef/secretRef);**不解析 `env[].valueFrom`**(对齐 reference)
+//! - `RUNS`(pod -> container,Phase 3.9):`pod.spec.containers[]` 每个容器产
+//!   Container node(`container:{c}:{ns}:{pod}:{container}`)+ RUNS 边;ready /
+//!   restart_count / health 从 `status.containerStatuses[]` 按 name 匹配取。
+//!   对照 doc/03 REL-036(Pod RUNS Container)。**不产 initContainers**(v0)。
+//! - `EXPOSES`(svc -> deploy,Phase 3.9):`service.spec.selector` 匹配
+//!   `deploy.spec.template.metadata.labels`。对照 doc/02 L2(Service EXPOSES
+//!   Deployment,e006)。reference 未实现(static CSV 种子),属增量。
 //!
-//! 不产 `BELONGS_TO` / `DEPLOYED_AS` / `RUNS` / `EXPOSES`(需 application/component 层,v0 无)。
+//! Phase 3.8 另产 Application/Component/Middleware 层 + `CONTAINS`(app->comp
+//! 派生)/ `DEPLOYED_AS`(comp/mw->deploy)/ `BELONGS_TO`(deploy->comp、
+//! comp->app 反向)边。不产 `RUNS_IN` / Ingress `ROUTES_TO`(无 ingress 拉取)。
 //!
 //! ## Pod owner 链(对照 reference)
 //!
@@ -372,10 +382,33 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
         for sec_name in pod_secret_refs(p) {
             facts.push(edge_fact(now, "USES", &pod_id, &format!("secret:{c}:{ns}:{sec_name}")));
         }
+        // RUNS:pod -> container(spec.containers[];status 按 name 匹配 containerStatuses)
+        for ctr in pod_containers(p) {
+            let ctr_id = format!("container:{c}:{ns}:{name}:{}", ctr.name);
+            facts.push(node_fact(
+                now,
+                &ctr_id,
+                "Container",
+                json!({
+                    "cluster": c,
+                    "namespace": ns,
+                    "name": ctr.name,
+                    "pod": pod_id,
+                    "image": ctr.image,
+                    "ready": ctr.ready,
+                    "restart_count": ctr.restart_count,
+                    "health_status": ctr.health,
+                    "risk_level": risk_from_health(ctr.health),
+                }),
+            ));
+            facts.push(edge_fact(now, "RUNS", &pod_id, &ctr_id));
+        }
     }
 
-    // 9) Services -- ROUTES_TO:selector 匹配 pod labels
-    let pod_labels = index_pod_labels(&input.pods, c, ns);
+    // 9) Services -- ROUTES_TO:selector 匹配 pod labels;EXPOSES:selector 匹配
+    //    deploy pod template labels(doc/02 L2:Service EXPOSES Deployment)
+    let pod_labels = index_labels(&input.pods, c, ns, "pod", pod_template_labels);
+    let deploy_labels = index_labels(&input.deployments, c, ns, "deploy", deploy_template_labels);
     for s in items(&input.services) {
         let Some(name) = meta_name(s) else { continue };
         let svc_id = format!("service:{c}:{ns}:{name}");
@@ -401,6 +434,11 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 for ple in &pod_labels {
                     if labels_match(&ple.labels, selector) {
                         facts.push(edge_fact(now, "ROUTES_TO", &svc_id, &ple.id));
+                    }
+                }
+                for dle in &deploy_labels {
+                    if labels_match(&dle.labels, selector) {
+                        facts.push(edge_fact(now, "EXPOSES", &svc_id, &dle.id));
                     }
                 }
             }
@@ -711,26 +749,114 @@ fn pod_secret_refs(pod: &Value) -> Vec<String> {
     refs
 }
 
-/// Pod label 索引项(供 Service ROUTES_TO selector 匹配)。
-struct PodLabelEntry {
+/// label 索引项(供 Service ROUTES_TO / EXPOSES selector 匹配)。
+struct LabelEntry {
     id: String,
     labels: Map<String, Value>,
 }
 
-/// 建 pod resource_id -> labels 索引。
-fn index_pod_labels(pods: &Value, c: &str, ns: &str) -> Vec<PodLabelEntry> {
+/// Pod 的匹配 labels:`metadata.labels`(K8s selector 直接匹配 pod labels)。
+fn pod_template_labels(obj: &Value) -> Option<Map<String, Value>> {
+    obj.get("metadata")
+        .and_then(|m| m.get("labels"))
+        .and_then(Value::as_object)
+        .cloned()
+}
+
+/// Deployment 的匹配 labels:`spec.template.metadata.labels`(pod 模板 labels,
+/// selector 匹配它等价于匹配该 deploy 的全部 pod)。
+fn deploy_template_labels(obj: &Value) -> Option<Map<String, Value>> {
+    obj.get("spec")
+        .and_then(|s| s.get("template"))
+        .and_then(|t| t.get("metadata"))
+        .and_then(|m| m.get("labels"))
+        .and_then(Value::as_object)
+        .cloned()
+}
+
+/// 建 `{prefix}:{c}:{ns}:{name}` resource_id -> labels 索引(label 取法由 `pick` 决定)。
+fn index_labels(
+    list: &Value,
+    c: &str,
+    ns: &str,
+    prefix: &str,
+    pick: fn(&Value) -> Option<Map<String, Value>>,
+) -> Vec<LabelEntry> {
     let mut out = Vec::new();
-    for p in items(pods) {
-        let Some(name) = meta_name(p) else { continue };
-        let labels = p
-            .get("metadata")
-            .and_then(|m| m.get("labels"))
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        out.push(PodLabelEntry {
-            id: format!("pod:{c}:{ns}:{name}"),
-            labels,
+    for obj in items(list) {
+        let Some(name) = meta_name(obj) else { continue };
+        out.push(LabelEntry {
+            id: format!("{prefix}:{c}:{ns}:{name}"),
+            labels: pick(obj).unwrap_or_default(),
+        });
+    }
+    out
+}
+
+/// Pod 容器规格 + 运行态(供 Container node + RUNS 边)。
+struct ContainerSpec {
+    name: String,
+    image: String,
+    ready: bool,
+    restart_count: i64,
+    health: &'static str,
+}
+
+/// `spec.containers[]` 每个容器一条;ready / restart_count / health 从
+/// `status.containerStatuses[]` 按 name 匹配取(无 status -> ready=false /
+/// restart=0 / warning;waiting=CrashLoopBackOff -> critical)。initContainers 不产。
+fn pod_containers(pod: &Value) -> Vec<ContainerSpec> {
+    let mut out = Vec::new();
+    let specs = pod
+        .get("spec")
+        .and_then(|s| s.get("containers"))
+        .and_then(Value::as_array);
+    let statuses = pod
+        .get("status")
+        .and_then(|s| s.get("containerStatuses"))
+        .and_then(Value::as_array);
+    let Some(specs) = specs else { return out };
+    for c in specs {
+        let Some(name) = c.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let image = c
+            .get("image")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let st = statuses.and_then(|arr| {
+            arr.iter()
+                .find(|s| s.get("name").and_then(Value::as_str) == Some(name))
+        });
+        let ready = st
+            .and_then(|s| s.get("ready").and_then(Value::as_bool))
+            .unwrap_or(false);
+        let restart_count = st
+            .and_then(|s| s.get("restartCount").and_then(Value::as_i64))
+            .unwrap_or(0);
+        let crashloop = st
+            .map(|s| {
+                s.get("state")
+                    .and_then(|st| st.get("waiting"))
+                    .and_then(|w| w.get("reason"))
+                    .and_then(Value::as_str)
+                    == Some("CrashLoopBackOff")
+            })
+            .unwrap_or(false);
+        let health = if crashloop {
+            "critical"
+        } else if ready {
+            "normal"
+        } else {
+            "warning"
+        };
+        out.push(ContainerSpec {
+            name: name.to_string(),
+            image,
+            ready,
+            restart_count,
+            health,
         });
     }
     out

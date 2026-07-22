@@ -30,7 +30,9 @@ fn base_input() -> ClusterInput {
             { "metadata": { "name": "vm2" }, "status": { "conditions": [ { "type": "Ready", "status": "False" } ] } }
         ]}),
         deployments: json!({ "items": [
-            { "metadata": { "name": "frontend" } },
+            // template labels app=frontend -> svc frontend EXPOSES 命中
+            { "metadata": { "name": "frontend" },
+              "spec": { "template": { "metadata": { "labels": { "app": "frontend" } } } } },
             { "metadata": { "name": "cartservice" } },
             // middleware:otel-demo-valkey -> Redis(strip prefix 后 "valkey" 命中)
             { "metadata": { "name": "otel-demo-valkey" } }
@@ -45,13 +47,15 @@ fn base_input() -> ClusterInput {
                             "ownerReferences": [ { "kind": "ReplicaSet", "name": "frontend-abc" } ] },
               "spec": { "nodeName": "vm1",
                         "volumes": [ { "name": "flags", "configMap": { "name": "feature-flags" } } ],
-                        "containers": [ { "name": "frontend", "envFrom": [ { "configMapRef": { "name": "order-config" } } ] } ] },
-              "status": { "phase": "Running", "containerStatuses": [ { "name": "frontend", "ready": true } ] } },
+                        "containers": [ { "name": "frontend", "image": "otel/frontend:v1",
+                                          "envFrom": [ { "configMapRef": { "name": "order-config" } } ] } ] },
+              "status": { "phase": "Running", "containerStatuses": [ { "name": "frontend", "ready": true, "restartCount": 2 } ] } },
             // critical: crashloop;labels app=cartservice;volumes secret order-db
             { "metadata": { "name": "cartservice-xyz-1", "labels": { "app": "cartservice" },
                             "ownerReferences": [ { "kind": "ReplicaSet", "name": "cartservice-xyz" } ] },
               "spec": { "nodeName": "vm2",
-                        "volumes": [ { "name": "db", "secret": { "secretName": "order-db" } } ] },
+                        "volumes": [ { "name": "db", "secret": { "secretName": "order-db" } } ],
+                        "containers": [ { "name": "cart", "image": "otel/cart:v1" } ] },
               "status": { "phase": "Running", "containerStatuses": [ { "name": "cart", "ready": false, "state": { "waiting": { "reason": "CrashLoopBackOff" } } } ] } },
             // dangling owner (rs not found) -> parent = namespace; phase Pending -> warning
             { "metadata": { "name": "orphan-1", "labels": { "app": "orphan" },
@@ -155,13 +159,15 @@ fn configmap_and_secret_store_data_keys_only() {
 fn all_facts_carry_k8s_source() {
     let facts = map_cluster(&base_input());
     assert!(facts.iter().all(|f| f.source == "k8s"));
-    // 节点:1 cluster + 2 node + 1 ns + 1 app + 3 deploy + 2 comp + 1 mw + 3 pod + 1 svc + 2 cm + 1 secret = 18
+    // 节点:1 cluster + 2 node + 1 ns + 1 app + 3 deploy + 2 comp + 1 mw + 3 pod
+    //     + 1 svc + 2 cm + 1 secret + 2 container = 20
     let nodes = facts.iter().filter(|f| f.kind == "topology-node").count();
-    assert_eq!(nodes, 18);
-    // 边:SCHEDULED_ON 3 + USES 3 + ROUTES_TO 1 + BELONGS_TO(comp->app 2 + deploy->comp 2)
-    //     + DEPLOYED_AS(comp->deploy 2 + mw->deploy 1)= 14
+    assert_eq!(nodes, 20);
+    // 边:SCHEDULED_ON 3 + USES 3 + ROUTES_TO 1 + RUNS 2 + EXPOSES 1
+    //     + BELONGS_TO(comp->app 2 + deploy->comp 2)
+    //     + DEPLOYED_AS(comp->deploy 2 + mw->deploy 1)= 17
     let edges = facts.iter().filter(|f| f.kind == "topology-edge").count();
-    assert_eq!(edges, 14);
+    assert_eq!(edges, 17);
 }
 
 #[test]
@@ -219,6 +225,55 @@ fn routes_to_edge_matches_selector() {
     assert_eq!(routes.len(), 1);
     assert_eq!(attr(routes[0], "source"), "service:vm:otel-demo:frontend");
     assert_eq!(attr(routes[0], "target"), "pod:vm:otel-demo:frontend-abc-1");
+}
+
+// ===== Phase 3.9:RUNS(pod->container)/ EXPOSES(svc->deploy)=====
+
+#[test]
+fn runs_edge_per_spec_container_with_status_attrs() {
+    let facts = map_cluster(&base_input());
+    // 2 个 pod 有 spec.containers(orphan-1 无)-> 2 Container node + 2 RUNS 边
+    let runs: Vec<&Fact> = facts
+        .iter()
+        .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "RUNS")
+        .collect();
+    assert_eq!(runs.len(), 2);
+
+    // healthy container:ready=true + restartCount=2 -> normal
+    let fe = find(&facts, "container:vm:otel-demo:frontend-abc-1:frontend").unwrap();
+    assert_eq!(fe.resource_type, "Container");
+    assert_eq!(attr(fe, "image"), "otel/frontend:v1");
+    assert_eq!(attr(fe, "pod"), "pod:vm:otel-demo:frontend-abc-1");
+    assert_eq!(attr(fe, "ready"), true);
+    assert_eq!(attr(fe, "restart_count"), 2);
+    assert_eq!(attr(fe, "health_status"), "normal");
+    // 无 parent_resource_id(经 RUNS 挂 pod,不派生 CONTAINS)
+    assert_eq!(attr(fe, "parent_resource_id"), serde_json::Value::Null);
+    assert!(find_kind(
+        &facts,
+        "edge:RUNS:pod:vm:otel-demo:frontend-abc-1->container:vm:otel-demo:frontend-abc-1:frontend",
+        "topology-edge"
+    )
+    .is_some());
+
+    // crashloop container -> critical/high
+    let cart = find(&facts, "container:vm:otel-demo:cartservice-xyz-1:cart").unwrap();
+    assert_eq!(attr(cart, "health_status"), "critical");
+    assert_eq!(attr(cart, "risk_level"), "high");
+    assert_eq!(attr(cart, "ready"), false);
+}
+
+#[test]
+fn exposes_edge_matches_deploy_template_labels() {
+    let facts = map_cluster(&base_input());
+    // svc frontend selector app=frontend 匹配 frontend deploy template labels -> 1 条 EXPOSES
+    let exposes: Vec<&Fact> = facts
+        .iter()
+        .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "EXPOSES")
+        .collect();
+    assert_eq!(exposes.len(), 1);
+    assert_eq!(attr(exposes[0], "source"), "service:vm:otel-demo:frontend");
+    assert_eq!(attr(exposes[0], "target"), "deploy:vm:otel-demo:frontend");
 }
 
 // ===== Phase 3.8:Application/Component/Middleware 层 =====

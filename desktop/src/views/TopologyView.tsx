@@ -55,6 +55,7 @@ const SHAPE_BY_TYPE: Record<string, string> = {
   Node: "octagon",
   Namespace: "round-rectangle",
   Pod: "ellipse",
+  Container: "barrel",
   Service: "diamond",
   Deployment: "round-octagon",
   Service_Account: "tag",
