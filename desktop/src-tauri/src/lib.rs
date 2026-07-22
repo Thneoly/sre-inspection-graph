@@ -235,7 +235,15 @@ pub fn run() {
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
             // Phase 4.3 - 邮件发送器(SMTP_HOST 空 -> InMemory 回退)
             let email_sender = email_smtp::get_email_sender();
-            // Phase 3.9a-3b2b - handler_executor:WasmHandlerExecutor if scale-deploy 加载,else Mock
+            // Phase 3.9a-3b2 - handler_executor:engine_wasm::WasmHandlerExecutor if
+            // k8s-handler 加载,else Mock fallback。real_mode / api_base 经 env 控制:
+            //   SRE_GRAPH_HANDLER_MODE=real -> 真改集群(默认 mock 保安全,对齐 reference RECOVERY_HANDLER_MODE)
+            //   SRE_GRAPH_K8S_API_BASE -> K8s API base(默认 desktop 托管 kubectl proxy 的 8001)
+            let real_mode = std::env::var("SRE_GRAPH_HANDLER_MODE")
+                .map(|v| v == "real")
+                .unwrap_or(false);
+            let api_base = std::env::var("SRE_GRAPH_K8S_API_BASE")
+                .unwrap_or_else(|_| "http://127.0.0.1:8001".to_string());
             let scale_handler = runtime
                 .handlers
                 .iter()
@@ -243,12 +251,18 @@ pub fn run() {
                 .map(|h| h.handler.clone());
             let handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor> =
                 if let Some(h) = scale_handler {
-                    std::sync::Arc::new(commands::handler_executor::WasmHandlerExecutor::new(
+                    tracing::info!(
+                        real_mode,
+                        api_base = %api_base,
+                        "handler_executor = WasmHandlerExecutor (SRE_GRAPH_HANDLER_MODE)",
+                    );
+                    std::sync::Arc::new(engine_wasm::WasmHandlerExecutor::new(
                         h,
-                        "http://127.0.0.1:8001".to_string(),
-                        false,
+                        api_base,
+                        real_mode,
                     ))
                 } else {
+                    tracing::info!("handler_executor = MockHandlerExecutor (k8s-handler not loaded)");
                     std::sync::Arc::new(engine_recovery::MockHandlerExecutor)
                 };
             app.manage(AppState {

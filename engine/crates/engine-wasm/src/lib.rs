@@ -18,6 +18,11 @@ pub mod http_host;
 /// `sync_all` 一次跑完,`tick_loop` 周期跑。
 pub mod multi;
 
+/// Phase 3.9a-3b2 -- `WasmHandlerExecutor`(impl `HandlerExecutor`,调 `WasmHandler`
+/// 真改集群)。6 k8s action 走 WasmHandler,kill_query/clear_cache 留 Mock。
+pub mod handler_executor;
+
+pub use handler_executor::WasmHandlerExecutor;
 pub use multi::{select_config, ConnectorEntry, HandlerEntry, SyncSummary, WasmRuntime};
 pub use runtime::{ExecError, ExecResult, HostFact, SyncOutcome, WasmConnector, WasmHandler};
 

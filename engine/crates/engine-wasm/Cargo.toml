@@ -22,5 +22,10 @@ tokio             = { workspace = true }
 # Phase 1 G:host 实装 http-client capability(reqwest GET + capability allow-list)
 reqwest           = { workspace = true }
 
+# Phase 3.9a-3b2:WasmHandlerExecutor impl engine_recovery::HandlerExecutor(调 WasmHandler 真改集群)
+async-trait     = "0.1"
+engine-identity = { workspace = true }
+engine-recovery = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }
