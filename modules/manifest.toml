@@ -104,5 +104,23 @@ enabled = true
 wasi_version = "p2"
 sha256 = ""
 
-# Phase 3+ 起在这里追加 jaeger / flagd / k8s-events real connector
-# 以及 8 个 PRD-001 handler。
+# Trace connector —— 第一个 trace 数据源(对照 reference jaeger_connector)。
+# GET {jaeger_url}/api/services + /api/traces,从跨服务 CHILD_OF span 引用聚合成 CALLS
+# topology-edge Fact(端点 = k8s ApplicationComponent 节点 id)。**只产边,不产节点**。
+#
+# jaeger_url 走 desktop 托管的 kubectl proxy(8001),含 otel-demo Helm 的 /jaeger/ui
+# 前缀(Jaeger query API 挂这下面)。TLS+认证留 proxy,deny-by-default 需申明 http-client。
+# threshold=2:真集群 trace 稀疏(cart/checkout 无 trace),低于 reference 默认 5 才有边。
+[[modules]]
+name = "jaeger"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/jaeger.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "http-client"]
+sync_interval_seconds = 30
+enabled = true
+wasi_version = "p2"
+sha256 = ""
+config = { jaeger_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-jaeger-query:16686/proxy/jaeger/ui", cluster = "vm-cluster", namespace = "otel-demo", release_prefix = "otel-demo", lookback_seconds = 300, call_count_threshold = 2, limit_per_service = 100 }
+
+# 后续:flagd / k8s-events real connector + 8 个 PRD-001 handler。

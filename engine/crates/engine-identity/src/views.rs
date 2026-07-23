@@ -77,6 +77,7 @@ pub const ACCESS_LINK_EDGES: &[&str] = &[
     edge_type::DEPLOYED_AS,
     edge_type::RUNS,
     edge_type::SCHEDULED_ON,
+    edge_type::CALLS, // jaeger trace call-graph —— 从 Application 出发可沿调用链上下游
 ];
 
 /// image-risk 视图 edge 白名单(照 reference view5 Cypher + `USES_IMAGE`),Reverse。

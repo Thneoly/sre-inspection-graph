@@ -6,6 +6,7 @@ members = [
     "connectors/k8s-mini",
     "connectors/prometheus",
     "connectors/k8s",
+    "connectors/jaeger",
     "handlers/scale-deploy",
     "handlers/k8s-handler",
 ]

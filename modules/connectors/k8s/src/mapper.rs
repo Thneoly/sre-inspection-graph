@@ -115,25 +115,8 @@ const MIDDLEWARE_PATTERNS: &[(&str, &str, &str)] = &[
     ("mysql", "MySQL", "mysql"),
 ];
 
-/// strip release prefix(otel-demo-cartservice -> cartservice)。
-fn strip_release_prefix<'a>(name: &'a str, release_prefix: &str) -> &'a str {
-    let p = format!("{release_prefix}-");
-    name.strip_prefix(&p).unwrap_or(name)
-}
-
-/// 从 deployment 名推 ApplicationComponent 短名(对照 reference normalize_component_name)。
-/// strip release prefix + 砍 "service" 后缀(长度 > "service")+ 拆混淆名。
-fn normalize_component_name(deploy_name: &str, release_prefix: &str) -> String {
-    let mut name = strip_release_prefix(deploy_name, release_prefix).to_string();
-    if name.ends_with("service") && name.len() > "service".len() {
-        name.truncate(name.len() - "service".len());
-    }
-    name = name
-        .replace("frauddetection", "fraud-detection")
-        .replace("productcatalog", "product-catalog")
-        .replace("frontendproxy", "frontend-proxy");
-    name
-}
+// normalize_component_name / strip_release_prefix / component_id 已抽到
+// module_sdk::naming(k8s + jaeger 共享,防 resource_id 漂移)。见 modules/sdk/src/lib.rs。
 
 /// 检测中间件 -> (node_type, id_prefix)(对照 reference detect_middleware)。
 /// 先整名匹配,再 keyword 子串兜底。
@@ -141,7 +124,7 @@ fn detect_middleware(
     deploy_name: &str,
     release_prefix: &str,
 ) -> Option<(&'static str, &'static str)> {
-    let short = strip_release_prefix(deploy_name, release_prefix);
+    let short = module_sdk::strip_release_prefix(deploy_name, release_prefix);
     for &(kw, mw_type, prefix) in MIDDLEWARE_PATTERNS {
         if short == kw {
             return Some((mw_type, prefix));
@@ -157,7 +140,7 @@ fn detect_middleware(
 
 /// infra deploy 不挂 Application(对照 reference is_infra)。
 fn is_infra(deploy_name: &str, release_prefix: &str) -> bool {
-    let short = strip_release_prefix(deploy_name, release_prefix);
+    let short = module_sdk::strip_release_prefix(deploy_name, release_prefix);
     if INFRA_NAMES.contains(&short) {
         return true;
     }
@@ -276,8 +259,8 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
             facts.push(edge_fact(now, "DEPLOYED_AS", &mw_rid, &deploy_rid));
         } else {
             // ApplicationComponent node(dedup,parent=app 派生 CONTAINS)+ DEPLOYED_AS/BELONGS_TO
-            let comp_name = normalize_component_name(name, release);
-            let comp_rid = format!("comp:{c}:{ns}:{comp_name}");
+            let comp_name = module_sdk::normalize_component_name(name, release);
+            let comp_rid = module_sdk::component_id(c, ns, &comp_name);
             if comp_seen.insert(comp_rid.clone()) {
                 facts.push(node_fact(
                     now,

@@ -1,6 +1,7 @@
 //! mapper 纯函数单测 -- canned K8s API JSON fixtures(host target,CI-safe)。
 
 use super::*;
+use module_sdk::normalize_component_name;
 use serde_json::json;
 
 /// 找某 resource_id 的 fact(任意 kind)。

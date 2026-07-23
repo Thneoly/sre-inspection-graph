@@ -94,6 +94,7 @@ pub mod edge_type {
     pub const USES: &str = "USES";
     pub const USES_IMAGE: &str = "USES_IMAGE";
     pub const FIRED_ON: &str = "FIRED_ON"; // synthesized by alert_aggregation
+    pub const CALLS: &str = "CALLS"; // jaeger trace connector (CHILD_OF aggregation)
 
     /// Edge types currently produced by some connector / resolver.
     pub const PRODUCED: &[&str] = &[
@@ -107,6 +108,7 @@ pub mod edge_type {
         USES,
         USES_IMAGE,
         FIRED_ON,
+        CALLS,
     ];
 
     // --- Whitelist-only (reference Cypher; Rust not yet producing — future-proof) ---
@@ -131,6 +133,7 @@ pub mod edge_type {
         AFFECTS,
         STORED_IN,
         DEPLOYED_IN,
+        CALLS,
     ];
 
     /// True iff `e` is a recognized edge type.
