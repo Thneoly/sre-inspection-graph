@@ -27,12 +27,17 @@
 mod changeset;
 mod health_merge;
 mod topology;
+mod views;
 
 pub use changeset::{diff, ChangeSet, ChangeSummary};
 pub use health_merge::{
     derive_metric_health, merge_metric_health, DerivedHealth, HealthThreshold, HealthThresholds,
 };
 pub use topology::{resolve, topology_to_graph, ResolvedEdge, ResolvedNode, Topology};
+pub use views::{
+    subgraph, TraversalDir, ACCESS_LINK_EDGES, CONFIG_IMPACT_EDGES, IMAGE_RISK_EDGES,
+    NODE_IMPACT_EDGES,
+};
 
 /// Crate version.
 pub fn version() -> &'static str {

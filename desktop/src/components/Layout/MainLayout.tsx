@@ -1,5 +1,5 @@
 import { Layout, Menu, Typography } from "antd";
-import { DashboardOutlined, ToolOutlined, ThunderboltOutlined, FileTextOutlined } from "@ant-design/icons";
+import { DashboardOutlined, ToolOutlined, ThunderboltOutlined, FileTextOutlined, AimOutlined, SettingOutlined, LinkOutlined, PictureOutlined } from "@ant-design/icons";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
 const { Sider, Header, Content } = Layout;
@@ -27,6 +27,10 @@ export default function MainLayout({ version }: { version: string }) {
           { key: "recovery", icon: <ToolOutlined />, label: <Link to="/recovery">Recovery</Link> },
           { key: "changes", icon: <ThunderboltOutlined />, label: <Link to="/changes">Changes</Link> },
           { key: "reports", icon: <FileTextOutlined />, label: <Link to="/reports">Reports</Link> },
+          { key: "node-impact", icon: <AimOutlined />, label: <Link to="/node-impact">Node Impact</Link> },
+          { key: "config-impact", icon: <SettingOutlined />, label: <Link to="/config-impact">Config Impact</Link> },
+          { key: "access-link", icon: <LinkOutlined />, label: <Link to="/access-link">Access Link</Link> },
+          { key: "image-risk", icon: <PictureOutlined />, label: <Link to="/image-risk">Image Risk</Link> },
           { type: "group", label: "Phase 4+", children: [
             { key: "connectors", label: "Connectors", disabled: true },
             { key: "faultsim", label: "Fault Sim", disabled: true },

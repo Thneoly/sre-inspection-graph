@@ -43,6 +43,9 @@ use commands::recovery::{
 };
 use commands::system::get_app_version;
 use commands::topology::{get_graph, get_topology};
+use commands::views::{
+    access_link, config_impact, image_risk, list_resources_by_types, node_impact,
+};
 use commands::wasm::{list_connectors, sync_all_now};
 use commands::reports_scheduler::{
     create_subscription, delete_subscription, get_subscription, list_sent_emails,
@@ -356,6 +359,12 @@ pub fn run() {
             delete_subscription,
             trigger_subscription_now,
             list_sent_emails,
+            // Phase 5 - inspection views (reference view2-5)
+            node_impact,
+            config_impact,
+            access_link,
+            image_risk,
+            list_resources_by_types,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

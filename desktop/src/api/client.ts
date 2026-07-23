@@ -580,3 +580,35 @@ export async function triggerSubscriptionNow(subscriptionId: string): Promise<Re
 export async function listSentEmails(): Promise<SentEmail[]> {
   return invoke<SentEmail[]>("list_sent_emails");
 }
+
+// ===== Inspection views (Phase 5) =====
+// 4 个图遍历视图共用 engine_identity::views::subgraph 原语,各返 GraphResponse。
+// 前端复用 TopologyView 渲染。camelCase 键 -> Tauri 转 snake_case。
+
+/** engine 视图选择器数据源(desktop commands::views::ResourceOption 镜像)。 */
+export interface ResourceOption {
+  resource_id: string;
+  label: string;
+  resource_type: string;
+}
+
+/** node-impact(爆炸半径):起点 KubernetesNode,Reverse。 */
+export async function nodeImpact(nodeId: string, depth?: number): Promise<GraphResponse> {
+  return invoke<GraphResponse>("node_impact", { nodeId, depth });
+}
+/** config-impact(配置传播):起点 Secret/ConfigMap,Reverse。 */
+export async function configImpact(resourceId: string, depth?: number): Promise<GraphResponse> {
+  return invoke<GraphResponse>("config_impact", { resourceId, depth });
+}
+/** access-link(访问链):起点 Application,Both 无向。 */
+export async function accessLink(resourceId: string, depth?: number): Promise<GraphResponse> {
+  return invoke<GraphResponse>("access_link", { resourceId, depth });
+}
+/** image-risk(镜像风险):起点 ContainerImage,Reverse(真集群当前无 image 节点 -> 空图)。 */
+export async function imageRisk(resourceId: string, depth?: number): Promise<GraphResponse> {
+  return invoke<GraphResponse>("image_risk", { resourceId, depth });
+}
+/** 列出命中任一类型的节点(视图起点选择器数据源)。 */
+export async function listResourcesByTypes(resourceTypes: string[]): Promise<ResourceOption[]> {
+  return invoke<ResourceOption[]>("list_resources_by_types", { resourceTypes });
+}
