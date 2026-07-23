@@ -77,6 +77,9 @@ engine-dump-topology: ## GUI-less dump of materialized topology as GraphResponse
 engine-inspect-views: ## GUI-less verify all 6 inspection views against live SQLite. DB=/path.sqlite
 	cd $(ENGINE) && cargo run -p engine-storage --release --example inspect_views -- $(DB)
 
+engine-archive: ## Snapshot current SQLite latest facts into a Parquet archive. DB=... ARCHIVE=dir
+	cd $(ENGINE) && cargo run -p engine-storage --release --example archive_facts -- $(DB) $(ARCHIVE)
+
 # ---------------------------------------------------------------
 #  WASM modules (separate workspace, wasm32-wasip2)
 # ---------------------------------------------------------------

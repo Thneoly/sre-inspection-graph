@@ -9,7 +9,7 @@ description = "Storage backends — SQLite (default) + Parquet + optional Neo4j 
 [features]
 default = ["sqlite", "parquet"]
 sqlite  = ["dep:sqlx"]
-parquet = []
+parquet = ["dep:parquet", "dep:arrow"]
 neo4j   = []
 
 [dependencies]
@@ -24,6 +24,8 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }
 sqlx        = { workspace = true, optional = true }
+parquet     = { workspace = true, optional = true, features = ["arrow"] }
+arrow       = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

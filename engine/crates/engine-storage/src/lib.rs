@@ -17,6 +17,12 @@ pub mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStorage;
 
+#[cfg(feature = "parquet")]
+pub mod parquet_store;
+
+#[cfg(feature = "parquet")]
+pub use parquet_store::ParquetStorage;
+
 /// 通用 storage trait。每个 backend 必须实现。
 pub trait Storage {
     /// backend 标识(`"sqlite"` / `"parquet"` / `"neo4j"`)。
@@ -30,6 +36,13 @@ pub enum StorageError {
     #[cfg(feature = "sqlite")]
     #[error("sqlite error: {0}")]
     Sqlx(#[from] sqlx::Error),
+    /// Parquet read/write returned an error.
+    #[cfg(feature = "parquet")]
+    #[error("parquet error: {0}")]
+    Parquet(String),
+    /// Filesystem I/O error (Parquet archive dir ops).
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     /// A timestamp cannot be represented in SQLite's signed integer range.
     #[error("timestamp out of range for {field}: {value}")]
     TimestampOutOfRange {
