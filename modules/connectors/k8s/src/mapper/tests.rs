@@ -160,14 +160,14 @@ fn all_facts_carry_k8s_source() {
     let facts = map_cluster(&base_input());
     assert!(facts.iter().all(|f| f.source == "k8s"));
     // 节点:1 cluster + 2 node + 1 ns + 1 app + 3 deploy + 2 comp + 1 mw + 3 pod
-    //     + 1 svc + 2 cm + 1 secret + 2 container = 20
+    //     + 1 svc + 2 cm + 1 secret + 2 container + 2 containerimage = 22
     let nodes = facts.iter().filter(|f| f.kind == "topology-node").count();
-    assert_eq!(nodes, 20);
+    assert_eq!(nodes, 22);
     // 边:SCHEDULED_ON 3 + USES 3 + ROUTES_TO 1 + RUNS 2 + EXPOSES 1
     //     + BELONGS_TO(comp->app 2 + deploy->comp 2)
-    //     + DEPLOYED_AS(comp->deploy 2 + mw->deploy 1)= 17
+    //     + DEPLOYED_AS(comp->deploy 2 + mw->deploy 1) + USES_IMAGE 2 = 19
     let edges = facts.iter().filter(|f| f.kind == "topology-edge").count();
-    assert_eq!(edges, 17);
+    assert_eq!(edges, 19);
 }
 
 #[test]
@@ -261,6 +261,28 @@ fn runs_edge_per_spec_container_with_status_attrs() {
     assert_eq!(attr(cart, "health_status"), "critical");
     assert_eq!(attr(cart, "risk_level"), "high");
     assert_eq!(attr(cart, "ready"), false);
+}
+
+#[test]
+fn uses_image_edge_per_container() {
+    let facts = map_cluster(&base_input());
+    // 2 container 各用不同 image -> 2 ContainerImage node + 2 USES_IMAGE 边
+    let uses_img: Vec<&Fact> = facts
+        .iter()
+        .filter(|f| f.kind == "topology-edge" && attr(f, "edge_type") == "USES_IMAGE")
+        .collect();
+    assert_eq!(uses_img.len(), 2);
+    // frontend container -> image node(USES_IMAGE[container->image])
+    assert!(find_kind(
+        &facts,
+        "edge:USES_IMAGE:container:vm:otel-demo:frontend-abc-1:frontend->image:vm:otel-demo:otel/frontend:v1",
+        "topology-edge",
+    )
+    .is_some());
+    let img = find(&facts, "image:vm:otel-demo:otel/frontend:v1").unwrap();
+    assert_eq!(img.resource_type, "ContainerImage");
+    assert_eq!(attr(img, "image"), "otel/frontend:v1");
+    assert_eq!(attr(img, "name"), "otel/frontend:v1");
 }
 
 #[test]

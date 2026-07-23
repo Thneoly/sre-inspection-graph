@@ -15,6 +15,7 @@
 //! - `cm:{cluster}:{ns}:{name}`                 ConfigMap -> namespace
 //! - `secret:{cluster}:{ns}:{name}`             Secret    -> namespace
 //! - `container:{cluster}:{ns}:{pod}:{name}`    Container -> (无 parent;经 RUNS 边挂 pod)
+//! - `image:{cluster}:{ns}:{image-ref}`        ContainerImage -> (无 parent;经 USES_IMAGE 边被 Container 引用)
 //!
 //! 父子关系写进 `attributes_json.parent_resource_id` -- host 侧
 //! `engine_core::facts_to_graph` / `engine_identity::resolve` 据此建 `CONTAINS` 边。
@@ -29,6 +30,9 @@
 //!   Container node(`container:{c}:{ns}:{pod}:{container}`)+ RUNS 边;ready /
 //!   restart_count / health 从 `status.containerStatuses[]` 按 name 匹配取。
 //!   对照 doc/03 REL-036(Pod RUNS Container)。**不产 initContainers**(v0)。
+//! - `USES_IMAGE`(container -> image,Phase 5.2):每个 container 产 ContainerImage node
+//!   (`image:{c}:{ns}:{image-ref}`,同镜像靠 resource_id 在 `facts_to_graph` 去重)+ USES_IMAGE 边。
+//!   image-risk 视图据此反向找用此镜像的负载;语义区别于 config 的 `USES`(对齐 reference USES_IMAGE)。
 //! - `EXPOSES`(svc -> deploy,Phase 3.9):`service.spec.selector` 匹配
 //!   `deploy.spec.template.metadata.labels`。对照 doc/02 L2(Service EXPOSES
 //!   Deployment,e006)。reference 未实现(static CSV 种子),属增量。
@@ -402,6 +406,24 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 }),
             ));
             facts.push(edge_fact(now, "RUNS", &pod_id, &ctr_id));
+            // USES_IMAGE:container -> image(Phase 5.2 image 富化)。每容器用镜像产
+            // ContainerImage node(`image:{c}:{ns}:{image-ref}`,同镜像靠 resource_id
+            // 在 facts_to_graph 去重)+ USES_IMAGE 边。image-risk 视图据此反向找用此镜像的负载。
+            if !ctr.image.is_empty() {
+                let img_id = format!("image:{c}:{ns}:{}", ctr.image);
+                facts.push(node_fact(
+                    now,
+                    &img_id,
+                    "ContainerImage",
+                    json!({
+                        "cluster": c,
+                        "namespace": ns,
+                        "name": ctr.image,
+                        "image": ctr.image,
+                    }),
+                ));
+                facts.push(edge_fact(now, "USES_IMAGE", &ctr_id, &img_id));
+            }
         }
     }
 

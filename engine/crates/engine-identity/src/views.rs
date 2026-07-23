@@ -77,9 +77,13 @@ pub const ACCESS_LINK_EDGES: &[&str] = &[
     "SCHEDULED_ON",
 ];
 
-/// image-risk 视图 edge 白名单(照 reference view5 Cypher),Reverse。
+/// image-risk 视图 edge 白名单(照 reference view5 Cypher + `USES_IMAGE`),Reverse。
+///
+/// reference view5 用 plain `USES`;本 port 加 `USES_IMAGE`(k8s connector 产的
+/// container→image 边,语义区别于 config 的 USES,对齐 reference 模型的 USES_IMAGE 概念)。
 pub const IMAGE_RISK_EDGES: &[&str] = &[
     "USES",
+    "USES_IMAGE",
     "CONTAINS",
     "DEPLOYED_AS",
     "BELONGS_TO",
@@ -411,6 +415,7 @@ mod tests {
                 n("cm:flagd-config", "ConfigMap"),
                 n("secret:frontend", "Secret"),
                 n("container:frontend:main", "Container"),
+                n("image:otel-demo:frontend:1.0", "ContainerImage"),
             ],
             edges: vec![
                 e("app:otel-demo", "comp:frontend", "CONTAINS"),
@@ -424,6 +429,7 @@ mod tests {
                 e("pod:frontend-1", "cm:flagd-config", "USES"),
                 e("pod:frontend-1", "secret:frontend", "USES"),
                 e("pod:frontend-1", "container:frontend:main", "RUNS"),
+                e("container:frontend:main", "image:otel-demo:frontend:1.0", "USES_IMAGE"),
             ],
         }
     }
@@ -450,8 +456,17 @@ mod tests {
         assert!(al.nodes.len() >= 3, "access-link: app subtree, got {}", al.nodes.len());
         assert!(al.nodes.iter().any(|n| n.resource_type == "ApplicationComponent"));
 
-        // image-risk:无 ContainerImage 节点(connector 只产 Container via RUNS)-> 空(已知 gap)。
-        let ir = subgraph(&topo, "image:frontend:1.0", 4, IMAGE_RISK_EDGES, TraversalDir::Reverse);
-        assert!(ir.is_empty(), "image-risk: no ContainerImage node -> empty (expected)");
+        // image-risk:起点 ContainerImage。USES_IMAGE 反向到 container,再 RUNS 反向到 pod。
+        let ir = subgraph(
+            &topo,
+            "image:otel-demo:frontend:1.0",
+            4,
+            IMAGE_RISK_EDGES,
+            TraversalDir::Reverse,
+        );
+        assert!(!ir.is_empty(), "image-risk: image -> container -> pod, got empty");
+        assert!(ir.nodes.iter().any(|n| n.resource_type == "ContainerImage"));
+        assert!(ir.nodes.iter().any(|n| n.resource_type == "Container"));
+        assert!(ir.nodes.iter().any(|n| n.resource_type == "Pod"));
     }
 }

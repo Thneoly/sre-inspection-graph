@@ -56,9 +56,13 @@ const SHAPE_BY_TYPE: Record<string, string> = {
   Namespace: "round-rectangle",
   Pod: "ellipse",
   Container: "barrel",
+  ContainerImage: "vee",
   Service: "diamond",
   Deployment: "round-octagon",
   Service_Account: "tag",
+  AlertEvent: "triangle",
+  Application: "round-triangle",
+  ApplicationComponent: "round-diamond",
 };
 
 export function shapeFor(resourceType: string): string {

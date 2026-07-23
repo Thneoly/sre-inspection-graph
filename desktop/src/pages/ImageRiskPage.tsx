@@ -10,7 +10,7 @@ export default function ImageRiskPage() {
       resourceTypes={["ContainerImage"]}
       fetch={(id, depth) => imageRisk(id, depth)}
       defaultDepth={4}
-      emptyHint="选一个 ContainerImage,经 USES/STORED_IN 反向查跑该镜像的负载。当前 connector 尚未产 ContainerImage 节点,真集群上通常为空。"
+      emptyHint="选一个 ContainerImage,经 USES_IMAGE 反向查跑该镜像的 Container -> Pod -> Node。无候选时先 Sync(sync 后 k8s connector 产 image 节点)。"
     />
   );
 }
