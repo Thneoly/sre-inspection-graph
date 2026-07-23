@@ -21,20 +21,21 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use engine_core::types::edge_type;
 use engine_identity::Topology;
 
 /// 影响传播沿这些"强依赖"关系(对齐 reference `PROPAGATION_EDGES`)。
 ///
 /// `USES_IMAGE` **刻意不在**此列(`test_non_propagation_edge_skipped` 钉死)。
 pub const PROPAGATION_EDGES: &[&str] = &[
-    "USES",
-    "CONTAINS",
-    "DEPLOYED_AS",
-    "BELONGS_TO",
-    "RUNS",
-    "SCHEDULED_ON",
-    "EXPOSES",
-    "ROUTES_TO",
+    edge_type::USES,
+    edge_type::CONTAINS,
+    edge_type::DEPLOYED_AS,
+    edge_type::BELONGS_TO,
+    edge_type::RUNS,
+    edge_type::SCHEDULED_ON,
+    edge_type::EXPOSES,
+    edge_type::ROUTES_TO,
 ];
 
 /// `derive_propagation` / `find_propagation_path` 默认深度上限(对齐 reference)。

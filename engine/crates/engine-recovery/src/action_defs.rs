@@ -15,6 +15,7 @@
 
 #![allow(missing_docs)]
 
+use engine_core::types::{edge_type, resource_type};
 use serde::{Deserialize, Serialize};
 
 /// 动作风险等级。low = 同步执行无需审批;medium/high = 需审批(Phase 3 桌面单机确认门)。
@@ -156,9 +157,9 @@ pub static RESTART_POD: ActionDef = ActionDef {
         ParamSpec { name: "grace_period_seconds", kind: ParamKind::Integer, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "ROUTES_TO", direction: Direction::Reverse, max_depth: 1, target_type: Some("Service"), impact: Impact::Low, note: "Service Endpoints 临时少 1 个就绪 Pod" },
-        PropagationRule { edge: "CONTAINS", direction: Direction::Reverse, max_depth: 1, target_type: Some("Deployment"), impact: Impact::Minimal, note: "ReplicaSet 自动重新调度新 Pod" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Minimal, note: "向上影响 Component / Application(短暂感知)" },
+        PropagationRule { edge: edge_type::ROUTES_TO, direction: Direction::Reverse, max_depth: 1, target_type: Some(resource_type::SERVICE), impact: Impact::Low, note: "Service Endpoints 临时少 1 个就绪 Pod" },
+        PropagationRule { edge: edge_type::CONTAINS, direction: Direction::Reverse, max_depth: 1, target_type: Some(resource_type::DEPLOYMENT), impact: Impact::Minimal, note: "ReplicaSet 自动重新调度新 Pod" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Minimal, note: "向上影响 Component / Application(短暂感知)" },
     ],
     sla_impact_estimate: "< 0.1%",
     warnings: &[
@@ -181,8 +182,8 @@ pub static SCALE_DEPLOYMENT: ActionDef = ActionDef {
         ParamSpec { name: "replicas_delta", kind: ParamKind::Integer, required: true },
     ],
     propagation: &[
-        PropagationRule { edge: "CONTAINS", direction: Direction::Forward, max_depth: 1, target_type: Some("Pod"), impact: Impact::Minimal, note: "新增/减少 Pod 副本" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 2, target_type: None, impact: Impact::Minimal, note: "Component 承载能力变化" },
+        PropagationRule { edge: edge_type::CONTAINS, direction: Direction::Forward, max_depth: 1, target_type: Some(resource_type::POD), impact: Impact::Minimal, note: "新增/减少 Pod 副本" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 2, target_type: None, impact: Impact::Minimal, note: "Component 承载能力变化" },
     ],
     sla_impact_estimate: "< 0.1%",
     warnings: &[
@@ -205,9 +206,9 @@ pub static ROLLBACK_DEPLOYMENT: ActionDef = ActionDef {
         ParamSpec { name: "revision", kind: ParamKind::Integer, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "CONTAINS", direction: Direction::Forward, max_depth: 1, target_type: Some("Pod"), impact: Impact::Medium, note: "所有 Pod 滚动重启" },
-        PropagationRule { edge: "ROUTES_TO", direction: Direction::Reverse, max_depth: 2, target_type: Some("Service"), impact: Impact::Medium, note: "滚动期间 Service 部分 Endpoints 切换" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 2, target_type: None, impact: Impact::Medium, note: "Component / Application 部分流量回退" },
+        PropagationRule { edge: edge_type::CONTAINS, direction: Direction::Forward, max_depth: 1, target_type: Some(resource_type::POD), impact: Impact::Medium, note: "所有 Pod 滚动重启" },
+        PropagationRule { edge: edge_type::ROUTES_TO, direction: Direction::Reverse, max_depth: 2, target_type: Some(resource_type::SERVICE), impact: Impact::Medium, note: "滚动期间 Service 部分 Endpoints 切换" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 2, target_type: None, impact: Impact::Medium, note: "Component / Application 部分流量回退" },
     ],
     sla_impact_estimate: "0.5% - 2%",
     warnings: &[
@@ -231,9 +232,9 @@ pub static REFRESH_SECRET: ActionDef = ActionDef {
         ParamSpec { name: "trigger_pod_restart", kind: ParamKind::Boolean, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "USES", direction: Direction::Reverse, max_depth: 2, target_type: Some("Pod"), impact: Impact::Medium, note: "所有引用此 Secret 的 Pod 滚动重启" },
-        PropagationRule { edge: "USES", direction: Direction::Reverse, max_depth: 1, target_type: Some("Deployment"), impact: Impact::Low, note: "Deployment 触发滚动更新" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Low, note: "Component / Application 滚动期间 SLA 短暂影响" },
+        PropagationRule { edge: edge_type::USES, direction: Direction::Reverse, max_depth: 2, target_type: Some(resource_type::POD), impact: Impact::Medium, note: "所有引用此 Secret 的 Pod 滚动重启" },
+        PropagationRule { edge: edge_type::USES, direction: Direction::Reverse, max_depth: 1, target_type: Some(resource_type::DEPLOYMENT), impact: Impact::Low, note: "Deployment 触发滚动更新" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Low, note: "Component / Application 滚动期间 SLA 短暂影响" },
     ],
     sla_impact_estimate: "0.1% - 0.5%",
     warnings: &[
@@ -258,9 +259,9 @@ pub static DRAIN_NODE: ActionDef = ActionDef {
         ParamSpec { name: "force", kind: ParamKind::Boolean, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "SCHEDULED_ON", direction: Direction::Reverse, max_depth: 1, target_type: Some("Pod"), impact: Impact::High, note: "节点上所有 Pod 被驱逐重新调度" },
-        PropagationRule { edge: "CONTAINS", direction: Direction::Reverse, max_depth: 2, target_type: Some("Deployment"), impact: Impact::Medium, note: "受影响 Pod 所属 Deployment 触发重新调度" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Medium, note: "受影响应用短暂部分实例不可用" },
+        PropagationRule { edge: edge_type::SCHEDULED_ON, direction: Direction::Reverse, max_depth: 1, target_type: Some(resource_type::POD), impact: Impact::High, note: "节点上所有 Pod 被驱逐重新调度" },
+        PropagationRule { edge: edge_type::CONTAINS, direction: Direction::Reverse, max_depth: 2, target_type: Some(resource_type::DEPLOYMENT), impact: Impact::Medium, note: "受影响 Pod 所属 Deployment 触发重新调度" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Medium, note: "受影响应用短暂部分实例不可用" },
     ],
     sla_impact_estimate: "1% - 5%",
     warnings: &[
@@ -286,8 +287,8 @@ pub static KILL_QUERY: ActionDef = ActionDef {
         ParamSpec { name: "min_duration_seconds", kind: ParamKind::Integer, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "USES", direction: Direction::Reverse, max_depth: 2, target_type: Some("Pod"), impact: Impact::Low, note: "依赖此 MySQL 的 Pod 该查询失败,客户端需重试" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Low, note: "上游应用收到查询失败响应" },
+        PropagationRule { edge: edge_type::USES, direction: Direction::Reverse, max_depth: 2, target_type: Some(resource_type::POD), impact: Impact::Low, note: "依赖此 MySQL 的 Pod 该查询失败,客户端需重试" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Low, note: "上游应用收到查询失败响应" },
     ],
     sla_impact_estimate: "0.01% - 0.1%",
     warnings: &[
@@ -310,8 +311,8 @@ pub static RESTART_SERVICE: ActionDef = ActionDef {
         ParamSpec { name: "drop_idle_seconds", kind: ParamKind::Integer, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "ROUTES_TO", direction: Direction::Forward, max_depth: 1, target_type: Some("Pod"), impact: Impact::Minimal, note: "Endpoints 重新生成,Pod 不动" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Minimal, note: "应用层无感" },
+        PropagationRule { edge: edge_type::ROUTES_TO, direction: Direction::Forward, max_depth: 1, target_type: Some(resource_type::POD), impact: Impact::Minimal, note: "Endpoints 重新生成,Pod 不动" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Minimal, note: "应用层无感" },
     ],
     sla_impact_estimate: "< 0.05%",
     warnings: &["重启期间(< 5 秒)新建连接可能短暂失败"],
@@ -333,9 +334,9 @@ pub static CLEAR_CACHE: ActionDef = ActionDef {
         ParamSpec { name: "key_pattern", kind: ParamKind::String, required: false },
     ],
     propagation: &[
-        PropagationRule { edge: "USES", direction: Direction::Reverse, max_depth: 2, target_type: Some("Pod"), impact: Impact::High, note: "依赖此 Redis 的 Pod 缓存击穿,负载暴增" },
-        PropagationRule { edge: "USES", direction: Direction::Reverse, max_depth: 1, target_type: Some("MySQL"), impact: Impact::High, note: "上游 DB 在缓存击穿后承担直接负载" },
-        PropagationRule { edge: "BELONGS_TO", direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Medium, note: "应用响应延迟显著增加,可能引发雪崩" },
+        PropagationRule { edge: edge_type::USES, direction: Direction::Reverse, max_depth: 2, target_type: Some(resource_type::POD), impact: Impact::High, note: "依赖此 Redis 的 Pod 缓存击穿,负载暴增" },
+        PropagationRule { edge: edge_type::USES, direction: Direction::Reverse, max_depth: 1, target_type: Some(resource_type::MYSQL), impact: Impact::High, note: "上游 DB 在缓存击穿后承担直接负载" },
+        PropagationRule { edge: edge_type::BELONGS_TO, direction: Direction::Forward, max_depth: 3, target_type: None, impact: Impact::Medium, note: "应用响应延迟显著增加,可能引发雪崩" },
     ],
     sla_impact_estimate: "1% - 10%",
     warnings: &[

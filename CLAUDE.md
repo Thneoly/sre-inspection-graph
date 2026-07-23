@@ -131,7 +131,7 @@ cd desktop && npm test                       # 前端 vitest
 SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默认 app data dir)
 ```
 
-> 注:`make` 顶层入口(doc/16 §10 设计)尚未落 Makefile,当前用裸 cargo/npm。
+> 顶层 `Makefile` 已落(对齐 doc/16 §10):`make help` 列全 target;`make test-all` / `check-all` / `build-all` 聚合;`engine-*` / `modules-*`(`cargo wasi-build` alias)/ `desktop-*` / `ref-*`(legacy oracle)分组;`engine-inspect-views DB=...` 跑 6 视图 headless 验证。
 
 ### 三层数据契约(写新代码前对照 doc/15)
 

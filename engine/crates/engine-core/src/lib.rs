@@ -17,23 +17,14 @@
 
 mod fact;
 mod graph;
+pub mod types;
 
 pub use fact::{fact_schema, Fact, FactBatch, FactError};
 pub use graph::{facts_to_graph, summarize, GraphEdge, GraphNode, GraphResponse, GraphSummary};
 
-use serde::{Deserialize, Serialize};
-
 /// Crate version (built-in from Cargo.toml).
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-/// L1 资源类型(占位枚举,Phase 2 落地完整 14 类型)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum ResourceType {
-    /// 占位 — 完整列表见 `doc/02-L1-L2-type-and-instance-model.md`。
-    Placeholder,
 }
 
 /// Errors emitted by the engine-core layer.
@@ -53,13 +44,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_is_non_empty() {
+    fn version_is_nonempty() {
         assert!(!version().is_empty());
-    }
-
-    #[test]
-    fn resource_type_serializes() {
-        let s = serde_json::to_string(&ResourceType::Placeholder).unwrap();
-        assert_eq!(s, "\"Placeholder\"");
     }
 }

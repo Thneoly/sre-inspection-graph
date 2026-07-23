@@ -18,7 +18,9 @@
 
 use std::collections::HashSet;
 
-use engine_core::{summarize, GraphEdge, GraphNode, GraphResponse};
+use engine_core::{
+    summarize, types::edge_type, GraphEdge, GraphNode, GraphResponse,
+};
 use engine_identity::{subgraph, topology_to_graph, Topology, TraversalDir};
 use serde_json::{json, Map};
 
@@ -26,14 +28,14 @@ use crate::{AlertEvent, AlertRegistry, AlertSeverity, AlertStatus};
 
 /// 告警 resource 邻域展开白名单 —— 全部真实边类型(Both 方向,跨 resource 类型鲁棒)。
 pub const ALERT_CONTEXT_EDGES: &[&str] = &[
-    "CONTAINS",
-    "DEPLOYED_AS",
-    "BELONGS_TO",
-    "SCHEDULED_ON",
-    "RUNS",
-    "ROUTES_TO",
-    "EXPOSES",
-    "USES",
+    edge_type::CONTAINS,
+    edge_type::DEPLOYED_AS,
+    edge_type::BELONGS_TO,
+    edge_type::SCHEDULED_ON,
+    edge_type::RUNS,
+    edge_type::ROUTES_TO,
+    edge_type::EXPOSES,
+    edge_type::USES,
 ];
 
 /// 默认 resource 邻域展开 depth。

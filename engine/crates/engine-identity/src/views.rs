@@ -22,6 +22,8 @@
 
 use std::collections::HashSet;
 
+use engine_core::types::edge_type;
+
 use crate::{ResolvedEdge, ResolvedNode, Topology};
 
 /// 遍历方向。
@@ -40,14 +42,14 @@ pub enum TraversalDir {
 /// 起点为 `KubernetesNode`,Reverse 找其上 pod + 路由到这些 pod 的 service。
 /// `CONTROLLED_BY`/`AFFECTS`/`FIRED_ON` Rust 暂不产 —— 不匹配即无害,future-proof。
 pub const NODE_IMPACT_EDGES: &[&str] = &[
-    "SCHEDULED_ON",
-    "CONTAINS",
-    "DEPLOYED_AS",
-    "BELONGS_TO",
-    "RUNS",
-    "CONTROLLED_BY",
-    "AFFECTS",
-    "FIRED_ON",
+    edge_type::SCHEDULED_ON,
+    edge_type::CONTAINS,
+    edge_type::DEPLOYED_AS,
+    edge_type::BELONGS_TO,
+    edge_type::RUNS,
+    edge_type::CONTROLLED_BY,
+    edge_type::AFFECTS,
+    edge_type::FIRED_ON,
 ];
 
 /// config-impact 视图 edge 白名单(照 reference view4 Cypher)。
@@ -55,26 +57,26 @@ pub const NODE_IMPACT_EDGES: &[&str] = &[
 /// 起点为 `Secret` / `ConfigMap`,Reverse 找 USES 它的 pod → service → deployment。
 /// 与 `engine_changes::PROPAGATION_EDGES` 一致。
 pub const CONFIG_IMPACT_EDGES: &[&str] = &[
-    "USES",
-    "CONTAINS",
-    "DEPLOYED_AS",
-    "BELONGS_TO",
-    "RUNS",
-    "SCHEDULED_ON",
-    "EXPOSES",
-    "ROUTES_TO",
+    edge_type::USES,
+    edge_type::CONTAINS,
+    edge_type::DEPLOYED_AS,
+    edge_type::BELONGS_TO,
+    edge_type::RUNS,
+    edge_type::SCHEDULED_ON,
+    edge_type::EXPOSES,
+    edge_type::ROUTES_TO,
 ];
 
 /// access-link 视图 edge 白名单(照 reference view2 Cypher),Both 无向。
 pub const ACCESS_LINK_EDGES: &[&str] = &[
-    "ROUTES_TO",
-    "EXPOSES",
-    "DEPLOYED_IN",
-    "BELONGS_TO",
-    "CONTAINS",
-    "DEPLOYED_AS",
-    "RUNS",
-    "SCHEDULED_ON",
+    edge_type::ROUTES_TO,
+    edge_type::EXPOSES,
+    edge_type::DEPLOYED_IN,
+    edge_type::BELONGS_TO,
+    edge_type::CONTAINS,
+    edge_type::DEPLOYED_AS,
+    edge_type::RUNS,
+    edge_type::SCHEDULED_ON,
 ];
 
 /// image-risk 视图 edge 白名单(照 reference view5 Cypher + `USES_IMAGE`),Reverse。
@@ -82,14 +84,14 @@ pub const ACCESS_LINK_EDGES: &[&str] = &[
 /// reference view5 用 plain `USES`;本 port 加 `USES_IMAGE`(k8s connector 产的
 /// container→image 边,语义区别于 config 的 USES,对齐 reference 模型的 USES_IMAGE 概念)。
 pub const IMAGE_RISK_EDGES: &[&str] = &[
-    "USES",
-    "USES_IMAGE",
-    "CONTAINS",
-    "DEPLOYED_AS",
-    "BELONGS_TO",
-    "RUNS",
-    "SCHEDULED_ON",
-    "STORED_IN",
+    edge_type::USES,
+    edge_type::USES_IMAGE,
+    edge_type::CONTAINS,
+    edge_type::DEPLOYED_AS,
+    edge_type::BELONGS_TO,
+    edge_type::RUNS,
+    edge_type::SCHEDULED_ON,
+    edge_type::STORED_IN,
 ];
 
 /// 从 `start` 节点出发 BFS,只走 `allowed` 里的 `edge_type`,`max_depth` 限深,
@@ -182,6 +184,7 @@ pub fn subgraph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_core::types::resource_type;
 
     fn n(id: &str, rtype: &str) -> ResolvedNode {
         ResolvedNode {
@@ -403,33 +406,35 @@ mod tests {
     /// 前端 `list_resources_by_types(["Node"])` 会空 —— 此处文档化正确词表。
     fn realistic_k8s_topology() -> Topology {
         // 真集群 otel-demo 切片:app -> comp -> deploy -> pod -> node/svc/cm/secret/container
+        // 类型名引用 engine_core::types::resource_type(canonical 注册表)—— 此 fixture
+        // 是 host 侧 canonical 拼写参考,防 [[resource-type-vocab-drift]] 类 bug。
         Topology {
             nodes: vec![
-                n("app:otel-demo", "Application"),
-                n("comp:frontend", "ApplicationComponent"),
-                n("deploy:frontend", "Deployment"),
-                n("pod:frontend-1", "Pod"),
-                n("pod:frontend-2", "Pod"),
-                n("svc:frontend", "Service"),
-                n("node:vm1", "Node"),
-                n("cm:flagd-config", "ConfigMap"),
-                n("secret:frontend", "Secret"),
-                n("container:frontend:main", "Container"),
-                n("image:otel-demo:frontend:1.0", "ContainerImage"),
+                n("app:otel-demo", resource_type::APPLICATION),
+                n("comp:frontend", resource_type::APPLICATION_COMPONENT),
+                n("deploy:frontend", resource_type::DEPLOYMENT),
+                n("pod:frontend-1", resource_type::POD),
+                n("pod:frontend-2", resource_type::POD),
+                n("svc:frontend", resource_type::SERVICE),
+                n("node:vm1", resource_type::NODE),
+                n("cm:flagd-config", resource_type::CONFIG_MAP),
+                n("secret:frontend", resource_type::SECRET),
+                n("container:frontend:main", resource_type::CONTAINER),
+                n("image:otel-demo:frontend:1.0", resource_type::CONTAINER_IMAGE),
             ],
             edges: vec![
-                e("app:otel-demo", "comp:frontend", "CONTAINS"),
-                e("comp:frontend", "deploy:frontend", "DEPLOYED_AS"),
-                e("deploy:frontend", "comp:frontend", "BELONGS_TO"),
-                e("comp:frontend", "app:otel-demo", "BELONGS_TO"),
-                e("pod:frontend-1", "node:vm1", "SCHEDULED_ON"),
-                e("pod:frontend-2", "node:vm1", "SCHEDULED_ON"),
-                e("svc:frontend", "pod:frontend-1", "ROUTES_TO"),
-                e("svc:frontend", "deploy:frontend", "EXPOSES"),
-                e("pod:frontend-1", "cm:flagd-config", "USES"),
-                e("pod:frontend-1", "secret:frontend", "USES"),
-                e("pod:frontend-1", "container:frontend:main", "RUNS"),
-                e("container:frontend:main", "image:otel-demo:frontend:1.0", "USES_IMAGE"),
+                e("app:otel-demo", "comp:frontend", edge_type::CONTAINS),
+                e("comp:frontend", "deploy:frontend", edge_type::DEPLOYED_AS),
+                e("deploy:frontend", "comp:frontend", edge_type::BELONGS_TO),
+                e("comp:frontend", "app:otel-demo", edge_type::BELONGS_TO),
+                e("pod:frontend-1", "node:vm1", edge_type::SCHEDULED_ON),
+                e("pod:frontend-2", "node:vm1", edge_type::SCHEDULED_ON),
+                e("svc:frontend", "pod:frontend-1", edge_type::ROUTES_TO),
+                e("svc:frontend", "deploy:frontend", edge_type::EXPOSES),
+                e("pod:frontend-1", "cm:flagd-config", edge_type::USES),
+                e("pod:frontend-1", "secret:frontend", edge_type::USES),
+                e("pod:frontend-1", "container:frontend:main", edge_type::RUNS),
+                e("container:frontend:main", "image:otel-demo:frontend:1.0", edge_type::USES_IMAGE),
             ],
         }
     }
@@ -442,19 +447,19 @@ mod tests {
         // SCHEDULED_ON 反向到 pod;NIE 不含 ROUTES_TO 故止于 pod(对齐真集群行为)。
         let ni = subgraph(&topo, "node:vm1", 4, NODE_IMPACT_EDGES, TraversalDir::Reverse);
         assert!(ni.nodes.len() >= 3, "node-impact: node + 2 pods, got {}", ni.nodes.len());
-        assert!(ni.nodes.iter().any(|n| n.resource_type == "Pod"));
-        assert!(ni.nodes.iter().any(|n| n.resource_type == "Node"));
+        assert!(ni.nodes.iter().any(|n| n.resource_type == resource_type::POD));
+        assert!(ni.nodes.iter().any(|n| n.resource_type == resource_type::NODE));
 
         // config-impact:起点 ConfigMap。USES 反向到 pod,再 ROUTES_TO 反向到 svc。
         let ci = subgraph(&topo, "cm:flagd-config", 4, CONFIG_IMPACT_EDGES, TraversalDir::Reverse);
         assert!(ci.nodes.len() >= 3, "config-impact: cm + pod + svc, got {}", ci.nodes.len());
-        assert!(ci.nodes.iter().any(|n| n.resource_type == "Pod"));
-        assert!(ci.nodes.iter().any(|n| n.resource_type == "Service"));
+        assert!(ci.nodes.iter().any(|n| n.resource_type == resource_type::POD));
+        assert!(ci.nodes.iter().any(|n| n.resource_type == resource_type::SERVICE));
 
         // access-link:起点 Application,Both 无向,遍历 CONTAINS/DEPLOYED_AS/BELONGS_TO。
         let al = subgraph(&topo, "app:otel-demo", 5, ACCESS_LINK_EDGES, TraversalDir::Both);
         assert!(al.nodes.len() >= 3, "access-link: app subtree, got {}", al.nodes.len());
-        assert!(al.nodes.iter().any(|n| n.resource_type == "ApplicationComponent"));
+        assert!(al.nodes.iter().any(|n| n.resource_type == resource_type::APPLICATION_COMPONENT));
 
         // image-risk:起点 ContainerImage。USES_IMAGE 反向到 container,再 RUNS 反向到 pod。
         let ir = subgraph(
@@ -465,8 +470,8 @@ mod tests {
             TraversalDir::Reverse,
         );
         assert!(!ir.is_empty(), "image-risk: image -> container -> pod, got empty");
-        assert!(ir.nodes.iter().any(|n| n.resource_type == "ContainerImage"));
-        assert!(ir.nodes.iter().any(|n| n.resource_type == "Container"));
-        assert!(ir.nodes.iter().any(|n| n.resource_type == "Pod"));
+        assert!(ir.nodes.iter().any(|n| n.resource_type == resource_type::CONTAINER_IMAGE));
+        assert!(ir.nodes.iter().any(|n| n.resource_type == resource_type::CONTAINER));
+        assert!(ir.nodes.iter().any(|n| n.resource_type == resource_type::POD));
     }
 }
