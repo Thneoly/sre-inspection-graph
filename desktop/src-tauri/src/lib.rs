@@ -44,7 +44,7 @@ use commands::recovery::{
 use commands::system::get_app_version;
 use commands::topology::{get_graph, get_topology};
 use commands::views::{
-    access_link, config_impact, image_risk, list_resources_by_types, node_impact,
+    access_link, alert_aggregation, config_impact, image_risk, list_resources_by_types, node_impact,
 };
 use commands::wasm::{list_connectors, sync_all_now};
 use commands::reports_scheduler::{
@@ -365,6 +365,7 @@ pub fn run() {
             access_link,
             image_risk,
             list_resources_by_types,
+            alert_aggregation,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

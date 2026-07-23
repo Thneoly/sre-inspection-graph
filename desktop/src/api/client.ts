@@ -612,3 +612,12 @@ export async function imageRisk(resourceId: string, depth?: number): Promise<Gra
 export async function listResourcesByTypes(resourceTypes: string[]): Promise<ResourceOption[]> {
   return invoke<ResourceOption[]>("list_resources_by_types", { resourceTypes });
 }
+
+/** alert-aggregation(告警聚合,reference view6):聚合所有 firing 告警 + 其 resource 邻域。
+ * 无起点参数 —— 展示全部 firing 告警。severity undefined = 全部。 */
+export async function alertAggregation(
+  severity?: "critical" | "warning",
+  depth?: number,
+): Promise<GraphResponse> {
+  return invoke<GraphResponse>("alert_aggregation", { severity, depth });
+}

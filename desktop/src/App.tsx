@@ -9,6 +9,7 @@ import NodeImpactPage from "./pages/NodeImpactPage";
 import ConfigImpactPage from "./pages/ConfigImpactPage";
 import AccessLinkPage from "./pages/AccessLinkPage";
 import ImageRiskPage from "./pages/ImageRiskPage";
+import AlertAggregationPage from "./pages/AlertAggregationPage";
 import { getAppVersion } from "./api/client";
 
 /**
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/config-impact" element={<ConfigImpactPage />} />
         <Route path="/access-link" element={<AccessLinkPage />} />
         <Route path="/image-risk" element={<ImageRiskPage />} />
+        <Route path="/alert-aggregation" element={<AlertAggregationPage />} />
       </Route>
     </Routes>
   );

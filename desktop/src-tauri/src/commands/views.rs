@@ -142,3 +142,29 @@ pub async fn list_resources_by_types(
         .collect();
     Ok(opts)
 }
+
+/// alert-aggregation 视图(复刻 reference view6):聚合所有 firing 告警 + 其 resource 邻域。
+///
+/// 读 AlertRegistry(firing + 可选 severity 过滤)+ materialized topology,经
+/// `engine_changes::alert_aggregation_graph` 合成 alert 节点 + FIRED_ON 边 + resource 邻域。
+/// 与其余 4 视图不同:无起点 Select,展示全部 firing 告警的聚合图。
+#[tauri::command]
+pub async fn alert_aggregation(
+    state: State<'_, AppState>,
+    severity: Option<engine_changes::AlertSeverity>,
+    depth: Option<usize>,
+) -> Result<GraphResponse, String> {
+    let topology = state
+        .storage
+        .materialized_topology()
+        .await
+        .map_err(|e| e.to_string())?;
+    // clone registry 出锁,避免持锁期间做图构建(纯函数,无 await)
+    let alerts = state.alerts.lock().await.clone();
+    Ok(engine_changes::alert_aggregation_graph(
+        &alerts,
+        &topology,
+        severity,
+        depth.unwrap_or(engine_changes::DEFAULT_ALERT_AGGREGATION_DEPTH),
+    ))
+}

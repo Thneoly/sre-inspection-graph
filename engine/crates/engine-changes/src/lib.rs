@@ -16,6 +16,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod alert_aggregation;
 pub mod alert_correlation;
 pub mod alerts;
 pub mod event_service;
@@ -31,6 +32,9 @@ pub use alert_correlation::{
     CorrelatedChangeForAlert, DEFAULT_ALERT_WINDOW_SECONDS, DEFAULT_CHANGE_WINDOW_SECONDS,
 };
 pub use alerts::{AlertEvent, AlertRegistry, AlertSeverity, AlertStatus};
+pub use alert_aggregation::{
+    alert_aggregation_graph, ALERT_CONTEXT_EDGES, DEFAULT_ALERT_AGGREGATION_DEPTH,
+};
 pub use event_service::{
     correlated_changes, estimate_severity, get_recovery_suggestion, record_change, serialize, ChangeRegistry,
     CorrelatedChange, CorrelatedResult, DEFAULT_CORRELATED_WINDOW_SECONDS, RecoverySuggestion,
