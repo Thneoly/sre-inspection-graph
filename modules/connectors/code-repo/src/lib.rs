@@ -193,10 +193,12 @@ mod imp {
             },
         ));
 
-        // Dockerfile FROM -> BUILDS(repo -> image)。
+        // Dockerfile FROM -> image-ref 节点 + BUILDS(repo -> image-ref)。
+        // image-ref 节点带 correlation key,resolver 合并到 k8s image 节点(若 normalize 后匹配)。
         if let Some(df) = children.iter().find(|c| basename(c) == "Dockerfile") {
             if let Some(content) = read_file_safe(df, errors) {
                 for img in mapper::parse_dockerfile(&content) {
+                    out.push(mapper::image_ref_node_fact(mcfg, &img));
                     out.push(mapper::builds_edge_fact(mcfg, &rid, &img));
                 }
             }

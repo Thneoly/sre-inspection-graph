@@ -25,11 +25,13 @@
 #![warn(missing_docs)]
 
 mod changeset;
+mod correlation;
 mod health_merge;
 mod topology;
 mod views;
 
 pub use changeset::{diff, ChangeSet, ChangeSummary};
+pub use correlation::rewrite_by_correlation_key;
 pub use health_merge::{
     derive_metric_health, merge_metric_health, DerivedHealth, HealthThreshold, HealthThresholds,
 };

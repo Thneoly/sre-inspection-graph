@@ -125,8 +125,9 @@ async fn code_repo_scans_fixtures_into_topology_facts() {
         .collect();
     assert_eq!(builds.len(), 2, "2 BUILDS edges (only order-svc has Dockerfile)");
     let build_targets: Vec<String> = builds.iter().map(|f| edge_target(f)).collect();
-    assert!(build_targets.contains(&"image:vm-cluster:otel-demo:node:18".to_string()));
-    assert!(build_targets.contains(&"image:vm-cluster:otel-demo:alpine:3.19".to_string()));
+    // Phase 8.2 C1:BUILDS 现指向 image-ref 节点(非 v0 的 image:{c}:{ns}:{ref})。
+    assert!(build_targets.contains(&"image-ref:node:18".to_string()));
+    assert!(build_targets.contains(&"image-ref:alpine:3.19".to_string()));
 
     // cleanup(best-effort)
     let _ = fs::remove_dir_all(&root);

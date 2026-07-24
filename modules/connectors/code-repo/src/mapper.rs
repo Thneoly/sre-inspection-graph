@@ -126,10 +126,29 @@ pub fn depends_on_edge_fact(cfg: &Cfg, repo_rid: &str, lib: &LibraryRef) -> Fact
     edge_fact(cfg.now, "DEPENDS_ON", repo_rid, &target)
 }
 
-/// `BUILDS` 边(repo -> ContainerImage)。**v0 best-effort**:target 用 cfg.cluster/ns
-/// + Dockerfile image-ref 合成。仅当 k8s connector 产的同 ref 完全一致才挂上,否则悬空。
+/// image-ref 节点(Phase 8.2 C1)。id = `image-ref:<normalize(ref)>`,带同名 correlation
+/// key;resolver 据此把它合并到 k8s 的 `image:{c}:{ns}:{ref}` 节点(同 normalize(ref)),
+/// BUILDS 边端点随之 remap → repo→image→container→pod 联通。无 k8s 匹配时此节点独立
+/// 存在(BUILDS 仍挂它,不悬空)。
+pub fn image_ref_node_fact(cfg: &Cfg, image_ref: &str) -> Fact {
+    let key = format!("image-ref:{}", module_sdk::normalize_image_ref(image_ref));
+    node_fact(
+        cfg.now,
+        &key,
+        "ContainerImage",
+        json!({
+            "name": image_ref,
+            "image": image_ref,
+            "correlation_keys": [key.clone()],
+        }),
+    )
+}
+
+/// `BUILDS` 边(repo -> image-ref 节点)。target = `image-ref:<normalize(ref)>`(Phase 8.2 C1:
+/// 弃用 v0 的 `image:{c}:{ns}:{ref}` best-effort byte-match —— 现 target 是 code-repo 自产
+/// 的 image-ref 节点,永不悬空;resolver 经 correlation key 合并后 remap 到 k8s image id)。
 pub fn builds_edge_fact(cfg: &Cfg, repo_rid: &str, image_ref: &str) -> Fact {
-    let target = format!("image:{}:{}:{}", cfg.cluster, cfg.namespace, image_ref);
+    let target = format!("image-ref:{}", module_sdk::normalize_image_ref(image_ref));
     edge_fact(cfg.now, "BUILDS", repo_rid, &target)
 }
 
@@ -422,13 +441,26 @@ mod tests {
     }
 
     #[test]
-    fn builds_edge_targets_k8s_image_id_shape() {
+    fn builds_edge_targets_image_ref_node() {
         let repo = repo_id("gitlab", "order", "order-svc");
         let ef = builds_edge_fact(&cfg(), &repo, "ghcr.io/otel/demo/cart:0.1.2");
         assert_eq!(attr(&ef, "/edge_type"), json!("BUILDS"));
+        // Phase 8.2 C1:target 是 image-ref 节点(非 v0 的 image:{c}:{ns}:{ref} byte-match)
         assert_eq!(
             attr(&ef, "/target"),
-            json!("image:vm-cluster:otel-demo:ghcr.io/otel/demo/cart:0.1.2")
+            json!("image-ref:ghcr.io/otel/demo/cart:0.1.2")
+        );
+    }
+
+    #[test]
+    fn image_ref_node_carries_correlation_key() {
+        let f = image_ref_node_fact(&cfg(), "ghcr.io/otel/demo/cart:0.1.2");
+        assert_eq!(f.kind, "topology-node");
+        assert_eq!(f.resource_type, "ContainerImage");
+        assert_eq!(f.resource_id, "image-ref:ghcr.io/otel/demo/cart:0.1.2");
+        assert_eq!(
+            attr(&f, "/correlation_keys/0"),
+            json!("image-ref:ghcr.io/otel/demo/cart:0.1.2")
         );
     }
 

@@ -403,6 +403,9 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                         "namespace": ns,
                         "name": ctr.image,
                         "image": ctr.image,
+                        // Phase 8.2 (C1):correlation key 让 code-repo 的 BUILDS(repo->image-ref:<ref>)
+                        // 节点合并到本 image 节点(同 normalize(ref))-> repo->image->container->pod 联通。
+                        "correlation_keys": [format!("image-ref:{}", module_sdk::normalize_image_ref(&ctr.image))],
                     }),
                 ));
                 facts.push(edge_fact(now, "USES_IMAGE", &ctr_id, &img_id));

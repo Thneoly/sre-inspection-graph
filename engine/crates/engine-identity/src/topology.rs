@@ -66,8 +66,14 @@ impl Topology {
 /// 复用 `engine_core::facts_to_graph`(单一派生入口),再把 presentation
 /// `GraphResponse` 平移成持久化形态。节点 `properties` map 重新序列化为
 /// canonical 字符串(key 有序)落 `attributes_json`。
+///
+/// **Phase 8.2(C1)**:委托前先跑 [`crate::correlation::rewrite_by_correlation_key`]
+/// 合并共享 correlation key 的节点(code-repo `BUILDS` repo→image-ref 经 `image-ref:<ref>`
+/// key 合并到 k8s `image:{c}:{ns}:{ref}` 节点 → repo→image→runtime 联通)。engine-core
+/// `facts_to_graph` 共享契约零改(无生产调用方绕过 resolve)。
 pub fn resolve(facts: &[Fact]) -> Topology {
-    let graph = facts_to_graph_canonical(facts);
+    let rewritten = crate::correlation::rewrite_by_correlation_key(facts);
+    let graph = facts_to_graph_canonical(&rewritten);
     Topology {
         nodes: graph
             .nodes
