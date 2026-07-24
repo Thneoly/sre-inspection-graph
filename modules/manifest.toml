@@ -123,4 +123,40 @@ wasi_version = "p2"
 sha256 = ""
 config = { jaeger_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-jaeger-query:16686/proxy/jaeger/ui", cluster = "vm-cluster", namespace = "otel-demo", release_prefix = "otel-demo", lookback_seconds = 300, call_count_threshold = 2, limit_per_service = 100 }
 
-# 后续:flagd / k8s-events real connector + 8 个 PRD-001 handler。
+# K8s Events connector —— 第一个 ChangeEvent 生产者(对照 reference k8s_event_connector)。
+# poll GET {api_base}/api/v1/namespaces/{ns}/events,挑 ScalingReplicaSet/SuccessfulRescale
+# -> deployment_rolled,产 kind="change" Fact(desktop run_sync 路由到 record_change)。
+# **不产节点/边/metric/alert**。有状态 guest:首次 sync baseline(种 UID 不发),之后只发新 UID。
+# 经 desktop 托管 kubectl proxy(8001),deny-by-default 需 http-client。给「变更无 live 源」
+# (Phase 3.6 偏差)补了 K8s 事件这条 live 源。otel-demo ns 常态 0 event,可换 ns 或 scale 触发验证。
+[[modules]]
+name = "k8s-events"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/k8s_events.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "http-client"]
+sync_interval_seconds = 30
+enabled = true
+wasi_version = "p2"
+sha256 = ""
+config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo" }
+
+# flagd connector —— 第二个 ChangeEvent 生产者(对照 reference flagd_connector)。
+# POST {flagd_url}/flagd.evaluation.v1.Service/ResolveAll(Connect-RPC transcoded,经
+# http-write capability —— Connect unary 走 POST),diff flag 快照产 configmap_updated
+# change-fact,命中 OTel Demo 8 故障 scenario 时富化 diff_summary.scenario + description。
+# **本集群未部署 flagd** -> 真集群不可达,仅 e2e/contract 验证(同 prometheus OOM)。
+# 有状态 guest:首次 sync baseline(存快照不发),之后 diff。PRD-004 5/5 收官。
+[[modules]]
+name = "flagd"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/flagd.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "http-write"]
+sync_interval_seconds = 30
+enabled = true
+wasi_version = "p2"
+sha256 = ""
+config = { flagd_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-flagd:8013/proxy", cluster = "vm-cluster", namespace = "otel-demo", flagd_configmap_name = "otel-demo-flagd-config" }
+
+# 后续:8 个 PRD-001 handler。

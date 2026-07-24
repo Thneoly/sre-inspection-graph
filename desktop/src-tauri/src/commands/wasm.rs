@@ -221,6 +221,40 @@ pub async fn run_sync(
             }
         }
     }
+
+    // kind="change" facts(flagd / k8s-events connector 产)-> 解码 ChangeRequest -> record_change。
+    // 与上面 detect_changes 同款 change-recording;guest 自管 baseline/dedup,故不经 first_sync gate。
+    let change_facts: Vec<&engine_core::Fact> = summary
+        .batch
+        .as_slice()
+        .iter()
+        .filter(|f| f.kind == "change")
+        .collect();
+    if !change_facts.is_empty() {
+        let events: Vec<engine_changes::ChangeEvent> = {
+            let mut reg = state.change_events.lock().await;
+            change_facts
+                .iter()
+                .filter_map(|f| match engine_changes::record_change(
+                    &mut reg,
+                    &next,
+                    &decode_change_fact(f),
+                ) {
+                    Ok(ev) => Some(ev),
+                    Err(e) => {
+                        tracing::warn!("record_change(change-fact {}) failed: {e}", f.id);
+                        None
+                    }
+                })
+                .collect()
+        };
+        for event in events {
+            if let Err(e) = state.storage.upsert_change_event(&event).await {
+                tracing::warn!("upsert_change_event {}: {e}", event.change_event_id);
+            }
+        }
+    }
+
     state
         .storage
         .apply_change_set(&change_set)
@@ -244,6 +278,33 @@ pub async fn run_sync(
         total_duration_ms: summary.total_duration_ms,
         changes: change_set.summary().into(),
     })
+}
+
+/// 把 `kind="change"` Fact 的 attributes_json 解码成 [`engine_changes::ChangeRequest`]
+/// (flagd / k8s-events connector 产的 ChangeEvent 载荷)。字段缺失 -> Default;
+/// `record_change` 再校验 `change_type` / `source`。
+fn decode_change_fact(f: &engine_core::Fact) -> engine_changes::ChangeRequest {
+    let v: serde_json::Value = serde_json::from_str(&f.attributes_json).unwrap_or_default();
+    let obj = v.as_object();
+    let s = |k: &str| {
+        obj.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    engine_changes::ChangeRequest {
+        change_type: s("change_type"),
+        target_resource_id: s("target_resource_id"),
+        changed_by: s("changed_by"),
+        source: s("source"),
+        description: s("description"),
+        diff_summary: obj
+            .and_then(|o| o.get("diff_summary"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+        cluster_id: s("cluster_id"),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

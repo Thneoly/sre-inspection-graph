@@ -43,11 +43,13 @@ graph_data/
 │   ├── manifest.toml           # 引擎启动读的模块清单
 │   ├── sdk/                    # guest 端 WIT bindings
 │   └── connectors/
-│       ├── hello-world/        # ✅ 第一条 connector(WIT 端到端)
-│       ├── k8s-mini/           # ✅ 第二条(多 connector 编排验证)
-│       ├── prometheus/         # ✅ 第三条(首个消费 http-client capability,GET /api/v1/query)
-│       ├── k8s/                # ✅ 第四条(真实 K8s API via kubectl proxy,真集群验证)
-│       └── jaeger/             # ✅ 第五条(trace 数据源,CHILD_OF 跨服务聚合 → CALLS 边;Phase 7.1)
+│       ├── hello-world/        # ✅ scaffolding(WIT 端到端,真集群阶段禁用)
+│       ├── k8s-mini/           # ✅ scaffolding(多 connector 编排验证,禁用)
+│       ├── prometheus/         # ✅ PRD-004 #2(http-client GET /api/v1/query → metric Fact)
+│       ├── k8s/                # ✅ PRD-004 #1(真实 K8s API via kubectl proxy → topology Fact)
+│       ├── jaeger/             # ✅ PRD-004 #3(trace,CHILD_OF 聚合 → CALLS 边;Phase 7.1)
+│       ├── k8s-events/         # ✅ PRD-004 #5(K8s Events → ChangeEvent;首个 change-fact 生产者;Phase 7.2)
+│       └── flagd/              # ✅ PRD-004 #4(flagd POST ResolveAll → ChangeEvent + scenario 富化;Phase 7.3)
 ├── specs/wit/          # ✅ 中立契约:host / connector / rule / handler 4 个 world
 ├── reference/          # ★ 旧 Python,read-only oracle(DO NOT DEPLOY)
 └── doc/                # 18 份文档(00-17 + blog/1 篇)
@@ -192,15 +194,17 @@ SRE_GRAPH_DB_PATH=/tmp/x.sqlite npm run tauri dev   # 指定 SQLite 路径(默�
 | C3 | **Parquet 归档**(填三层数据契约 C 层命名缺口)。`engine-storage` 启用 `parquet` feature(parquet+arrow 59 optional)+ `parquet_store.rs`:`ParquetStorage`(append-only,按 `(date, source)` 分区 `{root}/dt={date}/{source}-{max_ts}.parquet`,一批一文件 data-lake 式;date 从 Fact.timestamp UTC 派生[Hinnant civil-from-days,无 chrono])+ `archive_batch`/`read_partition`/`read_all` + impl Storage(backend "parquet")+ 5 round-trip 测试。`StorageError` 加 Parquet/Io variant。复用 `FactBatch::to_record_batch` + `fact_schema` canonical Arrow 路径。example `archive_facts.rs`(SQLite latest facts 快照到 Parquet,反复跑累加成历史)+ `make engine-archive`。真集群验证:373 facts → 2 分区文件(dt=2026-07-12 + dt=2026-07-23,跨天正确拆分)156K。SQLite 仍存 latest,Parquet 存历史 | ✅ |
 | C4 | **顶层 Makefile**(对齐 doc/16 §10)。修 bug:setup/dev-frontend 原指向已 rename 的 frontend/。加自文档 `help`(`##`+awk)+ 聚合 target(test-all/check-all/build-all)+ engine-cli-tick/tick-loop + modules 用 `cargo wasi-build` alias + modules-build-one + desktop-web + engine-dump-topology/inspect-views/archive-facts headless 工具 target。legacy reference target 加 `ref-` 前缀保留(oracle 仍可跑) | ✅ |
 | C1 | **Identity Resolver v1**(correlation-key 合并 + field-ownership 完整表 + 冲突仲裁,doc/11 §4-5)。**DEFERRED**:需第二异构数据源产**新节点**(非仅增边)才有真实跨源冲突可解。trace connector(Phase 7)已落地,但本集群 otel-demo trace **不发** OTel SemConv `peer.service`/`db.system`/`messaging.system`(只有 `net.peer.name`+`rpc.system`),故 doc/13 §8 的外部依赖发现不可行 —— trace 只产 CALLS 边挂到**已有** k8s comp 节点,不产 novel 节点,无合并冲突。真正能 unblock C1 的是 **code-repo 源(doc/12 PRD-006,产 CodeRepo/Library 节点与 trace+k8s 交叠)**或 Cloud API。现在建合并机器只能合成数据验证(Phase 2 FactBus 同款陷阱) | ⏸ deferred |
-### Phase 7 进展(trace 数据源 —— PRD-004 connector #3)
+### Phase 7 进展(PRD-004 connector 收官 —— 5/5)
 
-> 第一个 trace 数据源 + 第三条 connector(k8s / prometheus / jaeger)。补上 K8s 看不到的**调用图谱**维度。doc/11/13 设计的是 PRD-005「trace → 未知依赖发现」全版;本集群 trace 缺 SemConv span attrs(见下),故只做 faithful CALLS 边 port,外部依赖发现 + C1 留 code-repo 源。
+> 第三条~第五条 connector(jaeger / k8s-events / flagd)。jaeger 补调用图谱维度;k8s-events + flagd 是**首批 ChangeEvent 生产者**(产 `kind="change"` Fact,desktop 路由到 `record_change`,不进 topology)。doc/11/13 的 PRD-005「trace → 未知依赖发现」全版 + C1 留 code-repo 源(见 Phase 6 C1 行)。
 
 | 增量 | 内容 | 状态 |
 |---|---|---|
 | 7.1 | **jaeger trace connector**(`modules/connectors/jaeger`)。对照 reference `jaeger_connector.py`/`trace_aggregator.py`:GET `{jaeger_url}/api/services` + 逐服务 `/api/traces?service=&lookback=&limit=`,数**跨服务 `CHILD_OF`** span 引用聚合成 `CALLS` topology-edge Fact(端点 = k8s ApplicationComponent 节点 id)。**只产边不产节点**(reference 行为;节点由 k8s connector 建,无 comp 节点的边悬空被 `facts_to_graph` 过滤)。mapper 纯函数 host 可测(10 测试,移植 reference `TestTraceAggregator` 7 例 + 边形状 + null-references 容错 + service 过滤);`jaeger_http_e2e.rs`(mock 路由 /api/services vs /api/traces + deny-by-default)。**module-sdk 抽 `naming::{normalize_component_name, strip_release_prefix, component_id}`**(k8s + jaeger 共享 `comp:` id 派生,防漂移 —— C2 词表漂移同类教训);k8s mapper 改 import。`edge_type::CALLS` 入 registry(PRODUCED+KNOWN)+ `ACCESS_LINK_EDGES` 白名单(从 Application 沿调用链上下游)。manifest 走 desktop 托管 kubectl proxy 的 `/jaeger/ui` 前缀(otel-demo Helm quirk)+ threshold 2(真集群 trace 稀疏)。**真集群 headless**:engine-cli tick -> **11 条 CALLS 边**(frontend→ad/currency/product-catalog/recommendation,recommendation→flagd/product-catalog,frontend-proxy→frontend/imageprovider/flagd,frontend-web→frontend-proxy,loadgenerator→frontend-proxy;call_count 18–224),call 拓扑正确。**C1 仍 deferred**:trace 不产 novel 节点 → 无跨源合并冲突(见 Phase 6 C1 行)。**偏差**:不做 doc/13 §8 span-attr 外部依赖发现(本集群无 `peer.service`/`db.system`/`messaging.system`);无 delete-on-disappear(靠现有 sync diff/apply_change_set);edges-only | ✅ |
+| 7.2 | **k8s-events connector + change-fact routing**(`modules/connectors/k8s-events` + `desktop wasm.rs::run_sync`)。对照 reference `k8s_event_connector.py`:poll `GET {api_base}/api/v1/namespaces/{ns}/events`,挑 `INTERESTING_REASONS`(`ScalingReplicaSet`/`SuccessfulRescale` → `deployment_rolled`),involvedObject(Deployment / ReplicaSet[砍 hash] / Pod)→ target resource_id,产 `kind="change"` Fact。**新基建**:run_sync 解 `kind="change"` Fact → `engine_changes::ChangeRequest` → `record_change` → upsert(与 detect_changes 同款;guest 自管 baseline/dedup 故不经 first_sync gate;topology-facts 流向不变,resolve 按 kind 过滤)。**有状态 guest**(新模式):首次 sync baseline 种 UID 不发,之后只发新 UID,状态存 `thread_local!`(WasmConnector 复用 instance,跨 sync 持久;前 3 connector 无状态)。mapper 9 测试(移植 `TestK8sEventConnector` 4 + 补充);`k8s_events_e2e`(call-counter mock,2-sync baseline→发 + deny-by-default)。**给「变更无 live 源」(Phase 3.6 偏差)补了 K8s 事件 live 源**。**偏差**:poll 非 watch(真 watch 需 WIT stream + WASIp3);只 `INTERESTING_REASONS` 契约(reference `Killing`/`restartCount` 文档有实现无,不 port);真集群 smoke 阻于本会话集群 API server 不可达,graceful-failure 验证(下线 proxy → 0 fact + error 不 panic) | ✅ |
+| 7.3 | **flagd connector + OTel Demo 8 scenario 表**(`modules/connectors/flagd`)。对照 reference `flagd_connector.py` + `otel_demo_scenarios.py`:POST `{flagd_url}/flagd.evaluation.v1.Service/ResolveAll`(Connect-RPC transcoded,JSON body `{}`)拿 flag 快照,diff 上一轮,每条翻转产 `configmap_updated` change-fact(target = flagd ConfigMap 节点),命中 **8 故障 scenario** 时富化 `diff_summary.scenario.{recommended_action,target_component,finding_severity,expected_metric}` + description 后缀 `[scenario=… 推荐动作=… 目标组件=…]`。**经 `http-write` capability**(Connect unary 走 POST,复用既有 write —— 无需新 WIT/host)。**有状态 guest**:首次 baseline 存快照不发,之后 diff。mapper 15 测试(移植 `TestFlagdConnector` 4 + scenario enrichment 2 + `TestScenarios` 完整性 + diff);`flagd_e2e`(POST mock,2-sync baseline→翻转 + scenario 富化 + http-write deny-by-default)。**偏差**:**本集群未部署 flagd**(无 svc/deploy/ConfigMap)→ 真集群不可达,仅 e2e/contract 验证(同 prometheus OOM);真值需部署 flagd。PRD-004 5/5 收官(k8s/prometheus/jaeger/k8s-events/flagd) | ✅ |
 
-- [ ] 后续:image_pushed 真 webhook(桌面架构冲突,需 HTTP server,可能永久跳过;手动录入口已就绪)+ report 调度持久化优化 + **真集群 GUI smoke**(需 kubectl proxy 起:验证各视图含 CALLS 边真集群渲染;GNOME Wayland 下程序化截图受阻,需肉眼或装 Wayland 工具)+ **code-repo 源(doc/12 PRD-006,unblock C1 的真路径)** + flagd/k8s-events connector 补齐 PRD-004 5 connector
+- [ ] 后续:image_pushed 真 webhook(桌面架构冲突,需 HTTP server,可能永久跳过;手动录入口已就绪)+ report 调度持久化优化 + **真集群 GUI smoke**(需 kubectl proxy + 集群 API 可达:验证 CALLS 边 + change 事件真集群渲染;GNOME Wayland 下程序化截图受阻,需肉眼)+ **code-repo 源(doc/12 PRD-006,unblock C1 的真路径)** + flagd/k8s-events 真集群 smoke(集群恢复后)
 
 ---
 

@@ -21,6 +21,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "flagd"
+version = "0.1.0"
+dependencies = [
+ "module-sdk",
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -87,6 +97,16 @@ dependencies = [
 
 [[package]]
 name = "k8s"
+version = "0.1.0"
+dependencies = [
+ "module-sdk",
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "k8s-events"
 version = "0.1.0"
 dependencies = [
  "module-sdk",
