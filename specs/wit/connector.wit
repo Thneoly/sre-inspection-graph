@@ -65,6 +65,30 @@ interface http-client {
     write: func(req: write-request) -> result<response, error>;
 }
 
+interface fs-read {
+    /// 本地只读文件系统访问(Phase 8.1,供 code-repo connector 扫描本地仓库)。
+    /// guest 申明 `fs-read` capability;host 端按 manifest `fs_roots` allow-list
+    /// + canonicalize 校验(防目录穿越 `../../etc/passwd` + 符号链接逃逸)。
+    /// **read-only**:只有 read-file / read-dir,无 write/create/delete(区别于
+    /// raw WASI preopens)。
+    variant error {
+        not-found,
+        permission-denied(string),
+        io(string),
+    }
+
+    record entry {
+        path: string,        // canonicalize 后的真实路径
+        content: list<u8>,
+    }
+
+    /// 读单个文件 -> 内容字节。path 须 canonicalize 后落在某 allowed root 内。
+    read-file: func(path: string) -> result<entry, error>;
+
+    /// 列目录 -> 子项完整路径列表(文件 + 子目录,用于 guest 驱动递归扫描)。
+    read-dir: func(path: string) -> result<list<string>, error>;
+}
+
 interface connector {
     use logging.{level};
 
@@ -116,6 +140,7 @@ world connector-world {
     import logging;
     import clock;
     import http-client;
+    import fs-read;
 
     /// guest → host:guest 必须导出的接口。
     export connector;

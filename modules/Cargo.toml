@@ -9,6 +9,7 @@ members = [
     "connectors/jaeger",
     "connectors/k8s-events",
     "connectors/flagd",
+    "connectors/code-repo",
     "handlers/scale-deploy",
     "handlers/k8s-handler",
 ]

@@ -14,6 +14,11 @@ pub mod runtime;
 /// 类型解耦,`runtime.rs::HttpClientHost for State` 是它到 WIT 的薄适配。
 pub mod http_host;
 
+/// Phase 8.1 —— `fs-read` capability 的 host 端纯函数实装
+/// (`read_file`/`read_dir` + `HostFsEntry`/`HostFsError` + path-root allow-list)。
+/// 与 `http_host` 同构,`runtime.rs::FsReadHost for State` 是它到 WIT 的薄适配。
+pub mod fs_host;
+
 /// 多 connector 编排 —— `WasmRuntime` 持多个 `WasmConnector`,
 /// `sync_all` 一次跑完,`tick_loop` 周期跑。
 pub mod multi;
@@ -100,6 +105,15 @@ pub struct ModuleManifest {
     /// prometheus 拿 `{prometheus_url,...}`,互不串扰。
     #[serde(default)]
     pub config: Option<serde_json::Value>,
+    /// fs-read capability 允许扫描的根目录(Phase 8.1,security grant)。
+    ///
+    /// 缺省 `None` → 无 fs-read 权限。code-repo connector 申明 `fs-read` capability
+    /// 时在此列出允许扫描的绝对路径;[`WasmRuntime::from_manifest`] canonicalize
+    /// 后传入 [`WasmConnector`],host 每次 read 时校验请求路径 canonicalize 后落在
+    /// 某根下(防目录穿越 `../../etc/passwd` + 符号链接逃逸)。非 fs-read connector
+    /// 忽略此字段。详见 [`crate::fs_host`]。
+    #[serde(default)]
+    pub fs_roots: Option<Vec<String>>,
     /// 二进制 sha256(可选)。Phase 2 起对 enabled 模块强制校验,
     /// Phase 1 留空即可。
     #[serde(default)]
@@ -154,6 +168,7 @@ mod tests {
             sync_interval_seconds: 30,
             enabled: true,
             config: None,
+            fs_roots: None,
             sha256: String::new(),
         };
         let s = serde_json::to_string(&m).unwrap();
@@ -163,6 +178,26 @@ mod tests {
         assert_eq!(back.sync_interval_seconds, 30);
         assert!(back.enabled);
         assert!(back.config.is_none());
+        assert!(back.fs_roots.is_none());
+    }
+
+    #[test]
+    fn parses_fs_roots() {
+        let toml = r#"
+schema_version = "1"
+
+[[modules]]
+name = "code-repo"
+type = "connector"
+wasm_path = "x.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "fs-read"]
+fs_roots = ["/tmp/repos", "/home/me/code"]
+"#;
+        let parsed = ManifestFile::from_toml_str(toml).expect("should parse");
+        let m = &parsed.modules[0];
+        let roots = m.fs_roots.as_ref().expect("fs_roots present");
+        assert_eq!(roots, &vec!["/tmp/repos".to_string(), "/home/me/code".to_string()]);
     }
 
     #[test]

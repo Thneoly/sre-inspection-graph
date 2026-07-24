@@ -159,4 +159,24 @@ wasi_version = "p2"
 sha256 = ""
 config = { flagd_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-flagd:8013/proxy", cluster = "vm-cluster", namespace = "otel-demo", flagd_configmap_name = "otel-demo-flagd-config" }
 
+# code-repo connector —— 代码仓数据源(对照 doc/12 PRD-006 Sprint 1,本地 fs 扫描)。
+# 经 `fs-read` capability(deny-by-default + host path-root allow-list)读本地克隆的仓库,
+# Dockerfile FROM -> BUILDS(repo -> image, v0 best-effort)、package.json/go.mod/Cargo.toml/
+# requirements.txt -> Library 节点 + DEPENDS_ON 边。**无状态**(重扫幂等)。
+# `fs_roots` 是 host 安全 grant(绝对路径,canonicalize 后校验请求路径落在其下,防目录穿越);
+# config.roots 是 guest 扫描目标(应与 fs_roots 一致)。PR/MR 事件 = webhook(桌面反模式,跳过)。
+# 真集群用:把 fs_roots / roots 指向本地克隆的 otel-demo 各 service 仓库目录。
+[[modules]]
+name = "code-repo"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/code_repo.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "fs-read"]
+sync_interval_seconds = 300
+enabled = false
+wasi_version = "p2"
+sha256 = ""
+fs_roots = []
+config = { roots = [], host = "local", group = "local", cluster = "vm-cluster", namespace = "otel-demo", depth = 2 }
+
 # 后续:8 个 PRD-001 handler。

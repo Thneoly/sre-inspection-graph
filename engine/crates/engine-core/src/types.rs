@@ -50,6 +50,10 @@ pub mod resource_type {
     // --- L3 dynamic (synthesized by engine-changes::alert_aggregation) ---
     pub const ALERT_EVENT: &str = "AlertEvent";
 
+    // --- Code layer (modules/connectors/code-repo, PRD-006 Sprint 1) ---
+    pub const CODE_REPO: &str = "CodeRepo";
+    pub const LIBRARY: &str = "Library";
+
     /// All host-recognized resource types (canonical vocabulary).
     pub const ALL: &[&str] = &[
         CLUSTER,
@@ -68,6 +72,8 @@ pub mod resource_type {
         KAFKA,
         MYSQL,
         ALERT_EVENT,
+        CODE_REPO,
+        LIBRARY,
     ];
 
     /// True iff `t` is a recognized resource type.
@@ -95,6 +101,8 @@ pub mod edge_type {
     pub const USES_IMAGE: &str = "USES_IMAGE";
     pub const FIRED_ON: &str = "FIRED_ON"; // synthesized by alert_aggregation
     pub const CALLS: &str = "CALLS"; // jaeger trace connector (CHILD_OF aggregation)
+    pub const BUILDS: &str = "BUILDS"; // code-repo connector (CodeRepo -> ContainerImage)
+    pub const DEPENDS_ON: &str = "DEPENDS_ON"; // code-repo connector (CodeRepo -> Library)
 
     /// Edge types currently produced by some connector / resolver.
     pub const PRODUCED: &[&str] = &[
@@ -109,6 +117,8 @@ pub mod edge_type {
         USES_IMAGE,
         FIRED_ON,
         CALLS,
+        BUILDS,
+        DEPENDS_ON,
     ];
 
     // --- Whitelist-only (reference Cypher; Rust not yet producing — future-proof) ---
@@ -134,6 +144,8 @@ pub mod edge_type {
         STORED_IN,
         DEPLOYED_IN,
         CALLS,
+        BUILDS,
+        DEPENDS_ON,
     ];
 
     /// True iff `e` is a recognized edge type.
@@ -189,9 +201,13 @@ mod tests {
         assert_eq!(resource_type::APPLICATION_COMPONENT, "ApplicationComponent");
         assert_eq!(resource_type::CONTAINER_IMAGE, "ContainerImage");
         assert_eq!(resource_type::ALERT_EVENT, "AlertEvent");
+        assert_eq!(resource_type::CODE_REPO, "CodeRepo");
+        assert_eq!(resource_type::LIBRARY, "Library");
         // edge_type: SCREAMING value == const name exactly
         assert_eq!(edge_type::CONTAINS, "CONTAINS");
         assert_eq!(edge_type::USES_IMAGE, "USES_IMAGE");
         assert_eq!(edge_type::SCHEDULED_ON, "SCHEDULED_ON");
+        assert_eq!(edge_type::BUILDS, "BUILDS");
+        assert_eq!(edge_type::DEPENDS_ON, "DEPENDS_ON");
     }
 }

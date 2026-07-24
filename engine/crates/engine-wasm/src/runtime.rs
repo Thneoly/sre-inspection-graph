@@ -14,7 +14,7 @@
 //! 是它到 WIT 类型的薄适配。host 类型 ↔ binding 类型的字段平移在这里。
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use wasmtime::component::{Component, Linker, ResourceTable};
@@ -44,6 +44,9 @@ mod handler_bindings {
 }
 
 use bindings::sre::inspection::clock::Host as ClockHost;
+use bindings::sre::inspection::fs_read::{
+    Entry as FsEntry, Error as FsError, Host as FsReadHost,
+};
 use bindings::sre::inspection::http_client::{
     Error as HttpError, Host as HttpClientHost, Response as HttpResponse, WriteRequest,
 };
@@ -81,6 +84,11 @@ pub struct State {
     http_client: reqwest::Client,
     /// 该 connector 申明的 capability 集合(`manifest.capabilities`)。
     allowed_capabilities: HashSet<String>,
+    /// `fs-read` capability 允许访问的根目录(canonicalize 后)。
+    /// 由 [`WasmConnector::load_with_fs_roots`] 注入(Phase 8.1);
+    /// 非 fs-read connector 传空 Vec。`fs_host::read_file` 每次 read 校验
+    /// 请求路径 canonicalize 后落在某根下(防目录穿越 / 符号链接逃逸)。
+    fs_roots: Vec<PathBuf>,
 }
 
 impl WasiView for State {
@@ -175,6 +183,36 @@ impl HttpClientHost for State {
             status: resp.status,
             body: resp.body,
         })
+    }
+}
+
+impl FsReadHost for State {
+    /// Phase 8.1 —— 委托 [`crate::fs_host::read_file`](capability `fs-read` gate +
+    /// path-root allow-list + canonicalize 防穿越),再把 host 侧 `HostFsEntry`/
+    /// `HostFsError` 平移到 WIT `entry` / `error`。真正的安全检查都在 `fs_host`。
+    async fn read_file(&mut self, path: String) -> std::result::Result<FsEntry, FsError> {
+        let entry = crate::fs_host::read_file(&self.allowed_capabilities, &self.fs_roots, &path)
+            .map_err(map_fs_err_to_wit)?;
+        Ok(FsEntry {
+            path: entry.path,
+            content: entry.content,
+        })
+    }
+
+    /// 同上,委托 [`crate::fs_host::read_dir`](同款 gate + allow-list)。
+    async fn read_dir(&mut self, path: String) -> std::result::Result<Vec<String>, FsError> {
+        crate::fs_host::read_dir(&self.allowed_capabilities, &self.fs_roots, &path)
+            .map_err(map_fs_err_to_wit)
+    }
+}
+
+/// host 侧 [`crate::fs_host::HostFsError`] → WIT binding `FsError` 一一映射。
+fn map_fs_err_to_wit(e: crate::fs_host::HostFsError) -> FsError {
+    use crate::fs_host::HostFsError;
+    match e {
+        HostFsError::NotFound => FsError::NotFound,
+        HostFsError::PermissionDenied(m) => FsError::PermissionDenied(m),
+        HostFsError::Io(m) => FsError::Io(m),
     }
 }
 
@@ -329,6 +367,33 @@ impl WasmConnector {
         capabilities: HashSet<String>,
         client: reqwest::Client,
     ) -> Result<Self> {
+        Self::load_with_fs_roots(wasm_path, capabilities, client, Vec::new()).await
+    }
+
+    /// 与 [`load`] 同,但用默认 reqwest Client + 注入 `fs_roots`(fs-read grant)。
+    ///
+    /// 供 [`crate::multi::WasmRuntime::from_manifest`] 给申明 `fs-read` 的 connector
+    /// 传根目录。`fs_roots` 为空时即便 capabilities 含 `fs-read` 也无访问
+    /// (有 cap 无根 = 无访问,见 [`crate::fs_host`])。
+    pub async fn load_with_roots(
+        wasm_path: &Path,
+        capabilities: HashSet<String>,
+        fs_roots: Vec<PathBuf>,
+    ) -> Result<Self> {
+        Self::load_with_fs_roots(wasm_path, capabilities, default_http_client(), fs_roots).await
+    }
+
+    /// 真实加载实装:Config / Engine / Linker(WASI p2 + connector-world)/ Store
+    /// (含 `fs_roots`)/ Component / instantiate。
+    ///
+    /// 注:`capabilities` 字面平移进 `State`,host 实装不复制;`client` 是
+    /// `Arc<Inner>` clone 廉价(reqwest 文档保证);`fs_roots` 应已 canonicalize。
+    pub async fn load_with_fs_roots(
+        wasm_path: &Path,
+        capabilities: HashSet<String>,
+        client: reqwest::Client,
+        fs_roots: Vec<PathBuf>,
+    ) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         // wasmtime 46:async_support 已默认开,不要显式调(deprecated)。
@@ -338,7 +403,7 @@ impl WasmConnector {
         // 接全套 WASI p2 imports(io/streams/cli/clocks/sockets/...)。
         // hello-world 的 std 库会用到 wasi:io / wasi:cli 子集。
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(wasm_err)?;
-        // 接我们的 connector-world capability(logging + clock + http-client)。
+        // 接我们的 connector-world capability(logging + clock + http-client + fs-read)。
         // wit-bindgen 把所有 import 整合到一个 add_to_linker 调用 — 加 capability
         // 时只改 connector.wit + 给 State 加 impl,这里不动。
         ConnectorWorld::add_to_linker::<State, wasmtime::component::HasSelf<State>>(
@@ -354,6 +419,7 @@ impl WasmConnector {
                 wasi: WasiCtxBuilder::new().inherit_stdio().build(),
                 http_client: client,
                 allowed_capabilities: capabilities,
+                fs_roots,
             },
         );
 
@@ -450,6 +516,7 @@ impl WasmHandler {
                 wasi: WasiCtxBuilder::new().inherit_stdio().build(),
                 http_client: client,
                 allowed_capabilities: capabilities,
+                fs_roots: Vec::new(),
             },
         );
 

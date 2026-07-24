@@ -1,0 +1,23 @@
+[package]
+name = "code-repo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Code-repo connector — local fs scan via fs-read capability, maps Dockerfile/lockfiles into CodeRepo/Library topology Facts (PRD-006 Sprint 1)"
+
+[lib]
+# cdylib 出 wasm32-wasip2 二进制;rlib 让 host 端 mapper 单测可链接。
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.component]
+package = "sre:inspection-code-repo@0.1.0"
+
+[package.metadata.component.target]
+path  = "../../../specs/wit"
+world = "connector-world"
+
+[dependencies]
+module-sdk  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+wit-bindgen = { workspace = true }

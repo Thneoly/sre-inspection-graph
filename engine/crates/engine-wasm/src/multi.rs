@@ -155,7 +155,28 @@ impl WasmRuntime {
             // 后,guest 即便调 get 也会被 host 拒回 Unauthorized。
             let capabilities: std::collections::HashSet<String> =
                 module.capabilities.iter().cloned().collect();
-            match WasmConnector::load(&wasm_path, capabilities).await {
+            // Phase 8.1: fs-read grant — canonicalize manifest fs_roots,跳过不存在的根
+            // (warn 不 fail,让 connector 仍加载,只是无 fs-read 访问)。
+            let fs_roots: Vec<PathBuf> = module
+                .fs_roots
+                .iter()
+                .flatten()
+                .filter_map(|r| {
+                    let p = PathBuf::from(r);
+                    match p.canonicalize() {
+                        Ok(c) => Some(c),
+                        Err(_) => {
+                            tracing::warn!(
+                                name = %module.name,
+                                root = %r,
+                                "fs_root not found, skipping"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+            match WasmConnector::load_with_roots(&wasm_path, capabilities, fs_roots).await {
                 Ok(c) => entries.push(ConnectorEntry {
                     name: module.name.clone(),
                     manifest: module.clone(),
