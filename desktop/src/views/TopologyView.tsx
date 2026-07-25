@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { Core, ElementDefinition, StylesheetCSS } from "cytoscape";
+import { Input, Select, Space, Typography } from "antd";
 
 /**
  * Phase 2.4 + 2.7 - 拓扑视图(吃 GraphResponse 契约)。
@@ -47,6 +48,9 @@ interface Props {
   graph: GraphResponse;
   /** Phase 3.6 - 点击节点回调(打开 NodeDetailPanel)。 */
   onSelectNode?: (nodeId: string) => void;
+  /** Phase 9 (dogfood fix) - health/risk 过滤(由父页 legend 点击驱动,见 TopologyPage)。 */
+  activeHealth?: string[];
+  activeRisk?: string[];
 }
 
 // resource_type -> cytoscape shape。无 fallback 时给 ellipse(K8s 原生类型外的兜底)
@@ -225,14 +229,43 @@ const STYLE: StylesheetCSS[] = [
       opacity: 0.7,
     },
   },
+  // Phase 9 (dogfood fix) —— 搜索时 dim 非匹配 / 高亮匹配
+  { selector: "node.dim, edge.dim", css: { opacity: 0.08 } },
+  { selector: "node.match", css: { "border-color": "#1f6feb", "border-width": "5px" } },
+  // 类型过滤:hidden 类型直接 display:none(等同 .hide(),但 @types 缺 show/hide)
+  { selector: "node.type-hidden", css: { display: "none" } },
 ];
 
-export function TopologyView({ graph, onSelectNode }: Props) {
+// Phase 9 (dogfood fix) —— health/risk legend 等级 + 切换辅助(导出给 TopologyPage legend 复用)
+export const HEALTH_LEVELS = ["critical", "warning", "normal", "unknown"] as const;
+export const RISK_LEVELS = ["high", "medium", "low", "unknown"] as const;
+export const toggleStr = (arr: string[], v: string): string[] =>
+  arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
+
+export function TopologyView({
+  graph,
+  onSelectNode,
+  activeHealth = [],
+  activeRisk = [],
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   // 最新回调存 ref,避免 cy.on 闭包捕获 stale prop。
   const onSelectRef = useRef(onSelectNode);
   onSelectRef.current = onSelectNode;
+
+  // Phase 9 (dogfood fix) —— 节点多时定位:按 label/id 子串搜索 + 按类型隐藏。
+  const [search, setSearch] = useState("");
+  const [hiddenTypes, setHiddenTypes] = useState<string[]>([]);
+  const types = useMemo(
+    () => Array.from(new Set(graph.nodes.map((n) => n.type))).sort(),
+    [graph]
+  );
+  // Select 用「显示类型」语义(默认全显):value = shown,deselect 进 hiddenTypes。
+  const shownTypes = useMemo(
+    () => types.filter((t) => !hiddenTypes.includes(t)),
+    [types, hiddenTypes]
+  );
 
   // 初始化 + 卸载
   useEffect(() => {
@@ -271,17 +304,90 @@ export function TopologyView({ graph, onSelectNode }: Props) {
     cy.fit(undefined, 30);
   }, [graph]);
 
+  // 搜索 + 类型过滤 -> hide / dim / 高亮匹配并居中
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.batch(() => {
+      // 类型过滤:hidden 类型加 .type-hidden(display:none)
+      cy.nodes().removeClass("type-hidden");
+      if (hiddenTypes.length) {
+        const sel = hiddenTypes.map((t) => `node[resourceType="${t}"]`).join(",");
+        cy.nodes(sel).addClass("type-hidden");
+      }
+      // 搜索 + health + risk 过滤:dim 非通过、高亮搜索匹配、dim 不沾通过节点的边
+      cy.nodes().removeClass("dim match");
+      cy.edges().removeClass("dim");
+      const q = search.trim().toLowerCase();
+      const hasSearch = q.length > 0;
+      const hasFilter =
+        hasSearch || activeHealth.length > 0 || activeRisk.length > 0;
+      if (hasFilter) {
+        const visible = cy.nodes().filter(":visible");
+        const searchMatches = hasSearch
+          ? visible.filter((n) => {
+              const label = String(n.data("label") ?? "").toLowerCase();
+              return label.includes(q) || n.id().toLowerCase().includes(q);
+            })
+          : null;
+        const keepers = visible.filter((n) => {
+          if (searchMatches && !searchMatches.contains(n)) return false;
+          if (activeHealth.length) {
+            const h = String(n.data("health") ?? "") || "unknown";
+            if (!activeHealth.includes(h)) return false;
+          }
+          if (activeRisk.length) {
+            const r = String(n.data("risk") ?? "") || "unknown";
+            if (!activeRisk.includes(r)) return false;
+          }
+          return true;
+        });
+        if (searchMatches) searchMatches.addClass("match");
+        cy.nodes().not(keepers).addClass("dim");
+        cy.edges()
+          .filter((e) => e.connectedNodes().intersect(keepers).length === 0)
+          .addClass("dim");
+        if (keepers.nonempty()) cy.animate({ center: { eles: keepers }, duration: 300 });
+      }
+    });
+  }, [graph, search, hiddenTypes, activeHealth, activeRisk]);
+
   return (
-    <div
-      ref={containerRef}
-      data-testid="topology-view"
-      style={{
-        width: "100%",
-        height: "480px",
-        border: "1px solid #d0d7de",
-        borderRadius: "6px",
-        background: "#fafbfc",
-      }}
-    />
+    <div>
+      <Space style={{ marginBottom: 8, flexWrap: "wrap" }} size="small">
+        <Input.Search
+          placeholder="搜索节点(label / id,如 cartservice)"
+          allowClear
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: 280 }}
+        />
+        <Select
+          mode="multiple"
+          placeholder="显示类型(默认全显)"
+          maxTagCount="responsive"
+          style={{ minWidth: 240 }}
+          value={shownTypes}
+          onChange={(v: string[]) =>
+            setHiddenTypes(types.filter((t) => !v.includes(t)))
+          }
+          options={types.map((t) => ({ label: t, value: t }))}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {graph.nodes.length} 节点 / {graph.edges.length} 边
+        </Typography.Text>
+      </Space>
+      <div
+        ref={containerRef}
+        data-testid="topology-view"
+        style={{
+          width: "100%",
+          height: "560px",
+          border: "1px solid #d0d7de",
+          borderRadius: "6px",
+          background: "#fafbfc",
+        }}
+      />
+    </div>
   );
 }

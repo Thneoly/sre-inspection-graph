@@ -4,7 +4,7 @@ import {
   Card, Table, Tag, Button, Modal, Form, Input, Select, message, Space,
 } from "antd";
 import {
-  listAlerts, recordAlert, resolveAlert,
+  listAlerts, recordAlert, resolveAlert, getGraph,
   type AlertEvent, type AlertSeverity,
 } from "../../api/client";
 
@@ -41,6 +41,9 @@ export default function AlertsView() {
 
 function RecordAlertModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const [form] = Form.useForm();
+  // 拓扑节点供 resource_ref 录入时搜索选择(避免手敲 resource_id 拼错 → 关联失败)
+  const { data: graph } = useQuery({ queryKey: ["graph"], queryFn: getGraph });
+  const nodeOptions = (graph?.nodes ?? []).map((n) => ({ value: n.id, label: `${n.type} · ${n.label}` }));
   const m = useMutation({
     mutationFn: (v: Record<string, unknown>) => recordAlert({
       alert_name: v.alert_name as string,
@@ -60,7 +63,21 @@ function RecordAlertModal({ open, onClose, onCreated }: { open: boolean; onClose
     <Modal open={open} title="录入告警" onCancel={onClose} confirmLoading={m.isPending} onOk={() => form.submit()}>
       <Form form={form} layout="vertical" onFinish={(v) => m.mutate(v)} initialValues={{ severity: "critical" }}>
         <Form.Item name="alert_name" label="alert_name" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item name="resource_ref" label="resource_ref" rules={[{ required: true }]}><Input placeholder="svc:order-api" /></Form.Item>
+        <Form.Item name="resource_ref" label="resource_ref" rules={[{ required: true }]}>
+          <Select
+            showSearch
+            allowClear
+            placeholder="选已有资源(搜索 id / label)"
+            options={nodeOptions}
+            filterOption={(input, option) => {
+              const q = input.toLowerCase();
+              return (
+                String(option?.value ?? "").toLowerCase().includes(q) ||
+                String(option?.label ?? "").toLowerCase().includes(q)
+              );
+            }}
+          />
+        </Form.Item>
         <Space wrap>
           <Form.Item name="severity" label="severity"><Select style={{ width: 140 }} options={(["critical", "warning"] as AlertSeverity[]).map((s) => ({ value: s, label: s }))} /></Form.Item>
           <Form.Item name="metric_name" label="metric_name"><Input /></Form.Item>

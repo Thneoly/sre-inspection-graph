@@ -6,7 +6,7 @@ import {
 } from "antd";
 import {
   listChangeEvents, recordChangeEvent, frequentChanges, changeEventImpact,
-  changeEventAlerts, changeEventRecoverySuggestion, executeRecovery,
+  changeEventAlerts, changeEventRecoverySuggestion, executeRecovery, getGraph,
   type ChangeEvent, type ChangeType,
 } from "../../api/client";
 
@@ -151,6 +151,9 @@ function RecordChangeModal({
   onCreated: () => void;
 }) {
   const [form] = Form.useForm();
+  // 拓扑节点供 target_resource_id 录入时搜索选择(避免手敲 resource_id 拼错 → 关联失败)
+  const { data: graph } = useQuery({ queryKey: ["graph"], queryFn: getGraph });
+  const nodeOptions = (graph?.nodes ?? []).map((n) => ({ value: n.id, label: `${n.type} · ${n.label}` }));
   const m = useMutation({
     mutationFn: (v: Record<string, unknown>) => recordChangeEvent({
       change_type: v.change_type as string,
@@ -172,7 +175,19 @@ function RecordChangeModal({
           <Select options={["configmap_updated", "secret_rotated", "deployment_rolled", "image_pushed"].map((t) => ({ value: t, label: t }))} />
         </Form.Item>
         <Form.Item name="target_resource_id" label="target_resource_id" rules={[{ required: true }]}>
-          <Input placeholder="cm:order-config / deploy:order-api / ..." />
+          <Select
+            showSearch
+            allowClear
+            placeholder="选已有资源(搜索 id / label)"
+            options={nodeOptions}
+            filterOption={(input, option) => {
+              const q = input.toLowerCase();
+              return (
+                String(option?.value ?? "").toLowerCase().includes(q) ||
+                String(option?.label ?? "").toLowerCase().includes(q)
+              );
+            }}
+          />
         </Form.Item>
         <Form.Item name="changed_by" label="changed_by"><Input /></Form.Item>
         <Form.Item name="source" label="source">

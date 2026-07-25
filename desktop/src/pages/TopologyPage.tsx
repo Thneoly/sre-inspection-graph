@@ -1,7 +1,15 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button, Card, Space, Tag, message, Alert, Typography } from "antd";
-import { TopologyView, type GraphResponse } from "../views/TopologyView";
+import {
+  TopologyView,
+  type GraphResponse,
+  HEALTH_LEVELS,
+  RISK_LEVELS,
+  healthFill,
+  riskBorder,
+  toggleStr,
+} from "../views/TopologyView";
 import NodeDetailPanel from "../components/Graph/NodeDetailPanel";
 import {
   getGraph, listConnectors, syncAllNow, proxyStatus, startKubectlProxy, stopKubectlProxy,
@@ -20,6 +28,8 @@ export default function TopologyPage() {
   const { data: connectors } = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   const { data: proxy } = useQuery({ queryKey: ["proxy-status"], queryFn: proxyStatus });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [activeHealth, setActiveHealth] = useState<string[]>([]);
+  const [activeRisk, setActiveRisk] = useState<string[]>([]);
 
   const syncM = useMutation({
     mutationFn: (cfg: string) => syncAllNow(cfg),
@@ -87,16 +97,41 @@ export default function TopologyPage() {
       {summary && (
         <Card title="拓扑视图" extra={<span>{summary.total_nodes} node · {summary.total_edges} edge · 点节点看详情</span>}>
           {graph && graph.nodes.length > 0 ? (
-            <TopologyView graph={graph} onSelectNode={(id) => setSelectedId(id)} />
+            <TopologyView
+              graph={graph}
+              onSelectNode={(id) => setSelectedId(id)}
+              activeHealth={activeHealth}
+              activeRisk={activeRisk}
+            />
           ) : (
             <Alert type="info" showIcon message="等待同步" description="点 Sync all now 后这里渲染 Cytoscape 拓扑;重启后会从 SQLite 恢复。" />
           )}
           {summary && (
             <Space wrap style={{ marginTop: 12 }}>
-              <Tag>health:</Tag>
-              {Object.entries(summary.health_counts).map(([k, v]) => <Tag key={k} color={k === "critical" ? "red" : k === "warning" ? "orange" : "green"}>{k}={v}</Tag>)}
-              <Tag>risk:</Tag>
-              {Object.entries(summary.risk_counts).map(([k, v]) => <Tag key={k} color={k === "high" ? "red" : k === "medium" ? "orange" : "green"}>{k}={v}</Tag>)}
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>Health(点击过滤):</Typography.Text>
+              {HEALTH_LEVELS.map((lvl) => {
+                const v = summary.health_counts[lvl] ?? 0;
+                const active = activeHealth.includes(lvl);
+                return (
+                  <Tag key={`h-${lvl}`} color={healthFill(lvl)}
+                    style={{ cursor: "pointer", opacity: active ? 1 : 0.4 }}
+                    onClick={() => setActiveHealth((a) => toggleStr(a, lvl))}>
+                    {lvl} {v}
+                  </Tag>
+                );
+              })}
+              <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>Risk(点击过滤):</Typography.Text>
+              {RISK_LEVELS.map((lvl) => {
+                const v = summary.risk_counts[lvl] ?? 0;
+                const active = activeRisk.includes(lvl);
+                return (
+                  <Tag key={`r-${lvl}`} color={riskBorder(lvl).color}
+                    style={{ cursor: "pointer", opacity: active ? 1 : 0.4 }}
+                    onClick={() => setActiveRisk((a) => toggleStr(a, lvl))}>
+                    {lvl} {v}
+                  </Tag>
+                );
+              })}
             </Space>
           )}
         </Card>

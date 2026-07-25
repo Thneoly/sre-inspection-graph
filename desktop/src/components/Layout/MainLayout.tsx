@@ -8,9 +8,10 @@ const { Text } = Typography;
 /**
  * Phase 3.6 - AntD Layout shell(移植自 reference `MainLayout.tsx`,精简到四视图)。
  *
- * Sider 菜单:Topology / Recovery / Changes / Reports(启用);Connectors / Fault-sim
- * 占位禁用(Phase 4+)。Content 走 react-router `<Outlet />`。Header 显示 app 名 +
- * 版本(react-query 拉一次)。
+ * Sider 菜单:Topology / Recovery / Changes / Reports + 5 巡视视图(node/config/access/image/alert)。
+ * (原 "Phase 4+" 占位组 Connectors / Fault-sim 已移除 —— dogfood:死占位 + dev 阶段标签
+ *   不该进产品 UI;Connectors UI 列 backlog,Fault-sim 重写期有意砍掉、real-data-only。)
+ * Content 走 react-router `<Outlet />`。Header 显示 app 名 + 版本(react-query 拉一次)。
  */
 export default function MainLayout({ version }: { version: string }) {
   const location = useLocation();
@@ -32,10 +33,6 @@ export default function MainLayout({ version }: { version: string }) {
           { key: "access-link", icon: <LinkOutlined />, label: <Link to="/access-link">Access Link</Link> },
           { key: "image-risk", icon: <PictureOutlined />, label: <Link to="/image-risk">Image Risk</Link> },
           { key: "alert-aggregation", icon: <AlertOutlined />, label: <Link to="/alert-aggregation">Alert Aggregation</Link> },
-          { type: "group", label: "Phase 4+", children: [
-            { key: "connectors", label: "Connectors", disabled: true },
-            { key: "faultsim", label: "Fault Sim", disabled: true },
-          ] },
         ]} />
       </Sider>
       <Layout>
