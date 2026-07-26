@@ -19,3 +19,4 @@ pub mod alerts;
 pub mod reports;
 pub mod reports_scheduler;
 pub mod views;
+pub mod connectors;

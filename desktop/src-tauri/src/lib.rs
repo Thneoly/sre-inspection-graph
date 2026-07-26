@@ -47,6 +47,7 @@ use commands::views::{
     access_link, alert_aggregation, config_impact, image_risk, list_resources_by_types, node_impact,
 };
 use commands::wasm::{list_connectors, sync_all_now};
+use commands::connectors::{get_connectors_status, seed_connector_statuses, ConnectorStatus};
 use commands::reports_scheduler::{
     create_subscription, delete_subscription, get_subscription, list_sent_emails,
     list_subscriptions, trigger_subscription_now, update_subscription,
@@ -82,11 +83,12 @@ fn resolve_storage_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("sre-graph.sqlite"))
 }
 
-/// 在 builder 之前同步加载 WasmRuntime。
+/// 在 builder 之前同步加载 WasmRuntime,并从 manifest 播种 connector 状态注册表。
 ///
 /// 失败 fallback 到 empty runtime,而不是 panic —— 用户首跑可能 modules 还没 build,
-/// 让 UI 起来但 connector 列表空,前端提示 build 步骤。
-fn load_wasm_runtime() -> WasmRuntime {
+/// 让 UI 起来但 connector 列表空,前端提示 build 步骤。返 `(runtime, statuses)`:
+/// manifest 解析成功即播种(即便 runtime 加载全失败,模块表仍反映 manifest + 全部 not-loaded)。
+fn load_wasm_runtime() -> (WasmRuntime, Vec<ConnectorStatus>) {
     let modules_root = resolve_modules_root();
     let manifest_path = modules_root.join("manifest.toml");
     let toml_text = match std::fs::read_to_string(&manifest_path) {
@@ -98,7 +100,7 @@ fn load_wasm_runtime() -> WasmRuntime {
                 "manifest.toml not found — desktop will start with empty wasm runtime; \
                  run `cd modules && cargo wasi-build` first"
             );
-            return WasmRuntime::empty(modules_root);
+            return (WasmRuntime::empty(modules_root), Vec::new());
         }
     };
     let manifest = match ManifestFile::from_toml_str(&toml_text) {
@@ -109,10 +111,10 @@ fn load_wasm_runtime() -> WasmRuntime {
                 error = %e,
                 "manifest.toml parse failed — desktop will start with empty wasm runtime"
             );
-            return WasmRuntime::empty(modules_root);
+            return (WasmRuntime::empty(modules_root), Vec::new());
         }
     };
-    match tauri::async_runtime::block_on(WasmRuntime::from_manifest(&modules_root, &manifest)) {
+    let rt = match tauri::async_runtime::block_on(WasmRuntime::from_manifest(&modules_root, &manifest)) {
         Ok(rt) => {
             tracing::info!(
                 modules_root = %modules_root.display(),
@@ -133,7 +135,10 @@ fn load_wasm_runtime() -> WasmRuntime {
             );
             WasmRuntime::empty(modules_root)
         }
-    }
+    };
+    // 播种状态表:从完整 manifest 建(禁用/失败模块也入表),runtime 决定 loaded/load_error。
+    let statuses = seed_connector_statuses(&manifest, &rt);
+    (rt, statuses)
 }
 
 /// Tauri shared state.
@@ -171,6 +176,10 @@ pub struct AppState {
     /// 防重启录历史 burst + 时间戳误导)。首次 sync 后置 true,后续 sync 跑 detect_changes。
     pub first_sync_done: std::sync::atomic::AtomicBool,
     pub handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor>,
+    /// Phase 6 connectors-ui - connector/handler 可观测状态注册表。启动从 manifest 播种
+    /// (禁用/失败模块也入表),每次 sync(手动 + 后台 loop)在 run_sync 内刷新
+    /// last_synced_at/fact_count/errors/duration。前端 ConnectorsPage 读此表。
+    pub connector_statuses: tokio::sync::Mutex<Vec<ConnectorStatus>>,
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
@@ -183,7 +192,7 @@ pub fn run() {
         )
         .try_init();
 
-    let runtime = load_wasm_runtime();
+    let (runtime, connector_statuses) = load_wasm_runtime();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -283,6 +292,7 @@ pub fn run() {
                 sync_loop_handle: Mutex::new(None),
                 first_sync_done: std::sync::atomic::AtomicBool::new(false),
                 handler_executor,
+                connector_statuses: tokio::sync::Mutex::new(connector_statuses),
             });
             // Phase 4.3 - 起调度循环(60s tick);存 handle 供 RunEvent::Exit abort
             let app_handle = app.handle().clone();
@@ -366,6 +376,8 @@ pub fn run() {
             image_risk,
             list_resources_by_types,
             alert_aggregation,
+            // Phase 6 - connectors-ui (connector 运行时观测)
+            get_connectors_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

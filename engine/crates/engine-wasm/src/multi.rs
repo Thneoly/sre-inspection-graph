@@ -268,7 +268,8 @@ impl WasmRuntime {
         for entry in &self.entries {
             let cfg = select_config(entry.manifest.config.as_ref(), config_json);
             let outcome = entry.run_sync(&cfg).await;
-            total_duration_ms = total_duration_ms.saturating_add(outcome.duration_ms);
+            let duration_ms = outcome.duration_ms;
+            total_duration_ms = total_duration_ms.saturating_add(duration_ms);
             total_errors = total_errors.saturating_add(outcome.errors.len() as u64);
 
             let fact_count = outcome.facts.len();
@@ -280,6 +281,7 @@ impl WasmRuntime {
                 name: entry.name.clone(),
                 fact_count,
                 errors,
+                duration_ms,
             });
         }
 
@@ -324,6 +326,9 @@ pub struct ConnectorSyncStatus {
     pub fact_count: usize,
     /// 本次的 non-fatal 错误(guest 端 errors 列表)。
     pub errors: Vec<String>,
+    /// 本次 guest 自报耗时(毫秒)。Phase 6 connectors-ui:per-connector 计时,
+    /// 之前只有 `SyncSummary.total_duration_ms` 聚合值,单 connector 计时被丢。
+    pub duration_ms: u64,
 }
 
 /// `sync_all` 的聚合返回。

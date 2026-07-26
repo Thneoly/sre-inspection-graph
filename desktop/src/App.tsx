@@ -5,6 +5,7 @@ import TopologyPage from "./pages/TopologyPage";
 import RecoveryPage from "./pages/RecoveryPage";
 import ChangesPage from "./pages/ChangesPage";
 import ReportsPage from "./pages/ReportsPage";
+import ConnectorsPage from "./pages/ConnectorsPage";
 import NodeImpactPage from "./pages/NodeImpactPage";
 import ConfigImpactPage from "./pages/ConfigImpactPage";
 import AccessLinkPage from "./pages/AccessLinkPage";
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/recovery" element={<RecoveryPage />} />
         <Route path="/changes" element={<ChangesPage />} />
         <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/connectors" element={<ConnectorsPage />} />
         <Route path="/node-impact" element={<NodeImpactPage />} />
         <Route path="/config-impact" element={<ConfigImpactPage />} />
         <Route path="/access-link" element={<AccessLinkPage />} />

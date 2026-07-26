@@ -71,6 +71,8 @@ pub struct ConnectorStatusDto {
     pub name: String,
     pub fact_count: usize,
     pub errors: Vec<String>,
+    /// 本次 guest 自报耗时(毫秒)。Phase 6 connectors-ui。
+    pub duration_ms: u64,
 }
 
 /// `sync_all_now` 的返回。
@@ -151,6 +153,17 @@ pub async fn run_sync(
     config_json: &str,
 ) -> Result<SyncSummaryDto, String> {
     let summary = state.runtime.sync_all(config_json).await;
+
+    // Phase 6 connectors-ui - 刷新 connector 状态注册表(此处更新覆盖手动 sync_all_now
+    // 与后台 sync_loop 两路 —— run_sync 是共用管线)。last_synced_at/fact_count/
+    // errors/duration 回写;handler/禁用/失败模块不在 per_connector 里 → 保持 None。
+    // 借用 summary.per_connector(下方仍要 move 用),锁内不跨 await。
+    crate::commands::connectors::update_connector_statuses(
+        &state.connector_statuses,
+        &summary.per_connector,
+        engine_changes::iso::now_iso(),
+    )
+    .await;
 
     // 1. raw facts 落 append-only 真相源
     state
@@ -269,6 +282,7 @@ pub async fn run_sync(
             name: s.name,
             fact_count: s.fact_count,
             errors: s.errors,
+            duration_ms: s.duration_ms,
         })
         .collect();
     Ok(SyncSummaryDto {
@@ -352,6 +366,7 @@ mod tests {
                 name: "k8s-mini".into(),
                 fact_count: 3,
                 errors: vec!["nope".into()],
+                duration_ms: 42,
             }],
             total_errors: 1,
             total_duration_ms: 42,
@@ -368,6 +383,7 @@ mod tests {
         assert_eq!(j["per_connector"][0]["name"], "k8s-mini");
         assert_eq!(j["per_connector"][0]["fact_count"], 3);
         assert_eq!(j["per_connector"][0]["errors"][0], "nope");
+        assert_eq!(j["per_connector"][0]["duration_ms"], 42);
         assert_eq!(j["changes"]["nodes_upserted"], 2);
         assert_eq!(j["changes"]["nodes_removed"], 1);
         assert_eq!(j["changes"]["edges_upserted"], 1);

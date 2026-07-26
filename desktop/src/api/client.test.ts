@@ -10,7 +10,7 @@ import {
   recordChangeEvent, executeRecovery, listRecoveryExecutions, listChainTemplates,
   recordAlert, changeEventRecoverySuggestion,
   generateReport, listReports, createSubscription, triggerSubscriptionNow, listSentEmails,
-  clearReports,
+  clearReports, getConnectorsStatus,
 } from "./client";
 
 const mockedInvoke = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -131,5 +131,11 @@ describe("api/client invoke wrappers (Phase 3.6)", () => {
     mockedInvoke.mockResolvedValueOnce(3);
     await clearReports();
     expect(mockedInvoke).toHaveBeenCalledWith("clear_reports");
+  });
+
+  it("getConnectorsStatus sends get_connectors_status with no args (Phase 6)", async () => {
+    mockedInvoke.mockResolvedValueOnce([]);
+    await getConnectorsStatus();
+    expect(mockedInvoke).toHaveBeenCalledWith("get_connectors_status");
   });
 });

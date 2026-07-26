@@ -33,6 +33,7 @@ export interface ConnectorStatusDto {
   name: string;
   fact_count: number;
   errors: string[];
+  duration_ms: number;
 }
 export interface ChangeSummaryDto {
   nodes_upserted: number;
@@ -52,6 +53,30 @@ export async function listConnectors(): Promise<ConnectorInfo[]> {
 }
 export async function syncAllNow(configJson = "{}"): Promise<SyncSummaryDto> {
   return invoke<SyncSummaryDto>("sync_all_now", { configJson });
+}
+
+// ===== Connectors UI (Phase 6) =====
+// 单模块(connector/handler)可观测状态:静态 manifest 字段 + 最近一次 sync 运行时字段。
+// 对齐 desktop commands::connectors::ConnectorStatus。`loaded` ≠ `enabled`:
+// enabled 是 manifest 开关,loaded 是真进了 runtime(失败模块 enabled 仍 true)。
+export interface ConnectorStatus {
+  name: string;
+  kind: string;
+  version: string;
+  enabled: boolean;
+  loaded: boolean;
+  capabilities: string[];
+  sync_interval_seconds: number;
+  config: Record<string, unknown> | null;
+  fs_roots: string[];
+  load_error: string | null;
+  last_synced_at: string | null;
+  last_fact_count: number | null;
+  last_errors: string[];
+  last_duration_ms: number | null;
+}
+export async function getConnectorsStatus(): Promise<ConnectorStatus[]> {
+  return invoke<ConnectorStatus[]>("get_connectors_status");
 }
 export async function getTopology(): Promise<FactDto[]> {
   return invoke<FactDto[]>("get_topology");

@@ -28,7 +28,9 @@ pub mod multi;
 pub mod handler_executor;
 
 pub use handler_executor::WasmHandlerExecutor;
-pub use multi::{select_config, ConnectorEntry, HandlerEntry, SyncSummary, WasmRuntime};
+pub use multi::{
+    select_config, ConnectorEntry, ConnectorSyncStatus, HandlerEntry, SyncSummary, WasmRuntime,
+};
 pub use runtime::{ExecError, ExecResult, HostFact, SyncOutcome, WasmConnector, WasmHandler};
 
 /// 模块声明使用的 WASI ABI 版本。
