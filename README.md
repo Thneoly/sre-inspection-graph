@@ -1,247 +1,165 @@
-# SRE 云原生巡检图谱平台
+# SRE 巡检图谱平台 · SRE Inspection Graph
 
-基于 Neo4j 四层模型的云原生资源巡检 + 故障模拟 + **恢复动作引擎(含审批流 + 一键回滚 + 跨集群编排 + 自动验证 + 动作链)** + **OpenTelemetry Demo 真实数据接入(PRD-004)** 平台。
+> 一个人**从 Rust 内核到 WebAssembly 沙箱、Tauri 桌面端、React UI 全栈设计与实现**的云原生「**感知 → 定位 → 恢复**」控制面:把分散的 K8s 拓扑、调用链、变更、代码、指标汇成一张资源图谱,让 SRE 在一个桌面端上完成故障定位与恢复编排。
 
-## 架构
+**Rust · WebAssembly Component Model · Tauri 2.x · React 18 · SQLite/Parquet/Arrow**
 
-```
-L1 资源类型图谱  →  14 类型节点 + 35 关系
-L2 资源实例图谱  →  应用/组件/Deployment/Pod/中间件 30+ 实例
-L3 动态观测层    →  MetricQuery/MetricSnapshot + AlertEvent + ChangeEvent
-L4 巡检结果层    →  InspectionRun/Rule/Finding
-+  故障模拟引擎   →  FaultScenario + 时间线推进 + 数据维度注入
-+  恢复动作引擎   →  RecoveryAction + Dry-run + 审批流 + 回滚 (PRD-001) +
-                    跨集群编排 + 执行后自动验证 + 动作链 (Phase 2 余项)
-+  变更事件追踪   →  ChangeEvent + 故障关联查询 + 前端时间线 + Neo4j 双写 + K8s watcher + webhook + 频率告警 + CORRELATED_WITH (PRD-002)
-+  实数据 connector → K8s + Prometheus + Jaeger + flagd + K8s events (PRD-004)
-+  自检报告引擎   →  Jinja2 Markdown + 3 模板 + 邮件订阅 + APScheduler (PRD-003)
-```
+---
 
-## 技术栈
+## TL;DR
 
-- **图数据库**: Neo4j 5 (Docker)
-- **后端**: Python 3.12 + FastAPI + Neo4j Driver + uv
-- **前端**: React 18 + TypeScript + Cytoscape.js + Ant Design 5 + Vite
-- **部署**: Docker Compose
+- **它是什么**:一个桌面端的 SRE 控制面。WASM 化的 connector 从 K8s/Prometheus/Jaeger/代码仓实时构建资源图谱(Identity Resolver 把多源拓扑合并成单一真相),上层提供 6 个图遍历巡检视图、变更追踪、恢复动作引擎(dry-run → 审批 → 回滚 → 自动验证)、自检报告。
+- **它的卖点不是规模**:刻意按**桌面单机、数据不出本机**设计(对照 k9s / Lens)。价值在**架构深度与工程判断** —— 三层数据契约、不可信插件的 capability 沙箱、对照 472 测试 Python 基线的行为级 contract-test 复刻。
+- **现状**:v0.4.0,与原 Python 实现达成 feature parity;在本地 kubeadm 集群的 OpenTelemetry Demo 上做了真数据验证。
 
-## 命令速查
+## 解决什么问题
 
-| 命令 | 作用 |
-|------|------|
-| `make setup` | 安装后端 (uv) + 前端 (npm) 依赖 |
-| `make mock-data` | 生成模拟 CSV/Cypher |
-| `make infra` | 仅启动基础服务 (Neo4j + 数据导入) |
-| `make infra_up` | 恢复 Neo4j（不重导数据） |
-| `make infra_down` | 停止 Neo4j |
-| `make up` | 一键启动 Neo4j + API + 前端 |
-| `make down` | 停止所有服务 |
-| `make dev-api` | 本地热重载启动 API（自动清理端口占用） |
-| `make dev-api-kill` | 强制释放 8000 端口 |
-| `make dev-frontend` | 本地 HMR 启动前端 |
-| `make test` | 运行全部测试 |
-| `make test-cov` | 后端测试 + 覆盖率 |
-| `make clean` | 清理容器、数据卷、生成文件 |
+真实 SRE 场景里,定位一次故障要在五六个割裂的系统之间来回跳:拓扑看 Grafana、调用链看 Jaeger、变更看 Argo/Git、指标看 Prometheus、恢复靠手敲 kubectl。**它们之间没有一张共享的资源图谱** —— 于是「这个挂掉的 Pod 影响了哪些业务」「这次变更和这个告警有没有关系」「恢复一个 Deployment 会炸到谁」全靠人脑拼接。
 
-## 快速开始
+这个项目把这些问题收敛到**一张图 + 一套动作引擎**:同一个 canonical 资源身份贯穿拓扑、变更、调用、代码、恢复,任何一处的信号都能在图上找到对应位置并据此行动。
 
-```bash
-make setup && make mock-data && make up
+## 架构(一个人打穿的全栈纵切)
 
-# 前端  http://localhost:3000
-# API   http://localhost:8000/docs
-# Neo4j http://localhost:7474 (neo4j / sre-inspection)
-```
+```mermaid
+flowchart TB
+  subgraph UI["前端 · React 18 + AntD 6 + Cytoscape + react-query(~3.3k LOC TS)"]
+    V["6 巡检视图 + 恢复/变更/报告/connector 页"]
+  end
+  subgraph DESKTOP["Tauri 2.x 后端 · Rust(~3.4k LOC)"]
+    CMD["薄命令层 + AppState<br/>托管 kubectl proxy + 调度/SMTP"]
+  end
+  subgraph ENGINE["Engine 内核 · Rust · 8 业务 crate(~20k LOC)"]
+    ID["identity resolution<br/>(correlation-key 合并多源拓扑)"]
+    REC["recovery 动作引擎<br/>(dry-run/审批/回滚/自动验证)"]
+    CHG["change 变更追踪<br/>(传播 BFS / 频率告警)"]
+    REP["reports 自检报告<br/>(3 模板 + 订阅调度)"]
+  end
+  subgraph WASM["WASM Runtime · wasmtime host"]
+    ORCH["多 connector 编排 + capability 注入(deny-by-default)"]
+  end
+  subgraph GUESTS["Connector · WASM guests · wasm32-wasip2(~5.4k LOC)"]
+    C["k8s / prometheus / jaeger / k8s-events / flagd / code-repo"]
+  end
+  subgraph SRC["数据源"]
+    K8S["K8s API"]
+    JAE["Jaeger"]
+    PROM["Prometheus"]
+    FS["本地代码仓(fs-read)"]
+  end
+  STORE[("SQLite·latest 拓扑<br/>Parquet·历史归档<br/>Arrow·批契约")]
 
-## 开发模式
-
-```bash
-make infra          # 终端1: Neo4j
-make dev-api        # 终端2: API (热重载)
-make dev-frontend   # 终端3: 前端 (HMR)
-```
-
-## 7 个巡检视图
-
-| 视图 | 路由 | 说明 |
-|------|------|------|
-| 应用拓扑 | `/topology` | 全链路: Region→AZ→Cluster→NS→Deploy→Pod→Container + 中间件 |
-| 访问链路 | `/access-link` | 入口追踪: ELB→Ingress→Gateway→Service→Pod |
-| 节点影响 | `/node-impact` | Node 故障爆炸半径 |
-| 配置影响 | `/config-impact` | Secret/ConfigMap 变更影响面 |
-| 镜像风险 | `/image-risk` | 镜像漏洞影响传播 |
-| 告警归并 | `/alert-aggregation` | 多告警按应用归并 |
-| 审批中心 | `/recovery/approvals` | medium/high_risk 动作的审批操作面板 |
-| 恢复历史 | `/recovery/history` | 已执行 / 已回滚的动作审计历史 + 验证状态 + 集群 |
-| 恢复链   | `/recovery/chains` | 多步恢复编排:发起 / 监控 / 中止 + 失败策略可视 |
-| 变更时间线 | `/change-timeline` | 应用级变更事件时间线 + 影响范围 + Git/CI + YAML diff + 关联告警 (PRD-002) |
-| 报告中心 | `/reports` | 自检报告生成 + 下载 + 邮件订阅 (PRD-003) |
-| Connector 状态 | `/connectors` | 5 个数据源 connector 健康检查 + 手动同步 (PRD-004) |
-
-## 恢复动作引擎(PRD-001)
-
-8 个动作覆盖全部资源类型,运维点击 → dry-run 预演 → (可选审批) → 执行 → 出问题一键回滚。
-
-| 动作 | 风险 | 目标 | 是否要审批 |
-|---|---|---|---|
-| `scale_deployment` | low | Deployment | 否 |
-| `kill_query` | low | MySQL | 否 |
-| `restart_service` | low | Service | 否 |
-| `restart_pod` | medium | Pod | 是 |
-| `refresh_secret` | medium | Secret | 是 |
-| `clear_cache` | medium | Redis | 是 |
-| `rollback_deployment` | high | Deployment | 是 |
-| `drain_node` | high | KubernetesNode | 是 |
-
-**生命周期**: `pending → dry_run_ok → awaiting_approval → approved/rejected → executing → succeeded/failed → rolled_back`
-
-**关键设计**:
-- low_risk → 同步执行 (HTTP 200);medium/high → 创建 ApprovalRequest (HTTP 202)
-- `approver_team` 从 `target.owner_team` 派生,沿 `BELONGS_TO` 上溯到 Component / Application(软记录,不强制 RBAC)
-- 审批 24h TTL,**读时检查**(无后台 cron)
-- 一键回滚:`POST /executions/{id}/rollback` 直接走反向 handler,**不再二次审批**(原动作已审批,反向是"撤销")
-- handler 双模式:`RECOVERY_HANDLER_MODE=mock`(默认,改 DSS 孪生)/ `real`(调真实 K8s/MySQL/Redis API,成功后才更新 DSS,Phase 2)
-
-**端到端验证**:
-```bash
-make dev-api &                    # 终端 1
-bash scripts/sprint3_e2e_test.sh  # 终端 2 — 8 步检查 high_risk 审批流 + 回滚
+  UI <-->|Tauri IPC · 进程内 JSON,无 HTTP server| DESKTOP
+  DESKTOP --> ENGINE
+  ENGINE --> ORCH
+  ORCH <-->|WIT 契约| GUESTS
+  GUESTS -->|http-client capability · host 注入| K8S
+  GUESTS --> JAE
+  GUESTS --> PROM
+  GUESTS -->|fs-read capability · path-root allow-list| FS
+  ENGINE -->|Fact → resolve → 物化| STORE
+  STORE -->|get_graph 读取| DESKTOP
 ```
 
-**Phase 2 余项**(3 件,补 PRD §9 原始范围):
+**关键边界**:UI ↔ Rust 走 Tauri 进程内 IPC(刻意不起 HTTP server);WASM connector 是**不可信插件**,只能通过 host 注入的 `http-client` / `fs-read` capability 访问外界,host 端 deny-by-default;所有下游只认 canonical `Fact`(7 字段)+ Arrow Schema。
 
-- **跨集群恢复编排**:6 个 K8s handler 按 `target.cluster_id` 路由到对应 kubeconfig,而非固定 active_cluster。`resolve_cluster_id` 优先 DSS prop / 兜底 `target_id` 第二段;`k8s_ref` 返三元组 `(cluster_id, namespace, name)`;ensure_kube_loaded 切换时 reset+reload kubeconfig
-- **动作执行后自动验证**:每个 action 注册 verifier(8 个:scale/restart_pod/restart_service/refresh_secret/rollback/drain + kill_query/clear_cache 标 not_supported)。succeeded 后跑 predicate 查 DSS;**verify_failed + 有 rollback_action_id → 自动反向回滚**;反向 execution 自身不再 verify 防递归。`POST /executions/{id}/verify` 主动重验(不触发 auto rollback)。`ExecuteRequest.verify=false` 可关闭
-- **动作链 / 编排器**:声明式 `CHAIN_TEMPLATES`(safe_rollback_deployment / graceful_refresh_secret / drain_node_safely)+ 3 失败策略(stop / rollback_all / continue);链级单次审批(任一步 medium/high → 整链审批一次,避免每步卡死);step execution.chain_id / chain_step_index 反向关联;5 端点(templates / execute / list / get / abort)
+## 核心能力
 
-## OpenTelemetry Demo 真实数据接入(PRD-004)
+**巡检图谱(6 个图遍历视图)** —— 从起点 BFS、depth 限深、edge-type 白名单过滤的通用 `subgraph` 原语支撑:
+应用拓扑 · 访问链路 · 节点影响(Node 故障爆炸半径)· 配置影响(Secret/ConfigMap 传播)· 镜像风险 · 告警聚合。
 
-平台从 mock CSV 升级为接入 vm 集群上跑的 **OpenTelemetry Demo 0.32.0**(14 微服务 + Postgres/Valkey/Kafka/flagd)作为第一个真实数据源。5 个 connector 30 秒轮询写入 DSS:
+**恢复动作引擎(PRD-001 复刻)** —— 8 个动作(scale / restart_pod / rollback_deployment / refresh_secret / drain_node / kill_query / restart_service / clear_cache)。生命周期:`pending → dry_run_ok → awaiting_approval → executing → succeeded/failed → rolled_back`。一键回滚跳过二次审批;执行后自动验证,verify_failed 触发自动反向回滚;支持多步动作链 + 3 种失败策略。桌面单机确认门审批语义。
 
-| Connector | 拉什么 | 写入 |
+**变更追踪(PRD-002 复刻)** —— 4 类变更(configmap/secret/deployment/image),反向 BFS 算传播影响面,YAML diff(剔 10 个 K8s 噪声字段),过频变更自动升 severity,ChangeEvent ↔ AlertEvent 时间窗关联,k8s poll-diff 自动录入。
+
+**Identity Resolver** —— 多源拓扑合并:同一资源被 K8s API 和代码仓用不同 ID 描述时(如 `image:{c}:{ns}:{ref}` vs `image-ref:<ref>`),经共享 correlation key 合并成单一节点,边端点自动 remap。`resolve()` 委托 `facts_to_graph` 前做 pre-rewrite 合并,零 schema 改(correlation_keys 走 attributes_json)。
+
+**自检报告(PRD-003 复刻)** —— 3 个模板(application_health / cluster_overview / incident_report),Tera 渲染 Markdown,cron 订阅调度 + SMTP 发送 + .md 附件,SQLite 持久化跨重启。
+
+**WASM connector 沙箱(PRD-004 + PRD-006)** —— 6 个数据源 connector,经 deny-by-default capability 访问数据源;首个非网络 capability `fs-read`(path-root allow-list,canonicalize 防目录穿越/符号链接逃逸)。
+
+## 为什么这么设计(4 个架构决策)
+
+> 这些是面试时会被追问的判断点,每个都是「有多个选项 → 选了一个 → 因为……」。
+
+1. **整块 supervised rewrite,而不是 Strangler Fig 渐进迁移**。原 Python 实现(FastAPI + Neo4j,12.7k LOC / 472 测试)降为 read-only 行为 oracle。理由:副业项目无零停机需求,而桥接「图数据库 + REST」与「桌面 + WASM + 进程内 IPC」两套架构的胶水代价,超过重写。重写期用 contract-test 移植保证行为不漂移。
+
+2. **Tauri 桌面优先,而不是 SaaS Web**。对照 k9s / Lens:**数据不出本机**,无租户/认证/多租户复杂度;UI ↔ 后端走进程内 IPC,不起 HTTP server(也由此砍掉 webhook 这类需要入站连接的能力,变更入口改为 poll-diff + 手动录入)。代价:多人协作/远程访问留后续。
+
+3. **WebAssembly Component Model + deny-by-default capability**。connector 是「会跑用户指定代码 + 访问生产集群凭据」的不可信插件,必须沙箱化。host 用 wasmtime 加载 wasm32-wasip2 guest,`http-client` / `fs-read` 由 host 注入并按 allow-list 逐次放行;`fs-read` 第一天就强制 path-root 校验(canonicalize + `starts_with`,防 `../../etc/passwd` 与符号链接逃逸)。三层数据契约固化边界:WIT(WASM 边界)/ Tauri commands(UI 边界)/ Arrow+SQLite+Parquet(存储)。
+
+4. **Identity Resolver 延后到「有真数据冲突」才落地**。Phase 6 本可以用合成数据演示拓扑合并,但合成冲突是假的 —— 会让整套仲裁逻辑对着不存在的问题空转。于是 deferred,直到 Phase 8 code-repo 给出真实冲突源(repo 的 `BUILDS` 边指向的镜像与 K8s 部署镜像用不同 ID)才落地 correlation-key 合并。**不为演示造合成问题** —— 这是这个项目里最显工程判断的一处。
+
+## 技术栈与代码构成
+
+| 层 | 技术 | 规模 |
 |---|---|---|
-| `k8s` | Deployment/Pod/Service/ConfigMap/Secret(kubernetes-asyncio) | DataNode + DataEdge,17 业务 service 自动建模 |
-| `prometheus` | OTel Collector spanmetrics(p99 / error_rate / request_rate) | MetricSnapshot,自动推导 component health(green/yellow/red) |
-| `jaeger` | trace span ChildOf 引用 | CALLS 边,call_count_5m ≥ 5 阈值过滤 |
-| `flagd` | feature flag state diff | ChangeEvent(source=flagd) |
-| `k8s_events` | ScalingReplicaSet / SuccessfulRescale | ChangeEvent(deployment_rolled) |
+| Engine 内核 | Rust,8 业务 crate(core / wasm / identity / recovery / changes / reports / storage / cli) | ~20k LOC |
+| WASM connector | Rust guests,`wasm32-wasip2` + module-sdk | ~5.4k LOC,6 connector |
+| Tauri 后端 | Rust,薄命令层 + AppState + 托管 kubectl proxy + 调度/SMTP | ~3.4k LOC |
+| 前端 | React 18 + TypeScript + AntD 6 + Cytoscape + @tanstack/react-query | ~3.3k LOC |
+| 测试 | Rust 单测 + e2e + 前端 vitest | **517 Rust** + 21 vitest |
 
-**控制端点**(`/api/v1/connectors`):
-- `GET /status` — 5 个 connector 整体健康
-- `POST /{name}/sync-now` — 手动触发一次 sync,返回 SyncResult
+**手写代码合计 ~32k LOC**(Rust ~28.7k + TS ~3.3k)。另有 `engine-bindings`(wasmtime bindgen 生成的 host 胶水,不计入手写)。
 
-**8 个 OTel demo fault scenarios**(`backend/app/recovery/scenarios/otel_demo_scenarios.py`):flag 名 → 目标 component → 推荐 PRD-001 action。涵盖 productCatalogFailure / cartFailure / paymentServiceFailure / kafkaQueueProblems 等。
+关键 Rust crate:`engine-core`(canonical Fact + Arrow Schema,所有下游只认它)· `engine-identity`(resolve/diff/topology_to_graph + correlation-key 合并 + health_merge)· `engine-recovery`(action_defs/cascade/execution/verifiers/chains)· `engine-changes`(ChangeEvent/propagation/yaml_diff/frequency/alert 关联)· `engine-reports`(3 模板 + 订阅调度)· `engine-wasm`(wasmtime host + capability 注入 + 多 connector 编排)· `engine-storage`(Storage trait + SQLite + Parquet)。
 
-**Phase 2 能力**:
-
-- **AlertEvent DSS 模型 + AlertRule 生成**:从 Prometheus QueryDef 阈值生成 AlertRule(3 query × 2 sev = 6 rule),connector 检测 critical/warning breach 自动产 AlertEvent(DSS 主存 + Neo4j dual-write)。`GET /api/v1/alerts` / `GET /api/v1/alerts/rules`
-- **connector → AlertEvent ↔ ChangeEvent 贯通**:AlertEvent 落地后,PRD-002 的 record_change 自动关联窗口内变更(CORRELATED_WITH 边),形成"指标越线 → 告警 ↔ 变更"双向可查链
-- **flagd 接入 scenario_for_flag**:flag 翻转产 ChangeEvent 时富化 recommended_action / target_component,贯通 flag→变更→恢复动作链
-- **前端 Connector 健康检查页面**(`/connectors`):5 个 connector 运行状态 / 最近同步产出 / 24h 错误计数 / 手动 sync-now(watch 模式只读)
-
-**部署 + 验证**:
-```bash
-# 1. vm 集群安装 OTel demo(锁定 chart 0.32.0)
-bash scripts/otel_demo/deploy.sh
-
-# 2. 起三个 port-forward(Prometheus / Jaeger / flagd)
-kubectl -n otel-demo port-forward svc/otel-demo-prometheus-server 19090:9090
-kubectl -n otel-demo port-forward svc/otel-demo-jaeger-query 16686:16686
-kubectl -n otel-demo port-forward svc/otel-demo-flagd 8013:8013
-
-# 3. 起 API(带正确 env)
-KUBECONFIGS=vm-cluster=$HOME/.kube/vm-config \
-PROMETHEUS_URL=http://localhost:19090 \
-JAEGER_URL=http://localhost:16686/jaeger/ui \
-FLAGD_URL=http://localhost:8013 \
-make dev-api
-
-# 4. E2E
-bash scripts/otel_demo_e2e.sh   # 7 步检查 5 connector + scenario 列表
-```
-
-## 故障模拟（独立页面）
-
-访问 `/simulation` 或从拓扑页右上角「⚡ 故障模拟」进入。
-
-- **7 种故障类型**: CPU 飙升 / 内存泄漏 / Pod CrashLoop / 节点磁盘压力 / Service 无后端 / MySQL 慢查询 / Redis 不可达
-- **目标校验**: 自动过滤兼容目标（如 CPU 飙升只能注入到 Pod，不能注入到 MySQL）
-- **爆炸半径 + 多级级联**: 注入节点故障后，blast radius 波及关联节点，cascade 沿依赖链向上传播
-- **每类型独立阈值**: 不同资源类型的容错率和告警延迟不同（如 Application 比 Pod 更"扛"）
-- **推进机制**: 每次点击「推进下一阶段」固定前进 1 个阶段，阶段进度可见（如 2/6）
-- **数据持久化**: 故障场景持久化到 Neo4j，uvicorn 重启后自动恢复活跃故障
-
-## 变更事件追踪(PRD-002)
-
-记录"什么时间什么资源被谁怎么改了",并提供故障关联查询 + 影响范围预演 + 从变更一键调起恢复。
-
-**Phase 2 能力**:
-
-- **K8s watcher**: 真 `watch.Watch().stream()` 长连接实时监听 ConfigMap/Secret/Deployment 变更 → ChangeEvent(含结构化 YAML diff)。`K8S_WATCH_ENABLED=1` 开启(默认关)
-- **Webhook 接收**: `POST /api/v1/webhooks/argocd` → deployment_rolled(带 commit_sha/git_repo);`POST /api/v1/webhooks/harbor` → image_pushed
-- **Git/CI 关联**: ChangeEvent 带 commit_sha / pipeline_url / git_repo / cluster_id,前端抽屉展示 commit short + 仓库/pipeline 链接
-- **YAML diff**: unified diff 文本(剔除 K8s 噪声字段),前端 `<pre>` 渲染
-- **变更频率告警**: 同资源 1h 内变更 > 5 次 → severity 提升到 medium + 标记;`GET /api/v1/change-events/frequent`
-- **ChangeEvent ↔ AlertEvent CORRELATED_WITH**: 变更时间窗内 resource_ref 落在影响面的告警自动关联 + Neo4j 写边;`GET /api/v1/change-events/{id}/alerts`
-
-## 图层面板
-
-每个视图工具栏右侧有图层标签：
-
-| 图层 | 默认 | 包含关系 |
-|------|------|---------|
-| 基础拓扑 | ✅ | CONTAINS, DEPLOYED_AS, USES, BELONGS_TO... |
-| 可观测 | 关 | MONITORS, VISUALIZES |
-| 风险巡检 | 关 | AFFECTS, FIRED_ON, GENERATED... |
-
-## 节点视觉规则
-
-- **形状 = 类型**: 椭圆(Pod/Container) / 菱形(网络) / 六边形(基础设施) / 矩形(工作负载) / 三角形(告警) / 平行四边形(配置)
-- **颜色 = 健康**: 绿=正常 / 黄=警告 / 红=严重
-- **边框 = 风险**: 细绿=low / 中黄=medium / 粗红=high
-
-点击节点 → 右侧面板显示属性 + 指标 + 巡检发现。
-点击边 → 右侧面板显示关系类型 + 双方节点 + 风险信号。
-
-## 目录结构
-
-```
-├── doc/               # 设计文档 (8 份)
-├── datas/             # 原始 CSV 数据
-├── scripts/           # Mock 生成 + 故障注入 + E2E 测试脚本
-│   ├── sprint3_e2e_test.sh   # 审批流 + 回滚端到端手测
-│   └── output/        # 生成的 CSV + Cypher
-├── backend/
-│   ├── app/
-│   │   ├── db/        # Neo4j 客户端 + 6 视图 Cypher 查询
-│   │   ├── routers/   # API 路由 (视图 + simulation + recovery + health)
-│   │   ├── recovery/  # PRD-001:action_defs / cascade / execution / approval / handlers /
-│   │   │              # verifiers (Phase 2 余项) / chains (Phase 2 余项)
-│   │   ├── datasource/# DSS 内存孪生 (nodes / edges / executions / approvals)
-│   │   ├── models/    # Pydantic 模型
-│   │   └── services/  # 业务逻辑
-│   └── tests/         # 472 pytest (含 104 mock + 15 real recovery + 16 跨集群 +
-│                      # 24 自动验证 + 14 动作链 + 67 reports + 21 phase2 变更 +
-│                      # 20 alert/flagd 测试)
-├── frontend/
-│   └── src/
-│       ├── components/
-│       │   ├── Graph/      # GraphCanvas + NodeDetailPanel + LayerToggle
-│       │   ├── Views/      # 6 视图 + SimulationView
-│       │   ├── Recovery/   # RecoveryActionsSection / DryRunModal /
-│       │   │              # ExecutionsView / ApprovalsView / RecoveryChainsView (PRD-001)
-│       │   └── Layout/     # MainLayout (antd)
-│       ├── api/            # API client (Axios)
-│       ├── hooks/          # useGraphData
-│       ├── utils/          # graphStyles + layers + resourceIcons
-│       └── __tests__/      # 71 vitest
-├── docker-compose.yml
-├── Makefile
-└── .gitignore
-```
-
-## 测试
+## 怎么跑
 
 ```bash
-make test          # backend 472 + frontend 71 = 543 tests
-make test-cov      # backend coverage
+# 1. 构建 WASM connector(modules 是独立 workspace,target 隔离)
+cd modules && cargo wasi-build          # 或:make modules-build
+
+# 2. 构建 engine + Tauri binary
+cargo build --workspace                 # 仓库根
+
+# 3a. 桌面端 dev(GPU 合成层问题时:GDK_BACKEND=x11)
+cd desktop && npm install && npm run tauri dev
+
+# 3b. 或出可分发产物
+cd desktop && npm run tauri build       # → .AppImage / .deb / .rpm
+
+# 验证(gate)
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
+cd desktop && npm test                  # vitest
 ```
+
+> 连真集群:本地 `kubectl proxy --port=8001`,manifest 里 connector 的 `api_base` 指向它。TLS/认证留在 proxy,WASM 只走明文 HTTP,不碰凭据、不加 capability。
+
+## 真实数据验证(诚实说明)
+
+在本地 VirtualBox + kubeadm 集群(3 节点)上部署 **OpenTelemetry Demo v1.11.0(Astronomy Shop,~20 个 polyglot 微服务)** 作为数据源验证:connector 真拉 K8s API / Jaeger / Prometheus,产出真实拓扑(**169 节点 / 350 边**)、真实调用链(CALLS 边)、真实变更事件(rollout 触发 poll-diff 自动录入)。
+
+**这不是生产流量规模的故事** —— 项目刻意桌面单机、数据不出本机,规模不是卖点。otel-demo 是「真实 polyglot 微服务拓扑」的验证手段,用于证明 connector、identity resolution、recovery、巡检视图在真实形状的数据上跑得通,而不是合成 fixture 上的自欺。
+
+## 项目状态
+
+- **v0.4.0**(最新):4 个 PRD(recovery / changes / reports / connectors)+ code-repo 源 + C1 identity correlation-key 合并 = 完整 v2 story。
+- 原 Python 实现完整保留在 `reference/`(read-only 行为 oracle,本地可跑 FastAPI 对照 Rust 行为)。
+- **Deferred**:Unknown Dependency Queue(需指向有真实外部依赖的集群)、C1 v2(provenance/confidence/arbiter)、image_pushed 真 webhook(桌面架构冲突)。
+
+## 文档导航
+
+- `doc/14-17` —— 四份核心战略文档:重写策略(supervised rewrite)· 三层数据契约 · repo 布局 · Tauri 架构。
+- `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
+- `doc/01-10` —— 原始需求 / 4 层图模型 / 6 视图 / 故障类型 / 数据源服务。
+- `CLAUDE.md` —— 完整的增量开发日志(每个 phase 的设计决策与偏差,中文,commit 粒度)。
+
+---
+
+<details>
+<summary><strong>English (short)</strong></summary>
+
+A single-engineer, full-stack cloud-native SRE control plane: a Rust engine + WebAssembly-sandboxed connectors build a live resource graph from Kubernetes (fused with traces / changes / code), surfaced through a Tauri 2.x desktop UI for topology-aware diagnosis and recovery (dry-run → approve → rollback → auto-verify).
+
+**Stack:** Rust (8 engine crates, wasmtime host, wasm32-wasip2 guests) · Tauri 2.x · React 18 + AntD 6 + Cytoscape · SQLite (latest topology) + Parquet (archive) + Arrow (batch contract). ~32k LOC hand-written (28.7k Rust + 3.3k TS), 517 Rust tests.
+
+**Not a scale story** — deliberately desktop-first, data-stays-on-machine (cf. k9s/Lens). The value is architectural depth and engineering judgment: a 3-layer data contract (WIT / Tauri IPC / Arrow), a deny-by-default capability sandbox for untrusted connectors, and behavior-level contract-test parity against a 472-test Python baseline. Validated against a real OpenTelemetry Demo deployment on a local kubeadm cluster (169 nodes / 350 edges).
+
+See `doc/14-17` for strategy & architecture, `CLAUDE.md` for the full incremental dev log.
+
+</details>
+
+## License
+
+MIT — 见 [LICENSE](LICENSE)。`reference/` 旧 Python 实现同样在 MIT 下。
+
