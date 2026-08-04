@@ -15,7 +15,6 @@ CI / CD workflows for SRE Inspection Graph.
 | `modules-wasip2` | modules/ 真实 `cargo build --target wasm32-wasip2`(Tier 2 stable) | ~3min | ✓ |
 | `modules-wasip3` | modules/ 实验性 `cargo +nightly build --target wasm32-wasip3 -Z build-std`(Tier 3) | ~5min | ✗ `continue-on-error` |
 | `desktop` | desktop/src-tauri Tauri 后端 check+clippy(Linux only) | ~10min(cold,WebKit GTK 重) | ✓ |
-| `reference` | reference/ Python pytest 472 tests | ~3min | ✓ |
 | `lockfile` | 3 个 Cargo.lock drift 检查(`--locked` 不修改) | ~3min | ✓ |
 
 ## 设计
