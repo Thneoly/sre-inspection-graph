@@ -16,14 +16,14 @@ PRD-004 完成后,平台具备 6 个 connector(K8s / Prometheus / Jaeger / flagd
 - **声明源**:ArgoCD Application / Terraform state / Helm values
 - **客户端嵌入依赖**:SDK 内嵌的 Stripe / Twilio / 外部 SaaS
 
-当前接入策略是**每类资源一个 ad-hoc 通道**:K8s 自动、中间件靠 `detect_middleware()` 半自动、其余靠 `scripts/add_infra_nodes.py` 手工写 图数据库。这条路有 5 个不可持续的问题:
+当前接入策略是**每类资源一个 ad-hoc 通道**:K8s 自动、中间件靠 `detect_middleware()` 半自动、其余靠手工建节点。这条路有 5 个不可持续的问题:
 
 | 问题 | 后果 |
 |---|---|
 | 节点 schema / ID 规范 / 边语义全靠各 connector 内卷 | 3 个月后新人无法独立写 connector,不知道字段所有权 |
 | 多源数据合并无统一机制 | K8s 看到的 svc 和 Nacos 看到的 svc 不会自动合;同一 RDS 实例被 Cloud API 和 trace 重复创建 |
 | 没有"未知依赖"检测 | trace 看到 `peer.service=stripe.com` 但图里没节点 — 永远丢失,无人察觉 |
-| `add_infra_nodes.py` 手工脚本 | `make clean` 即丢;变更不感知 |
+| 手工建节点脚本 | 不可持久;变更不感知 |
 | 删除策略靠 `discovery_method` 字符串字面值 | 任一 connector 改字面值就破坏其他 connector 的隔离 |
 
 **PRD-005 目标**:把"N 个独立 connector → 各自写 内存孪生层"重构为"**N 个 connector → 发 Fact → Identity Resolver 合并 → 单一 Canonical Graph**",加一条 **Trace-driven Unknown Dependency Queue 做完整度自检**。
@@ -257,7 +257,7 @@ async def enrich(unknown_dep):
 | **Config plane** | Nacos/Apollo/Consul 注册的 service + 配置项 + 监听者 | 低 | ❌ 全新 |
 | **Gateway admin** | Kong/APISIX/SpringCG 的 routes / upstreams / plugins | 低 | ❌ 全新 |
 | **GitOps** | ArgoCD Application / Terraform tfstate / Helm release values | 中 | ⚠️ 只接了 Argo webhook 事件 |
-| **CMDB** | 兜底 — 老旧 SaaS / 网络硬件 / 物理机 | 低-中 | ⚠️ `add_infra_nodes.py` 手工 |
+| **CMDB** | 兜底 — 老旧 SaaS / 网络硬件 / 物理机 | 低-中 | ⚠️ 手工 |
 
 **关键洞察**:**Trace + OTel span attrs 是被严重低估的通道**。当前只数 ChildOf 的 span 对,但 span attrs 里有:
 - `db.system` / `db.connection_string` / `db.name` → 数据库节点 + 调用边

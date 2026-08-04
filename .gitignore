@@ -1,19 +1,9 @@
-# ===== Python =====
-__pycache__/
-*.py[cod]
-
-# PRD-003 报告产物(运行时生成)
-backend/reports/
-*.egg-info/
-dist/
-*.egg
-.pytest_cache/
-*.pyc
-
 # ===== Node / Frontend =====
 node_modules/
-frontend/dist/
 *.tsbuildinfo
+
+# ===== Rust =====
+**/target/
 
 # ===== IDE =====
 .vscode/
@@ -30,13 +20,10 @@ Thumbs.db
 .env
 .env.local
 
-# ===== Docker =====
-neo4j_data/
-neo4j_logs/
-
-# ===== Generated =====
-scripts/output/*.csv
-scripts/output/*.cypher
+# ===== Local SQLite (runtime) =====
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # ===== Claude =====
 .claude/*

@@ -1,6 +1,6 @@
 # ops/ — Phase 1 CI 草稿暂存
 
-`ci.yml.draft` 和 `README.md.draft` 是 doc/16 §11 落地的 GitHub Actions 工作流,
+`ci.yml.draft` 和 `README.md.draft` 是 GitHub Actions CI 工作流草稿,
 **暂时不放在 `.github/workflows/` 下**:推送此分支用的 OAuth credential 缺
 `workflow` scope,GitHub 服务端拒绝。
 

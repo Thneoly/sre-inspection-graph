@@ -30,7 +30,7 @@ payment-service (Deployment)
 └── (空)
 ```
 
-**问题**:Stripe 是 payment 的核心下游,trace 里能看到 `https://api.stripe.com/v1/charges` 的 HTTP span,但因为 Stripe 不在 K8s 集群、没在 `scripts/add_infra_nodes.py` 里手工建过节点,**它在图上根本不存在**。
+**问题**:Stripe 是 payment 的核心下游,trace 里能看到 `https://api.stripe.com/v1/charges` 的 HTTP span,但因为 Stripe 不在 K8s 集群、没手工建过节点,**它在图上根本不存在**。
 
 - 告警归并不会把"Stripe 报错"算进 payment 影响面
 - 变更时间线看不到"Stripe API 版本升级"

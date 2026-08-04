@@ -253,35 +253,6 @@ jobs:
         run: cargo clippy --locked -- -D warnings
 
   # =====================================================================
-  # reference/ — Python(read-only,但要保证测试仍跑得起)
-  # =====================================================================
-  reference:
-    name: reference — pytest (oracle parity check)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: latest
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install reference deps
-        run: |
-          cd reference
-          uv sync --frozen
-
-      - name: Run pytest
-        run: |
-          cd reference
-          uv run python -m pytest tests/ -p no:asyncio -q --no-header
-
-  # =====================================================================
   # 跨工作区一致性检查 — Cargo.lock 不应在 PR 中被未提交修改
   # =====================================================================
   lockfile:
