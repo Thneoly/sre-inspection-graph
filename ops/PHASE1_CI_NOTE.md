@@ -24,5 +24,5 @@ git push  # 需要 PAT/SSH 持 workflow scope
 
 | 文件 | 内容 |
 |---|---|
-| `ci.yml.draft` | 5 job 并行:engine / modules / desktop / reference / lockfile |
+| `ci.yml.draft` | 4 job 并行:engine / modules / desktop / lockfile |
 | `README.md.draft` | CI 设计说明 |
