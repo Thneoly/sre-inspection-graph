@@ -12,6 +12,8 @@
 - **它的卖点不是规模**:刻意按**桌面单机、数据不出本机**设计(对照 k9s / Lens)。价值在**架构深度与工程判断** —— 三层数据契约、不可信插件的 capability 沙箱、I/O-free 纯领域函数 + 行为级 contract test 的工程纪律。
 - **现状**:v0.4.0,4 个 PRD(recovery / changes / reports / connectors)+ code-repo 源 + identity resolution 全部落地;在本地 kubeadm 集群的 OpenTelemetry Demo 上做了真数据验证。
 
+> 想看完整的工程决策叙事(4 个 STAR 架构决策 + 量化 + 深入探讨 Q&A)?见 **[CASE_STUDY.md](CASE_STUDY.md)**。
+
 ## 解决什么问题
 
 真实 SRE 场景里,定位一次故障要在五六个割裂的系统之间来回跳:拓扑看 Grafana、调用链看 Jaeger、变更看 Argo/Git、指标看 Prometheus、恢复靠手敲 kubectl。**它们之间没有一张共享的资源图谱** —— 于是「这个挂掉的 Pod 影响了哪些业务」「这次变更和这个告警有没有关系」「恢复一个 Deployment 会炸到谁」全靠人脑拼接。
@@ -138,6 +140,7 @@ cd desktop && npm test                  # vitest
 
 ## 文档导航
 
+- **[`CASE_STUDY.md`](CASE_STUDY.md)** —— 完整工程叙事:4 个架构决策的 STAR 权衡 + 量化 + 深入探讨 Q&A(面试/深读用)。
 - `doc/15-17` —— 数据契约规范(WIT / Tauri IPC / Arrow)· repo 布局 · Tauri 架构。
 - `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
 - `doc/01-10` —— 原始需求 / 4 层图模型 / 6 视图 / 故障类型 / 数据源服务。
