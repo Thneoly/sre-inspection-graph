@@ -25,17 +25,17 @@ modules/
 ├── manifest.toml          # 引擎启动时读取的模块清单
 ├── sdk/                   # 共享 SDK — guest 端 WIT bindings + helper
 └── connectors/
-    └── hello-world/       # 占位 connector,演示 SDK 用法
+    ├── hello-world/       # 占位 connector(WIT 端到端验证,默认禁用)
+    ├── k8s-mini/          # 多 connector 编排验证(默认禁用)
+    ├── k8s/               # K8s API → topology Fact(经 kubectl proxy)
+    ├── prometheus/        # PromQL → metric Fact(http-client capability)
+    ├── jaeger/            # trace CHILD_OF → CALLS 边
+    ├── k8s-events/        # K8s Events → change-fact(有状态 guest)
+    ├── flagd/             # flag diff → change-fact(http-write)
+    └── code-repo/         # 本地代码仓 → CodeRepo/Library + BUILDS/DEPENDS_ON(fs-read)
 ```
 
-后续按 reference/MIGRATION_STATUS.md PRD-004 段落逐项添加:
-- `connectors/k8s/`
-- `connectors/prometheus/`
-- `connectors/jaeger/`
-- `connectors/flagd/`
-- `connectors/k8s-events/`
-
-以及 `rules/`(PRD-003)与 `handlers/`(PRD-001)子树。
+handler 模块(`handlers/` 子树,PRD-001 恢复动作):`scale-deploy` / `k8s-handler`(6 个 K8s action)。
 
 ## 与 engine 的关系
 

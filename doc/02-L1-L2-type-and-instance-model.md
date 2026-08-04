@@ -29,7 +29,7 @@ L1 层定义云原生运维领域的标准资源类型及其元数据。每个�
 |------|------|
 | node_id | 唯一标识（RT-001 ~ RT-014） |
 | node_name | 中文名称 |
-| node_label | 英文标签（Neo4j 节点标签） |
+| node_label | 英文标签（图数据库 节点标签） |
 | node_group | 分组（业务归属/平台位置/工作负载/服务访问/配置安全/镜像制品/可观测） |
 | abstraction_level | 抽象层级（L0~L7） |
 | scope | 作用域 |
@@ -39,7 +39,7 @@ L1 层定义云原生运维领域的标准资源类型及其元数据。每个�
 | inspection_focus | 巡检关注点 |
 | health_fields | 健康度字段 |
 | required_relation_summary | 必需关系摘要 |
-| import_label | Neo4j 导入标签格式 |
+| import_label | 图数据库 导入标签格式 |
 
 ## 2. L1 资源类型关系（35 条）
 
@@ -173,7 +173,7 @@ Dashboard
 | e012 | alert:order-api-availability | MONITORS | comp:order-api | |
 | e013 | dash:order-api-overview | VISUALIZES | comp:order-api | |
 
-## 5. Neo4j 导入说明
+## 5. 图数据库 导入说明
 
 ### 约束
 ```cypher
@@ -189,4 +189,4 @@ FOR (n:ResourceInstance) REQUIRE n.node_id IS UNIQUE;
 如果安装了 APOC 插件，可启用动态关系类型（如 `:CONTAINS`、`:USES`、`:MONITORS`）。
 
 ### 导入脚本
-见 `data/cloud_native_app_inspection_graph_import_package_v1/neo4j_import_cloud_native_app_inspection_graph_v1.cypher`
+见 `data/` 下的图模型静态种子文件

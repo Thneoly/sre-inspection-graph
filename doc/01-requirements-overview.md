@@ -13,11 +13,11 @@
 
 ## 2. 核心原则
 
-> Neo4j 负责把"具体资源对象、资源关系、当前状态、风险结果、指标查询入口"关联起来；真正的动态明细数据留在 Prometheus、日志系统和巡检结果库里，前端展示时按需联动查询。
+> 图数据库 负责把"具体资源对象、资源关系、当前状态、风险结果、指标查询入口"关联起来；真正的动态明细数据留在 Prometheus、日志系统和巡检结果库里，前端展示时按需联动查询。
 
 | 存储位置 | 存什么 |
 |----------|--------|
-| **Neo4j 图数据库** | 资源身份、归属、关系、当前状态摘要、风险等级、指标查询入口、巡检结果、告警关联 |
+| **图数据库 图数据库** | 资源身份、归属、关系、当前状态摘要、风险等级、指标查询入口、巡检结果、告警关联 |
 | **Prometheus / VictoriaMetrics** | CPU/内存/网络/磁盘/QPS/错误率/延迟等时序指标明细 |
 | **Loki / ELK** | 应用日志、容器日志、审计日志、事件日志 |
 | **对象存储 / 关系库** | 巡检报告、历史快照、证据文件 |
@@ -52,7 +52,7 @@ L4 巡检结果层 Inspection Graph
 
 ### 3.1 横切层(规划中,PRD-005 引入)
 
-四层模型刻画的是**数据的内容分层**;PRD-005 在数据**采集与合并**这一维引入横切层,所有 L2 / L3 / L4 数据通过它流入 DSS:
+四层模型刻画的是**数据的内容分层**;PRD-005 在数据**采集与合并**这一维引入横切层,所有 L2 / L3 / L4 数据通过它流入 内存孪生层:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -66,7 +66,7 @@ L4 巡检结果层 Inspection Graph
                              ▼
                   ┌──────────────────────┐
                   │  Canonical Graph     │
-                  │  (DSS + Neo4j)       │
+                  │  (内存孪生层 + 图数据库)       │
                   └──────────────────────┘
                   ↑       ↑       ↑     ↑
                   L1     L2      L3    L4
@@ -79,13 +79,13 @@ PRD-006(代码仓数据源)是这一横切层的具体消费者,贡献节点元�
 
 | 组件 | 技术 | 理由 |
 |------|------|------|
-| 图数据库 | Neo4j 5 Community (Docker) | 原生图存储，Cypher 查询，成熟生态 |
-| 后端 | Python 3.12 + FastAPI | 异步高性能，Neo4j 官方驱动，AI/数据场景首选 |
+| 图数据库 | 图数据库 5 Community (Docker) | 原生图存储，图查询 查询，成熟生态 |
+| 后端 | Rust + 后端 API | 异步高性能，图数据库 官方驱动，AI/数据场景首选 |
 | 前端 | React 18 + TypeScript + Vite | 组件化，类型安全，开发体验好 |
 | 图可视化 | Cytoscape.js + dagre 布局 | 专为图数据设计，分层布局适合拓扑展示 |
 | 状态管理 | TanStack Query (React Query) | 服务端状态缓存，自动刷新 |
-| 部署 | Docker Compose | 一键启动 Neo4j + API + 前端 |
-| 数据模拟 | Python 脚本 (csv + Cypher 输出) | 可复现、可版本控制 |
+| 部署 | Docker Compose | 一键启动 图数据库 + API + 前端 |
+| 数据模拟 | 脚本 (csv + 图查询 输出) | 可复现、可版本控制 |
 
 ## 5. 用户角色
 
@@ -98,7 +98,7 @@ PRD-006(代码仓数据源)是这一横切层的具体消费者,贡献节点元�
 | 需求 | 指标 |
 |------|------|
 | 图查询响应时间 | < 2s（200 节点内） |
-| 单视图节点上限 | 200 节点（Cypher LIMIT） |
+| 单视图节点上限 | 200 节点（图查询 LIMIT） |
 | 前端首屏加载 | < 3s |
 | 部署启动时间 | < 60s（docker-compose up） |
 | 数据可复现 | 一键 mock 数据生成，CSV 版本化管理 |
@@ -133,7 +133,7 @@ PRD-006(代码仓数据源)是这一横切层的具体消费者,贡献节点元�
 仅用 mock CSV 验证 L1/L2/L3/L4 全链路,详见 `scripts/` 和 `datas/`。
 
 ### 9.2 v1 — 单源 connector(PRD-004,已完成)
-为 OTel Demo 集群接入 6 个真实数据 connector(K8s / Prometheus / Jaeger / flagd / K8s-events / K8s-watch),走 BaseConnector 框架 30s 轮询写 DSS:
+为 OTel Demo 集群接入 6 个真实数据 connector(K8s / Prometheus / Jaeger / flagd / K8s-events / K8s-watch),走 BaseConnector 框架 30s 轮询写 内存孪生层:
 
 | 数据来源 | 采集方式 | 目标层 | 状态 |
 |----------|----------|--------|------|
@@ -146,7 +146,7 @@ PRD-006(代码仓数据源)是这一横切层的具体消费者,贡献节点元�
 
 ### 9.3 v2 — 统一拓扑感知(PRD-005 + PRD-006,规划中)
 
-v1 把 6 个 connector 写 DSS 的"管道"打通了,但**每个 connector 直接 `store.upsert_node()`**,多源数据无合并机制、集群外资产靠 `add_infra_nodes.py` 手工脚本兜底、trace 看到的外部依赖永久丢失。v2 引入横切层解决:
+v1 把 6 个 connector 写 内存孪生层 的"管道"打通了,但**每个 connector 直接 `store.upsert_node()`**,多源数据无合并机制、集群外资产靠 `add_infra_nodes.py` 手工脚本兜底、trace 看到的外部依赖永久丢失。v2 引入横切层解决:
 
 | 数据来源 | 采集方式 | 目标层 | 状态 |
 |----------|----------|--------|------|
@@ -159,4 +159,4 @@ v1 把 6 个 connector 写 DSS 的"管道"打通了,但**每个 connector 直接
 | 镜像扫描平台(Harbor/Trivy) | API → ContainerImage 漏洞属性 | L2 镜像节点 | 📋 后续 |
 | 日志系统(Loki/ELK) | 查询入口注入(已有 log_source 字段) | L3 日志关联 | 📋 后续 |
 
-**演进的核心是把"connector 直接写 DSS"改成"connector 发 Fact → Identity Resolver 合并 → DSS",并新增 Unknown Dependency Queue 用 trace 做拓扑完整度自检**。详见 `doc/11-PRD-005-universal-topology-service.md`。
+**演进的核心是把"connector 直接写 内存孪生层"改成"connector 发 Fact → Identity Resolver 合并 → 内存孪生层",并新增 Unknown Dependency Queue 用 trace 做拓扑完整度自检**。详见 `doc/11-PRD-005-universal-topology-service.md`。

@@ -9,8 +9,8 @@
 ## TL;DR
 
 - **它是什么**:一个桌面端的 SRE 控制面。WASM 化的 connector 从 K8s/Prometheus/Jaeger/代码仓实时构建资源图谱(Identity Resolver 把多源拓扑合并成单一真相),上层提供 6 个图遍历巡检视图、变更追踪、恢复动作引擎(dry-run → 审批 → 回滚 → 自动验证)、自检报告。
-- **它的卖点不是规模**:刻意按**桌面单机、数据不出本机**设计(对照 k9s / Lens)。价值在**架构深度与工程判断** —— 三层数据契约、不可信插件的 capability 沙箱、对照 472 测试 Python 基线的行为级 contract-test 复刻。
-- **现状**:v0.4.0,与原 Python 实现达成 feature parity;在本地 kubeadm 集群的 OpenTelemetry Demo 上做了真数据验证。
+- **它的卖点不是规模**:刻意按**桌面单机、数据不出本机**设计(对照 k9s / Lens)。价值在**架构深度与工程判断** —— 三层数据契约、不可信插件的 capability 沙箱、I/O-free 纯领域函数 + 行为级 contract test 的工程纪律。
+- **现状**:v0.4.0,4 个 PRD(recovery / changes / reports / connectors)+ code-repo 源 + identity resolution 全部落地;在本地 kubeadm 集群的 OpenTelemetry Demo 上做了真数据验证。
 
 ## 解决什么问题
 
@@ -81,7 +81,7 @@ flowchart TB
 
 > 这些是面试时会被追问的判断点,每个都是「有多个选项 → 选了一个 → 因为……」。
 
-1. **整块 supervised rewrite,而不是 Strangler Fig 渐进迁移**。原 Python 实现(FastAPI + Neo4j,12.7k LOC / 472 测试)降为 read-only 行为 oracle。理由:副业项目无零停机需求,而桥接「图数据库 + REST」与「桌面 + WASM + 进程内 IPC」两套架构的胶水代价,超过重写。重写期用 contract-test 移植保证行为不漂移。
+1. **canonical `Fact` 作为唯一数据契约,而不是让各模块直连数据源**。所有 connector 不管数据源(K8s API / Jaeger / Prometheus / 本地 fs),产出统一压平成 7 字段 canonical Fact;所有下游(storage / identity resolve / graph build / Arrow 批传输)只认它,一个 `engine-core::fact_schema()` Arrow Schema 把契约焊死。新增数据源只需写一个产出 Fact 的 WASM connector,内核零改 —— 这是整个平台可扩展的支点。
 
 2. **Tauri 桌面优先,而不是 SaaS Web**。对照 k9s / Lens:**数据不出本机**,无租户/认证/多租户复杂度;UI ↔ 后端走进程内 IPC,不起 HTTP server(也由此砍掉 webhook 这类需要入站连接的能力,变更入口改为 poll-diff + 手动录入)。代价:多人协作/远程访问留后续。
 
@@ -134,12 +134,11 @@ cd desktop && npm test                  # vitest
 ## 项目状态
 
 - **v0.4.0**(最新):4 个 PRD(recovery / changes / reports / connectors)+ code-repo 源 + C1 identity correlation-key 合并 = 完整 v2 story。
-- 原 Python 实现完整保留在 `reference/`(read-only 行为 oracle,本地可跑 FastAPI 对照 Rust 行为)。
 - **Deferred**:Unknown Dependency Queue(需指向有真实外部依赖的集群)、C1 v2(provenance/confidence/arbiter)、image_pushed 真 webhook(桌面架构冲突)。
 
 ## 文档导航
 
-- `doc/14-17` —— 四份核心战略文档:重写策略(supervised rewrite)· 三层数据契约 · repo 布局 · Tauri 架构。
+- `doc/15-17` —— 数据契约规范(WIT / Tauri IPC / Arrow)· repo 布局 · Tauri 架构。
 - `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
 - `doc/01-10` —— 原始需求 / 4 层图模型 / 6 视图 / 故障类型 / 数据源服务。
 - `CLAUDE.md` —— 完整的增量开发日志(每个 phase 的设计决策与偏差,中文,commit 粒度)。
@@ -153,13 +152,13 @@ A single-engineer, full-stack cloud-native SRE control plane: a Rust engine + We
 
 **Stack:** Rust (8 engine crates, wasmtime host, wasm32-wasip2 guests) · Tauri 2.x · React 18 + AntD 6 + Cytoscape · SQLite (latest topology) + Parquet (archive) + Arrow (batch contract). ~32k LOC hand-written (28.7k Rust + 3.3k TS), 517 Rust tests.
 
-**Not a scale story** — deliberately desktop-first, data-stays-on-machine (cf. k9s/Lens). The value is architectural depth and engineering judgment: a 3-layer data contract (WIT / Tauri IPC / Arrow), a deny-by-default capability sandbox for untrusted connectors, and behavior-level contract-test parity against a 472-test Python baseline. Validated against a real OpenTelemetry Demo deployment on a local kubeadm cluster (169 nodes / 350 edges).
+**Not a scale story** — deliberately desktop-first, data-stays-on-machine (cf. k9s/Lens). The value is architectural depth and engineering judgment: a 3-layer data contract (WIT / Tauri IPC / Arrow), a deny-by-default capability sandbox for untrusted connectors, and pure I/O-free domain functions with behavior-level contract tests. Validated against a real OpenTelemetry Demo deployment on a local kubeadm cluster (169 nodes / 350 edges).
 
-See `doc/14-17` for strategy & architecture, `CLAUDE.md` for the full incremental dev log.
+See `doc/15-17` for data contract & architecture, `CLAUDE.md` for the full incremental dev log.
 
 </details>
 
 ## License
 
-MIT — 见 [LICENSE](LICENSE)。`reference/` 旧 Python 实现同样在 MIT 下。
+MIT — 见 [LICENSE](LICENSE)。
 

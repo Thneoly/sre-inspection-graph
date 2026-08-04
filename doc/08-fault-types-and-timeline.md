@@ -5,7 +5,7 @@
 为平台增加**时间维度**和**故障模拟**能力：
 - 定义常见云原生故障类型
 - 每条故障包含时间线：注入 → 升级 → 传播 → 恢复
-- 随时间推进，Neo4j 中的节点健康状态和 MetricSnapshot 动态变化
+- 随时间推进，图数据库 中的节点健康状态和 MetricSnapshot 动态变化
 - 前端支持**时间线回放**和**故障影响面推演**
 
 ## 2. 数据模型
@@ -154,7 +154,7 @@ KubernetesNode (NotReady)
   → 这些 Component 所属的 Application
 ```
 
-传播规则通过 Neo4j 图遍历实现，不需要额外建模。
+传播规则通过 图数据库 图遍历实现，不需要额外建模。
 
 ## 6. 前端展示
 
@@ -167,7 +167,7 @@ KubernetesNode (NotReady)
 - 选择故障类型
 - 选择目标节点
 - 设置严重程度和持续时间
-- "注入"按钮 → Neo4j 写入 FaultScenario + FaultTimeline
+- "注入"按钮 → 图数据库 写入 FaultScenario + FaultTimeline
 
 ### 6.3 影响面推演
 - 从故障源出发，沿关系链正向/反向遍历
@@ -179,7 +179,7 @@ KubernetesNode (NotReady)
 | Phase | 内容 |
 |-------|------|
 | Phase A | 故障类型定义 + FaultScenario/FaultTimeline 数据模型 |
-| Phase B | 故障注入脚本（选择类型+目标，写入 Neo4j） |
+| Phase B | 故障注入脚本（选择类型+目标，写入 图数据库） |
 | Phase C | 时间线推进引擎（定时更新节点健康状态和指标） |
 | Phase D | 前端时间线控件 + 故障注入面板 |
 | Phase E | 级联故障推演 + 影响面可视化 |

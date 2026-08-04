@@ -60,7 +60,7 @@ PRD-002 Phase 2 已经从下游接入了部署侧变更(ArgoCD webhook → `depl
 
 `change_type` 枚举从 4 → 8:
 
-```python
+```
 # backend/app/datasource/models.py
 ChangeEvent.change_type ∈ {
     # 现有 4 种(PRD-002)
@@ -75,7 +75,7 @@ ChangeEvent.change_type ∈ {
 
 **字段 100% 复用 PRD-002**:`commit_sha / pipeline_url / git_repo / yaml_diff` 等已就绪;新增字段:
 
-```python
+```
 # PRD-006 新增字段
 pr_id: str = ""              # GitLab MR IID / GitHub PR number
 pr_title: str = ""
@@ -94,7 +94,7 @@ loc_removed: int = 0
 
 ### 5.1 拉数据(GitLab 为主、GitHub 为辅、Gitea 兼容)
 
-```python
+```
 # backend/app/datasource/connectors/code_repo/code_repo_connector.py
 
 class CodeRepoConnector(BaseConnector):
@@ -122,7 +122,7 @@ class CodeRepoConnector(BaseConnector):
 
 按文件类型识别 + 解析(纯函数,可单测):
 
-```python
+```
 # backend/app/datasource/connectors/code_repo/build_parser.py
 
 def parse_dockerfile(content: str) -> list[ImageRef]:
@@ -139,7 +139,7 @@ def parse_argocd_app(app_yaml: str) -> ArgoAppRef:
 ```
 
 每个解析结果发 Fact:
-```python
+```
 TopologyFact(
     source="code_repo_connector",
     fact_type="edge",
@@ -155,7 +155,7 @@ TopologyFact(
 
 ### 5.3 依赖清单解析
 
-```python
+```
 # backend/app/datasource/connectors/code_repo/deps_parser.py
 
 PARSERS = {
@@ -174,7 +174,7 @@ Library 节点用 [purl](https://github.com/package-url/purl-spec) 风格 ID:`pk
 
 ### 5.4 Webhook(主路径)
 
-```python
+```
 # backend/app/routers/webhook.py 扩展
 
 @router.post("/gitlab")    # X-Gitlab-Event: Merge Request Hook / Push Hook
@@ -340,8 +340,8 @@ Trace 看到:                          代码仓 grep:
 - [ ] 现网 GitLab 上的 10+ 个 repo,uvicorn 启动 30min 后全部以 `CodeRepo` 节点入图
 - [ ] Repo 节点带 `language / topics / owner_team / last_commit_at` 属性
 - [ ] 解析 `Dockerfile` 后,Repo → Image 边创建,且 Image 节点跟 Harbor connector 产的同一 ID
-- [ ] 测试 repo 创建 PR → webhook 5s 内收到 → `ChangeEvent(pr_opened)` 入 DSS
-- [ ] PR 合入 → `ChangeEvent(pr_merged)` 入 DSS,且 commit_sha / files_changed / pr_author 完整
+- [ ] 测试 repo 创建 PR → webhook 5s 内收到 → `ChangeEvent(pr_opened)` 入 内存孪生层
+- [ ] PR 合入 → `ChangeEvent(pr_merged)` 入 内存孪生层,且 commit_sha / files_changed / pr_author 完整
 - [ ] PRD-002 `correlate_alerts` 自动跑,1h 窗口告警关联到该 ChangeEvent
 
 ### Sprint 2

@@ -1,6 +1,6 @@
 # 05 — 六大巡检视图设计
 
-> 定义 6 个推荐巡检视图的业务目的、Cypher 查询、API 映射和前端展示。
+> 定义 6 个推荐巡检视图的业务目的、图查询 查询、API 映射和前端展示。
 
 ## 1. 应用拓扑视图（Application Topology View）
 
@@ -13,7 +13,7 @@
 ### 遍历深度
 5 跳
 
-### Cypher 查询
+### 图查询 查询
 
 ```cypher
 MATCH path = (app:ResourceInstance:Application {node_id: $app_node_id})
@@ -53,7 +53,7 @@ LIMIT 200
 ### 起始节点
 `app:{app_code}` 关联的所有 Ingress
 
-### Cypher 查询
+### 图查询 查询
 
 ```cypher
 MATCH path = (ing:ResourceInstance:Ingress)
@@ -91,7 +91,7 @@ LIMIT 200
 ### 起始节点
 `node:{cluster_id}:{node_name}` (KubernetesNode)
 
-### Cypher 查询
+### 图查询 查询
 
 ```cypher
 MATCH path = (node:ResourceInstance:KubernetesNode {node_id: $node_id})
@@ -125,7 +125,7 @@ LIMIT 200
 ### 起始节点
 Secret 或 ConfigMap 实例节点 ID
 
-### Cypher 查询
+### 图查询 查询
 
 ```cypher
 MATCH path = (config:ResourceInstance)
@@ -156,7 +156,7 @@ LIMIT 200
 ### 起始节点
 `image:xxx` (ContainerImage)
 
-### Cypher 查询
+### 图查询 查询
 
 ```cypher
 MATCH path = (image:ResourceInstance:ContainerImage {node_id: $image_id})
@@ -191,7 +191,7 @@ LIMIT 200
 ### 起始节点
 所有 AlertEvent（按时间范围/严重程度过滤）
 
-### Cypher 查询
+### 图查询 查询
 
 ```cypher
 MATCH (alert:AlertEvent)

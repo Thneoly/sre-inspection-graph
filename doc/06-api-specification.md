@@ -1,13 +1,13 @@
 # 06 — REST API 规格
 
-> 后端 API 完整规格定义，FastAPI 实现参考。
+> 后端 API 完整规格定义，后端 API 实现参考。
 
 ## 基础信息
 
 - **Base URL**: `http://localhost:8000/api/v1`
 - **Content-Type**: `application/json`
 - **CORS**: 允许所有来源（开发模式，生产需限制）
-- **Neo4j**: Bolt 协议，连接池管理
+- **图数据库**: Bolt 协议，连接池管理
 
 ## 通用响应格式
 
@@ -326,7 +326,7 @@ GET /health
 ```json
 {
   "status": "ok",
-  "neo4j": "connected",
+  "graph": "connected",
   "version": "1.0.0",
   "uptime_seconds": 3600
 }
@@ -336,7 +336,7 @@ GET /health
 
 ## Pydantic 模型定义
 
-```python
+```
 # backend/app/models/graph.py
 from pydantic import BaseModel
 from typing import Optional, Any

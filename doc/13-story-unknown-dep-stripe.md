@@ -66,7 +66,7 @@ trace_id: abc123...
 
 trace_aggregator 不再只产 `CALLS` 边,而是发 **TopologyFact**(PRD-005 §4):
 
-```python
+```
 TopologyFact(
     source="jaeger",
     observed_at=2026-07-15T14:32:05Z,
@@ -103,11 +103,11 @@ TopologyFact(  # 同时产边
 
 PRD-005 §5 的 Identity Resolver 收到这两条 Fact:
 
-1. **查现有图**:`correlation_keys=["domain:api.stripe.com"]` 在 DSS 索引里**找不到匹配**
+1. **查现有图**:`correlation_keys=["domain:api.stripe.com"]` 在 内存孪生层 索引里**找不到匹配**
 2. **判定**:这是个"图里没有的新节点"
 3. **行为**:不直接建节点(避免噪音爆炸),而是**塞进 Unknown Dependency Queue**(PRD-005 §6)
 
-```python
+```
 UnknownDependency(
     queue_id="unk:domain:api.stripe.com:2026-07-15T14:32:05Z",
     correlation_keys=["domain:api.stripe.com"],
@@ -141,7 +141,7 @@ requirements.txt:8:stripe==7.12.0
 
 enrichment 给 UnknownDependency 加了 **3 条上下文证据**:
 
-```python
+```
 queue_entry.code_evidence = [
     {
         "repo_url": "gitlab.example.com/team-pay/payment-service",
@@ -214,7 +214,7 @@ SRE 点 **[一键入图]**。
    })
    ```
 
-2. **建边**:trace 之前缓存的 CALLS Fact 现在可以兑现 — `dst_correlation_key` 被 Identity Resolver 翻译成新节点 id,写入 DSS + Neo4j。
+2. **建边**:trace 之前缓存的 CALLS Fact 现在可以兑现 — `dst_correlation_key` 被 Identity Resolver 翻译成新节点 id,写入 内存孪生层 + 图数据库。
 
 3. **PRD-006 顺带写入**(因为 enrichment 已经知道代码仓和库):
    ```cypher
@@ -268,7 +268,7 @@ payment-service ─CALLS→ api.stripe.com
 如果想最快摸到这条链路的"半张图",**第一周做这三件事就行**(对应 PRD-005 Sprint 2):
 
 1. 改 `backend/app/datasource/connectors/trace_aggregator.py`,从 span 里多读 `peer.service` / `server.address`(8-10 行新增)
-2. 写到 DSS 时如果目标 component_id 不存在 → 暂时建一个 `:ExternalService` 节点,标 `discovery_method=trace_inferred`(20 行 mapper 升级)
+2. 写到 内存孪生层 时如果目标 component_id 不存在 → 暂时建一个 `:ExternalService` 节点,标 `discovery_method=trace_inferred`(20 行 mapper 升级)
 3. 前端 NodeDetailPanel 加一段"客户端嵌入依赖"(complaint:这一步可以最后做,后端先跑起来)
 
 这只是 PRD-005 Sprint 2 的小一半,但**已经能在 OTel Demo 上看到 5-10 个之前看不到的外部依赖**(`flagd.example.com`, `*.googleapis.com` 之类)。是验证"统一拓扑感知"思路的最低成本切入。

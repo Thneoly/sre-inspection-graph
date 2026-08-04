@@ -1,6 +1,5 @@
 ## SRE Inspection Graph — top-level entry for the active stack (Rust + WASM + Tauri).
 ##
-## Legacy Python targets are prefixed `ref-` (reference/ is a read-only oracle).
 ## Active stack: engine (Rust workspace) + modules (WASM, wasm32-wasip2) + desktop (Tauri).
 ##
 ## Quick start:
@@ -24,7 +23,6 @@ DEFAULT_DB := $(HOME)/.local/share/io.sregraph.desktop/sre-graph.sqlite
         engine-cli-tick engine-cli-tick-loop engine-dump-topology engine-inspect-views \
         modules-build modules-build-debug modules-check modules-clippy modules-build-one \
         desktop-setup desktop-dev desktop-build desktop-test desktop-web \
-        ref-setup ref-dev-api ref-test ref-test-cov ref-infra ref-up ref-down ref-clean \
         clean clean-rust
 
 # ---------------------------------------------------------------
@@ -32,7 +30,7 @@ DEFAULT_DB := $(HOME)/.local/share/io.sregraph.desktop/sre-graph.sqlite
 # ---------------------------------------------------------------
 
 help: ## Show this help.
-	@printf '\nAvailable targets (active stack unless prefixed ref-):\n\n'
+	@printf '\nAvailable targets:\n\n'
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@printf '\nOverride vars: MOD=modules/connectors/k8s  DB=/path/to.sqlite\n\n'
 
@@ -125,39 +123,11 @@ desktop-check: ## desktop Rust backend check + frontend tsc.
 	cd $(DESKTOP) && npx tsc --noEmit
 
 # ---------------------------------------------------------------
-#  Legacy Python reference (read-only oracle — DO NOT MODIFY)
-# ---------------------------------------------------------------
-# Run the old FastAPI stack locally to compare Rust behavior against the spec.
-# Never deploy reference/; it is behavior reference only.
-
-ref-setup: ## uv sync the reference Python env.
-	cd $(ROOT_DIR)reference && uv sync
-
-ref-dev-api: ## Run reference FastAPI oracle on 8000 (desktop kubectl proxy owns 8001).
-	cd $(ROOT_DIR)reference && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-ref-test: ## Run reference backend tests (472). Must use -p no:asyncio.
-	cd $(ROOT_DIR)reference && uv run python -m pytest tests/ -v -p no:asyncio
-
-ref-test-cov: ## Reference backend tests with coverage.
-	cd $(ROOT_DIR)reference && uv run python -m pytest tests/ -v -p no:asyncio --cov=app --cov-report=term-missing
-
-ref-infra: ## Start reference Neo4j (docker compose).
-	cd $(ROOT_DIR) && docker compose up -d neo4j neo4j-init
-
-ref-up: ## Start all reference docker compose services.
-	cd $(ROOT_DIR) && docker compose up -d
-
-ref-down: ## Stop reference docker compose.
-	cd $(ROOT_DIR) && docker compose down
-
-# ---------------------------------------------------------------
 #  Clean
 # ---------------------------------------------------------------
 
-clean: ## Light clean — reference docker volumes + generated CSV/cypher.
-	cd $(ROOT_DIR) && docker compose down -v 2>/dev/null || true
-	rm -f $(ROOT_DIR)scripts/output/*.csv $(ROOT_DIR)scripts/output/*.cypher
+clean: ## Light clean — desktop dist build output.
+	rm -rf $(DESKTOP)/dist 2>/dev/null || true
 
 clean-rust: ## Heavy clean — wipe engine + modules target dirs (expensive rebuild).
 	cd $(ENGINE) && cargo clean

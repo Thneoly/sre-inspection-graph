@@ -4,7 +4,7 @@
 
 ## 1. 设计原则
 
-1. **Neo4j 存摘要，Prometheus 存明细**：Neo4j 只保存最新指标快照和查询模板，时序数据留在 Prometheus
+1. **图数据库 存摘要，Prometheus 存明细**：图数据库 只保存最新指标快照和查询模板，时序数据留在 Prometheus
 2. **关系建模状态**：Pod/Container/KubernetesNode 是运行态对象，属性会频繁更新
 3. **可扩展**：新指标类型只需增加 MetricQuery + MetricSnapshot，不改变图结构
 

@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-将数据源从业务逻辑中**解耦**，引入独立的 **Data Source Service (DSS)** 中间层：
+将数据源从业务逻辑中**解耦**，引入独立的 **Data Source Service (内存孪生层)** 中间层：
 
 ```
 故障注入系统                        巡检展示系统
@@ -10,7 +10,7 @@
     │  PATCH /inject                    │  GET /nodes /edges /metrics
     ▼                                   ▼
 ┌─────────────────────────────────────────────────┐
-│              Data Source Service (DSS)           │
+│              Data Source Service (内存孪生层)           │
 │                                                  │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
 │  │ 节点仓库  │  │  边仓库   │  │  指标时序仓库  │  │
@@ -30,7 +30,7 @@
 └─────────────────────────────────────────────────┘
     │                                   │
     ▼                                   ▼
-  Neo4j (持久化)                   In-Memory (实时状态)
+  图数据库 (持久化)                   In-Memory (实时状态)
 ```
 
 ## 2. 数据模型
@@ -150,8 +150,8 @@ FaultStage:
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/datasource/init` | 从 Neo4j 加载基线数据到内存 |
-| POST | `/datasource/sync` | 将内存状态同步回 Neo4j |
+| POST | `/datasource/init` | 从 图数据库 加载基线数据到内存 |
+| POST | `/datasource/sync` | 将内存状态同步回 图数据库 |
 
 ## 4. 各主数据对象的属性取值规范
 
@@ -322,11 +322,11 @@ FaultStage:
 
 **Secret**
 ```
-属性: secret_name, secret_type, expiry_days, rotation_policy, reference_count
+属性: secret_name, secret_type, expiry_days, rotation_policy, 设计_count
 取值范围:
   secret_type: "Opaque" | "kubernetes.io/tls" | "kubernetes.io/dockerconfigjson"
   expiry_days: 1-365
-  reference_count: 1-20
+  设计_count: 1-20
 ```
 
 **ContainerImage**
@@ -371,39 +371,39 @@ FaultStage:
 ## 6. 实现计划
 
 ### Phase A: 数据源服务核心
-- `backend/app/datasource/` — 独立 Python 模块
+- `datasource/` — 数据源 connector 模块
   - `store.py` — NodeStore, EdgeStore (内存字典)
   - `models.py` — DataNode, DataEdge, MetricSnapshot 数据类
   - `snapshot_generator.py` — 正常指标值生成器
-  - `loader.py` — 从 Neo4j 加载基线数据
+  - `loader.py` — 从 图数据库 加载基线数据
 
 ### Phase B: REST API
-- `backend/app/routers/datasource.py` — FastAPI Router
+- `backend/app/routers/datasource.py` — 后端 API Router
   - 数据提取端点 (GET)
   - 数据注入端点 (PATCH)
 
 ### Phase C: 故障注入集成
 - `backend/app/datasource/fault_injector.py`
-  - 通过 DSS 注入故障（不再直接写 Neo4j）
-  - DSS 更新节点状态 → 同步回 Neo4j
+  - 通过 内存孪生层 注入故障（不再直接写 图数据库）
+  - 内存孪生层 更新节点状态 → 同步回 图数据库
 
 ### Phase D: 前端适配
-- 巡检视图从 DSS API 读取数据
-- 故障注入页通过 DSS API 注入故障
+- 巡检视图从 内存孪生层 API 读取数据
+- 故障注入页通过 内存孪生层 API 注入故障
 
 ## 7. 关键设计决策
 
-1. **DSS 是 Neo4j 之上的内存缓存层**，不是替代 Neo4j
-   - Neo4j 存储持久化基线数据
-   - DSS 维护实时变化的属性（health, risk, metrics）
-   - 启动时从 Neo4j 加载基线，运行时在内存操作，定期同步
+1. **内存孪生层 是 图数据库 之上的内存缓存层**，不是替代 图数据库
+   - 图数据库 存储持久化基线数据
+   - 内存孪生层 维护实时变化的属性（health, risk, metrics）
+   - 启动时从 图数据库 加载基线，运行时在内存操作，定期同步
 
-2. **故障注入只操作 DSS，不直接操作 Neo4j**
-   - 故障数据注入 DSS → DSS 更新节点实时状态
-   - DSS 定期或按需同步回 Neo4j
-   - reset 时清除故障数据，恢复到 Neo4j 基线
+2. **故障注入只操作 内存孪生层，不直接操作 图数据库**
+   - 故障数据注入 内存孪生层 → 内存孪生层 更新节点实时状态
+   - 内存孪生层 定期或按需同步回 图数据库
+   - reset 时清除故障数据，恢复到 图数据库 基线
 
-3. **巡检展示系统从 DSS 读取数据**
+3. **巡检展示系统从 内存孪生层 读取数据**
    - 拓扑视图 → GET /datasource/topology/{app}
    - 节点指标 → GET /datasource/metrics/{id}
-   - 保证实时性，无 Neo4j 查询延迟
+   - 保证实时性，无 图数据库 查询延迟

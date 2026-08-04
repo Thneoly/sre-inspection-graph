@@ -2,7 +2,7 @@
 
 ## 0. 上下文
 
-[`doc/14`](./14-long-term-tech-strategy.md) 决定产品形态为 **Tauri 2.x 桌面应用**(不走 SaaS Web 默认路径),[`doc/16`](./16-repo-and-codebase-layout.md) 落档了仓库布局。本文是 **Tauri 桌面层的具体技术规约**,覆盖 webview ↔ Rust ↔ engine-core 的边界设计、安全模型、打包发布。
+本平台产品形态为 **Tauri 2.x 桌面应用**(不走 SaaS Web 默认路径);仓库布局见根 `README.md`。本文是 **Tauri 桌面层的具体技术规约**,覆盖 webview ↔ Rust ↔ engine-core 的边界设计、安全模型、打包发布。
 
 > 这是一篇技术规约文档,所有写 Tauri commands、调 invoke()、配置 Tauri plugin、做跨平台打包的代码都应对照本文。
 
@@ -323,10 +323,8 @@ pub trait Storage: Send + Sync {
 
 pub struct SqliteStorage { pool: sqlx::SqlitePool, ... }
 pub struct ParquetArchive { base_dir: PathBuf, ... }
-pub struct Neo4jStorage { driver: neo4rs::Graph, ... }      // optional feature
 
 impl Storage for SqliteStorage { ... }
-impl Storage for Neo4jStorage { ... }
 ```
 
 ### 6.2 数据分层
@@ -339,7 +337,7 @@ impl Storage for Neo4jStorage { ... }
 | Connector 配置 / kubeconfig 引用 | **TOML 配置**(`~/.config/sre-graph/config.toml`) | 用户可手编辑 |
 | Inspection findings | **SQLite** | 同 executions |
 | 报告产物(.md 文件) | **本地文件**(`~/.local/share/sre-graph/reports/`) | 用户可直接打开 |
-| Neo4j(可选) | **headless 模式**或用户显式启用 | 团队共享需求 |
+| 图数据库(可选) | **headless 模式**或用户显式启用 | 团队共享需求 |
 
 ### 6.3 数据库 schema(SQLite)
 
@@ -625,10 +623,10 @@ make desktop-dev     # 等价 cd desktop && npm run tauri dev
 - DevTools:右键 → Inspect Element(Tauri 2 默认开启 webview devtools)
 - Rust 日志:终端直接看(tracing 输出)
 
-### 10.2 与 reference 对照验证
+### 10.2 与 设计 对照验证
 
 ```bash
-# 终端 1 — Python reference
+# 终端 1 — 对照基线
 make ref-up
 
 # 终端 2 — Tauri 桌面 app
@@ -750,8 +748,7 @@ Tauri 解锁的功能 Web 版做不到:
 
 ## 15. 相关文档
 
-- 战略上下文:[`14-long-term-tech-strategy.md`](./14-long-term-tech-strategy.md)
-- 仓库结构:[`16-repo-and-codebase-layout.md`](./16-repo-and-codebase-layout.md)
+- 仓库结构:见根 `README.md` + `CLAUDE.md`「活跃栈 · 顶层结构」
 - 数据契约(WIT/Arrow):[`15-data-contract-spec.md`](./15-data-contract-spec.md)
 - 导航:[`00-README.md`](./00-README.md)
 

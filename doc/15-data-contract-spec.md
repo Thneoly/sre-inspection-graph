@@ -2,9 +2,8 @@
 
 ## 0. 上下文
 
-本文是 [`14-long-term-tech-strategy.md`](./14-long-term-tech-strategy.md) §4 数据契约决策的**详细规约**。所有 Rust 引擎实现、WASM 插件开发、Tauri 桌面前端、可选 headless CLI **必须遵守本文 schema**。
+本文是数据契约决策的**详细规约**。所有 Rust 引擎实现、WASM 插件开发、Tauri 桌面前端、可选 headless CLI **必须遵守本文 schema**。
 
-> **v0.2 更新**:doc/14 改为 Supervised Rewrite + Tauri 桌面化后,主交付路径不再有"Python ↔ Rust 跨进程边界",REST 退化为 **headless 模式可选层**。本版本加入 **Tauri Commands 层(B)**作为桌面默认 UI ↔ Rust 边界。
 
 **核心决策**:**四层契约**,各司其职,**不使用 protobuf**。
 
@@ -232,7 +231,7 @@ interface handler {
 
   record handler-result {
     success: bool,
-    side-effects-json: string,      /// for DSS twin update
+    side-effects-json: string,      /// for 内存孪生层 twin update
     rollback-id: option<string>,
     message: string,
   }
@@ -271,7 +270,6 @@ wasmtime-wasi = "23"
 # cargo install cargo-component
 ```
 
-Python 端:`wasmtime-py`(只在测试 / CLI 时用,生产 host 是 Rust)。
 
 ## 2. 层 B:Tauri Commands(桌面 UI ↔ Rust)
 
@@ -286,9 +284,9 @@ Python 端:`wasmtime-py`(只在测试 / CLI 时用,生产 host 是 Rust)。
 - 全部 `async fn`
 - 事件 emit 用 snake_case 名词:`fact_emitted`, `connector_synced`
 
-### 2.2 模块命名表(对应 reference Python router)
+### 2.2 模块命名表(对应 connector router)
 
-| Tauri commands 模块 | 等价 reference router | Phase |
+| Tauri commands 模块 | 等价 设计 router | Phase |
 |---|---|---|
 | `topology` | `topology.py` / `access_link.py` / `node_impact.py` | 1-2 |
 | `recovery` | `recovery.py` | 3 |
@@ -615,13 +613,13 @@ utoipa-swagger-ui = "8"
 | BFS depth=4 on 10k-node graph | < 100ms | criterion |
 | Cytoscape 渲染 200 节点 | < 200ms | browser perf |
 
-**Phase 1 验收**:跑通这些 baseline,**与 Python reference 对比 ≥ 5×**。
+**Phase 1 验收**:跑通这些 baseline,**与基线对比 ≥ 5×**。
 
 ## 6. Contract Testing 框架
 
-Supervised Rewrite 下 contract test 是 **单 Rust runner**,不再双跑。Python `reference/` 在本地 dev 手动跑 + curl 对比作 oracle,**不进 CI**。
+Contract test 是 **单 Rust runner**(无双语言双跑)。
 
-每个被复刻的模块,写 Rust contract test(参考 reference 的 pytest 行为):
+每个被复刻的模块,写 Rust contract test(参考 设计 的 pytest 行为):
 
 ```rust
 // tests/contract/prd-002-changes/record_change.rs
@@ -647,11 +645,11 @@ async fn configmap_update_propagation() {
 }
 ```
 
-**测试 fixture 同时被 reference 跑**(本地 dev,非 CI):
+**测试 fixture 同时被 设计 跑**(本地 dev,非 CI):
 
 ```bash
-# 终端 1 — 老 Python 跑同一 fixture
-cd reference && uv run pytest tests/test_change_events.py::test_configmap_propagation
+# 终端 1 — 对照基线跑同一 fixture
+cd 设计 && cargo run pytest tests/test_change_events.py::test_configmap_propagation
 
 # 终端 2 — 新 Rust 跑
 cargo test --test contract -p engine-changes configmap_update_propagation
@@ -659,7 +657,6 @@ cargo test --test contract -p engine-changes configmap_update_propagation
 # 对比:行为对齐(包括 propagated_to 长度等同 / severity 一致)即通过复刻
 ```
 
-复刻完更新 `reference/MIGRATION_STATUS.md` 标 ✅。
 
 
 ## 7. 版本基线锁定(T+0)
@@ -706,18 +703,6 @@ criterion = "0.5"
 proptest = "1"
 ```
 
-### 7.2 Python baseline
-
-```toml
-# backend/pyproject.toml(增量)
-[project.dependencies]
-pyarrow = "^18"
-grpcio = "^1.66"        # for pyarrow.flight
-fastapi = "^0.115"
-pydantic = "^2.9"
-httpx = "^0.27"
-```
-
 ### 7.3 升级节奏
 
 - **patch 版本**:可随意升,CI 通过即可
@@ -732,11 +717,11 @@ httpx = "^0.27"
 | WASM capability 注入 | rule 调 k8s 删 Pod | 默认 deny-all,白名单 capability,Recovery handler 严格审计 |
 | Arrow Flight 跨网络 | 中间人 / 重放 | mTLS + 短 TTL token |
 | REST 控制面 | 越权 / 注入 | OAuth2/JWT(Phase 2 接入),input 强 Pydantic / serde 校验 |
-| Neo4j 持久化 | 写入污染 | 所有写操作经 Rust 引擎,Python adapter 仅作 sink |
+| 图数据库 持久化 | 写入污染 | 所有写操作经 Rust 引擎,外部 adapter 仅作 sink |
 
 ## 9. 不做(本规范)
 
-- **不用 protobuf**(理由见 doc/14 §4)
+- **不用 protobuf**
 - **不用 GraphQL**(REST + 内嵌 BFS 端点足够)
 - **不用 MessagePack / CBOR / Avro**(选定 Arrow + JSON 不再增)
 - **不在 WASM 边界传 Arrow**(用 WIT 即可,Arrow 留 host 内部)
@@ -748,16 +733,11 @@ httpx = "^0.27"
 # WIT 文件检查
 wasm-tools component wit wit/
 
-# Arrow schema 比对
-python -c "import pyarrow.parquet as pq; print(pq.read_schema('sample.parquet'))"
+# Arrow schema 比对 —— engine-storage 自带 dump example
+#   cargo run -p engine-storage --example dump_topology -- db.sqlite
 
-# Flight 端点联通性
-python -c "
-import pyarrow.flight as flight
-c = flight.FlightClient('grpc://localhost:50051')
-for f in c.list_flights():
-    print(f.descriptor)
-"
+# headless sync / view 验证 —— engine-cli tick + inspect_views example
+#   cargo run -p engine-cli --release -- tick
 
 # OpenAPI lint
 npx @redocly/cli lint http://localhost:8080/openapi.json
@@ -774,7 +754,6 @@ make contract-test         # 运行 pytest + cargo test
 
 ## 12. 相关文档
 
-- 上游决策:[`14-long-term-tech-strategy.md`](./14-long-term-tech-strategy.md)
 - PRD 实施:[`11-PRD-005-...`](./11-PRD-005-universal-topology-service.md) / [`12-PRD-006-...`](./12-PRD-006-code-repo-source.md)
 - 端到端剧本:[`13-story-unknown-dep-stripe.md`](./13-story-unknown-dep-stripe.md)
 - 导航:[`00-README.md`](./00-README.md)

@@ -2,13 +2,13 @@
 
 > **状态**:设计阶段(待评审)
 > **依赖**:PRD-004(connector 框架已就绪)、PRD-002(ChangeEvent + 关联机制已就绪)
-> **影响范围**:数据层底座重构 — DSS 升级 + 新增 3 个子模块 + 既有 6 个 connector 改造
+> **影响范围**:数据层底座重构 — 内存孪生层 升级 + 新增 3 个子模块 + 既有 6 个 connector 改造
 
 ---
 
 ## 1. 背景与问题陈述
 
-PRD-004 完成后,平台具备 6 个 connector(K8s / Prometheus / Jaeger / flagd / K8s-events / K8s-watch)持续同步真实集群拓扑到 DSS。但**现网部署的资源远不止 K8s 集群内**:
+PRD-004 完成后,平台具备 6 个 connector(K8s / Prometheus / Jaeger / flagd / K8s-events / K8s-watch)持续同步真实集群拓扑到 内存孪生层。但**现网部署的资源远不止 K8s 集群内**:
 
 - **集群外网络设施**:ELB / APIG / Gateway / CDN / WAF
 - **集群外数据底座**:托管 RDS / 云 Redis / 云 Kafka / 对象存储 / ES 集群
@@ -16,7 +16,7 @@ PRD-004 完成后,平台具备 6 个 connector(K8s / Prometheus / Jaeger / flagd
 - **声明源**:ArgoCD Application / Terraform state / Helm values
 - **客户端嵌入依赖**:SDK 内嵌的 Stripe / Twilio / 外部 SaaS
 
-当前接入策略是**每类资源一个 ad-hoc 通道**:K8s 自动、中间件靠 `detect_middleware()` 半自动、其余靠 `scripts/add_infra_nodes.py` 手工写 Neo4j。这条路有 5 个不可持续的问题:
+当前接入策略是**每类资源一个 ad-hoc 通道**:K8s 自动、中间件靠 `detect_middleware()` 半自动、其余靠 `scripts/add_infra_nodes.py` 手工写 图数据库。这条路有 5 个不可持续的问题:
 
 | 问题 | 后果 |
 |---|---|
@@ -26,7 +26,7 @@ PRD-004 完成后,平台具备 6 个 connector(K8s / Prometheus / Jaeger / flagd
 | `add_infra_nodes.py` 手工脚本 | `make clean` 即丢;变更不感知 |
 | 删除策略靠 `discovery_method` 字符串字面值 | 任一 connector 改字面值就破坏其他 connector 的隔离 |
 
-**PRD-005 目标**:把"N 个独立 connector → 各自写 DSS"重构为"**N 个 connector → 发 Fact → Identity Resolver 合并 → 单一 Canonical Graph**",加一条 **Trace-driven Unknown Dependency Queue 做完整度自检**。
+**PRD-005 目标**:把"N 个独立 connector → 各自写 内存孪生层"重构为"**N 个 connector → 发 Fact → Identity Resolver 合并 → 单一 Canonical Graph**",加一条 **Trace-driven Unknown Dependency Queue 做完整度自检**。
 
 ---
 
@@ -98,7 +98,7 @@ ArgoCD App / Terraform state / Helm values 是"应该有什么";K8sConnector / C
          ▼                              暴露给前端
 ┌────────────────────┐                  /api/v1/topology
 │ Canonical Graph    │                  /unknown-deps
-│ = 升级后的 DSS     │                  → SRE 看到 → 装新 connector
+│ = 升级后的 内存孪生层     │                  → SRE 看到 → 装新 connector
 │ + provenance 字段  │                                          
 │ (每个属性谁产的)   │
 └──────────┬─────────┘
@@ -116,7 +116,7 @@ ArgoCD App / Terraform state / Helm values 是"应该有什么";K8sConnector / C
 
 ### 4.1 TopologyFact 契约
 
-```python
+```
 # backend/app/topology/models.py
 
 @dataclass
@@ -162,9 +162,9 @@ RDS:
 
 不在表里的字段 → 弃写 + warning(防 connector 偷偷加字段)。
 
-### 4.4 节点 provenance 字段(DSS 扩展)
+### 4.4 节点 provenance 字段(内存孪生层 扩展)
 
-```python
+```
 # backend/app/datasource/models.py  DataNode 增加
 class DataNode:
     ...
@@ -185,7 +185,7 @@ class FactProvenance:
 
 ## 5. Identity Resolver 算法
 
-```python
+```
 # backend/app/topology/identity_resolver.py
 
 async def resolve(fact: TopologyFact):
@@ -221,7 +221,7 @@ Unknown Dependency Queue 入队:
 ```
 
 ### 6.2 自动富化
-```python
+```
 # backend/app/topology/unknown_dep.py
 
 async def enrich(unknown_dep):
@@ -288,7 +288,7 @@ async def enrich(unknown_dep):
 
 | Sprint | 工作量 | 内容 | 验证 |
 |---|---|---|---|
-| **S1 Fact 总线** | 2 周 | 抽 `fact_bus.py` + `identity_resolver.py` + DSS provenance 字段;现有 6 个 connector 改 `publish_fact` 适配层 | 既有 472 后端测试零回归 |
+| **S1 Fact 总线** | 2 周 | 抽 `fact_bus.py` + `identity_resolver.py` + 内存孪生层 provenance 字段;现有 6 个 connector 改 `publish_fact` 适配层 | 既有 472 后端测试零回归 |
 | **S2 Trace 增强**(最高 ROI) | 1 周 | `trace_aggregator.py` 加 `_extract_db_dependencies` / `_extract_msg_dependencies` / `_extract_http_egress`;span attrs 识别 db/messaging/http | 测试集群里 OTel demo 自动发现 Valkey / Kafka 边 |
 | **S3 Unknown Dep Queue** | 1 周 | `unknown_dep.py` + 端点 + 前端 `/topology/unknown-deps` 页 | trace 看到外部域名 → 队列内可见 + DNS/ASN 自动富化 |
 | **S4 Cloud API 框架 + 首云** | 1 周框架 + 每云 1-2 周 | `connectors/cloud/base_cloud_connector.py` 抽象;华为云 RDS / ELB / DMS Kafka 三个资源接通 | 现网 vm 集群外的托管 MySQL/Kafka 自动入图 |
@@ -302,7 +302,7 @@ async def enrich(unknown_dep):
 ### S1 验收
 - [ ] `fact_bus.publish()` + `identity_resolver.resolve()` 单测覆盖 ≥ 20 条
 - [ ] 现有 6 个 connector 经 BaseConnector 改造后,全部 472 测试通过
-- [ ] DSS 节点带 `provenance` 字段,GET `/datasource/nodes/{id}` 返回字段所有权信息
+- [ ] 内存孪生层 节点带 `provenance` 字段,GET `/datasource/nodes/{id}` 返回字段所有权信息
 
 ### S2 验收
 - [ ] OTel demo 集群运行 5 分钟后,图谱里出现 `cart -CALLS-> valkey` `checkout -PRODUCES_TO-> kafka:orders` 边
@@ -318,7 +318,7 @@ async def enrich(unknown_dep):
 - [ ] PRD-001 `kill_query` 真模式按 target.cluster_id 路由到正确实例
 
 ### S5 验收
-- [ ] Nacos 服务实例上下线 → DSS Service 节点 endpoints 列表实时更新
+- [ ] Nacos 服务实例上下线 → 内存孪生层 Service 节点 endpoints 列表实时更新
 - [ ] Kong 路由变更 → 产 ChangeEvent(source=gateway_admin)
 
 ### S6 验收
@@ -364,7 +364,7 @@ backend/app/
 │   ├── field_ownership.yaml             # 字段所有权配置
 │   └── arbiter.py                       # 冲突仲裁
 ├── datasource/
-│   ├── store.py                         # DSS:加 correlation_index + provenance
+│   ├── store.py                         # 内存孪生层:加 correlation_index + provenance
 │   ├── models.py                        # DataNode:加 provenance / correlation_keys
 │   └── connectors/
 │       ├── base.py                      # BaseConnector:加 publish_fact 适配
@@ -390,4 +390,4 @@ backend/app/
 
 ## 14. 一句话总结
 
-PRD-005 把架构从"**N 个独立 connector → 各自写 DSS**"重构为"**N 个 connector → 发 Fact → Identity Resolver 合并 → 单一 Canonical Graph**",加 **Trace-driven Unknown Dependency Queue 做完整度自检**。Sprint 2(trace_aggregator 增强单文件)ROI 最高,先做;Sprint 4(Cloud API)解决 ELB / RDS / Kafka 等集群外资产盲区。
+PRD-005 把架构从"**N 个独立 connector → 各自写 内存孪生层**"重构为"**N 个 connector → 发 Fact → Identity Resolver 合并 → 单一 Canonical Graph**",加 **Trace-driven Unknown Dependency Queue 做完整度自检**。Sprint 2(trace_aggregator 增强单文件)ROI 最高,先做;Sprint 4(Cloud API)解决 ELB / RDS / Kafka 等集群外资产盲区。
