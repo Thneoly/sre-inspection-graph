@@ -127,7 +127,7 @@ impl HttpClientHost for State {
 
 ## 效果与边界
 
-现在 6 个 connector 各自持有最小能力:k8s / prometheus / jaeger 只要 `http-client`,code-repo 只要 `fs-read`,flagd 走 `http-write`(POST 一个 ResolveAll)。加一种新能力 = WIT 加一个 interface + 宿主加一个 impl,插件侧按需申明。
+现在 6 个 connector 各自持有最小能力:k8s / prometheus / jaeger / k8s-events 只要 `http-client`,code-repo 只要 `fs-read`,flagd 走 `http-write`(POST 一个 ResolveAll)。加一种新能力 = WIT 加一个 interface + 宿主加一个 impl,插件侧按需申明。
 
 诚实说边界:这套模型防的是**插件的能力逃逸**(它不该碰的东西),不防宿主自己把凭据喂给它 —— 比如 k8s connector 经 kubectl proxy 访问明文 API,TLS 和认证都在 proxy 那层,这是我刻意的架构决策(凭据不过 WASM 边界),但意味着信任链里有「proxy 是本地的」这个前提。安全是分层的,沙箱只是其中一层。
 

@@ -41,7 +41,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
                 ↑ 干跑爆炸半径          ↑ 风险门        ↑ 出问题自动反向回滚
 ```
 
-所有数据来自真实的 K8s 集群、Jaeger、Prometheus —— 不掺 mock。
+所有数据来自真实的 K8s 集群和 Jaeger —— 不掺 mock(Prometheus connector 也在,但我这套测试集群里的 Prometheus 常驻 OOM,指标维度暂空,正好当「数据源缺席时系统不崩」的演练)。
 
 ## 为什么是桌面工具,而不是 Web 服务?
 
@@ -71,7 +71,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 
 技术栈从下到上:
 
-- **Rust engine**(8 个业务 crate):`engine-core`(canonical Fact + Arrow Schema)· `engine-identity`(多源拓扑合并)· `engine-recovery`(动作引擎)· `engine-changes`(变更追踪)· `engine-reports`(报告)· `engine-wasm`(wasmtime host)· `engine-storage`(SQLite + Parquet)
+- **Rust engine**(8 个业务 crate):`engine-core`(canonical Fact + Arrow Schema)· `engine-identity`(多源拓扑合并)· `engine-recovery`(动作引擎)· `engine-changes`(变更追踪)· `engine-reports`(报告)· `engine-wasm`(wasmtime host)· `engine-storage`(SQLite + Parquet)· `engine-cli`(headless 验证入口)
 - **WASM connector**(6 个,`wasm32-wasip2`):k8s / prometheus / jaeger / k8s-events / flagd / code-repo
 - **Tauri 后端**:`#[tauri::command]` 薄命令层 + AppState
 - **前端**:React 18 + TypeScript + AntD 6 + Cytoscape + TanStack Query

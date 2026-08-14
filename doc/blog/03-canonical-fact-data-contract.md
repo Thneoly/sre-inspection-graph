@@ -35,11 +35,11 @@ pub struct Fact {
 
 规则只有一条:**所有下游只认 Fact**。存储层存 Fact、identity 消费 Fact、graph 从 Fact 建、UI 拿到的也是 Fact 的投影。K8s JSON 的形状、Jaeger trace 的结构,到了内核边界就消失了。
 
-再把这条契约焊死在类型层:`engine-core` 里有一个 `fact_schema()`,返回这张 7 列表的 **Arrow Schema**。Fact 批量落库走 Arrow `RecordBatch`,归档走 Parquet —— 同一个 schema,三个去处,不存在「存的时候一列、读的时候另一列」。
+再把这条契约焊死在类型层:`engine-core` 里有一个 `fact_schema()`,返回这张 7 列表的 **Arrow Schema**。`FactBatch` 能零拷贝转成 Arrow `RecordBatch`(Parquet 归档走这条);SQLite 落库的列也由同一个 schema 定义 —— 同一个 schema 管三个去处,不存在「存的时候一列、读的时候另一列」。
 
 ```
-Fact ──→ RecordBatch ──→ SQLite(最新态,物化拓扑)
-                    └──→ Parquet(append-only 归档,按日期分区)
+Fact ──→ RecordBatch ──→ Parquet(append-only 归档,按日期分区)
+  └──→ SQLite(行级 upsert,最新态 + 物化拓扑)
 ```
 
 ## 三层契约:每个边界一个协议
@@ -62,7 +62,7 @@ Fact 解决「数据长什么样」,但一个系统里还有别的边界。我�
 
 最有说服力的不是道理,是后来的账。
 
-**加 connector 变成了「纯增量」**。项目后期我连续加了 5 个 connector —— jaeger(聚合跨服务 span 成 CALLS 边)、k8s-events(K8s 事件流)、flagd(特性开关 diff)、code-repo(扫描本地仓库)、prometheus(PromQL)。**每一个都是只新增一个 WASM 模块 + 一条 manifest 配置,内核和全部下游零改动。** 拓扑合并、去重、悬空过滤、视图、恢复引擎对新数据源一无所知,但自动生效 —— 因为它们只认 Fact。
+**加 connector 变成了「纯增量」**。整个项目先后加了 5 个 connector —— prometheus(PromQL)、jaeger(聚合跨服务 span 成 CALLS 边)、k8s-events(K8s 事件流)、flagd(特性开关 diff)、code-repo(扫描本地仓库)。**每一个都是只新增一个 WASM 模块 + 一条 manifest 配置,内核和全部下游零改动。** 拓扑合并、去重、悬空过滤、视图、恢复引擎对新数据源一无所知,但自动生效 —— 因为它们只认 Fact。
 
 **新增一种 Fact 语义只动一处**。后来要支持「变更事件」(ChangeEvent),做法是引入 `kind="change"` 的 Fact,在 sync 管线里加一个路由:遇到这种 kind 就转成变更记录而不是拓扑。下游的图逻辑完全没动。
 
