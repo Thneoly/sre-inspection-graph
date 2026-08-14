@@ -141,6 +141,7 @@ cd desktop && npm test                  # vitest
 ## 文档导航
 
 - **[`CASE_STUDY.md`](CASE_STUDY.md)** —— 完整工程叙事:4 个架构决策的 STAR 权衡 + 量化 + 深入探讨 Q&A(面试/深读用)。
+- `doc/blog/` —— 4 篇实践博客:全栈纵切 · WASM capability 沙箱 · 数据契约 · Identity Resolution。
 - `doc/15-17` —— 数据契约规范(WIT / Tauri IPC / Arrow)· repo 布局 · Tauri 架构。
 - `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
 - `doc/01-10` —— 原始需求 / 4 层图模型 / 6 视图 / 故障类型 / 数据源服务。

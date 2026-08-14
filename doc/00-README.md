@@ -1,6 +1,6 @@
 # 00 — 文档导航
 
-本目录共 16 份文档(00 导航 + 01-13 设计规约 + 15/17 架构),按"读者动机"分组。
+本目录共 20 份文档(00 导航 + 01-13 设计规约 + 15/17 架构 + blog/4 篇),按"读者动机"分组。
 
 ## 📁 分组速查
 
@@ -47,6 +47,15 @@
 |---|------|--------|--------|
 | 15 | [数据契约规范](./15-data-contract-spec.md) | 四层契约:WIT + Tauri Commands + Arrow + REST/Flight(headless) | 写代码前对照查 |
 | 17 | [Tauri 桌面架构](./17-tauri-desktop-architecture.md) | Tauri 2.x commands / IPC / 本地存储 / 跨平台打包 / 安全模型 | 桌面 app 开发前必读 |
+
+### G. 实践博客(独立成篇,可单独读)
+
+| # | 文档 | 一句话 |
+|---|------|--------|
+| blog/01 | [一个人从 Rust 内核做到 React 前端](./blog/01-fullstack-sre-graph-tool.md) | 系列入口:全貌 / 为什么桌面 / 全栈纵切 |
+| blog/02 | [WASM capability 沙箱](./blog/02-wasm-capability-sandbox.md) | 不可信插件的 deny-by-default 模型 + fs 路径逃逸防御 |
+| blog/03 | [canonical Fact 与三层数据契约](./blog/03-canonical-fact-data-contract.md) | N×M 耦合怎么收敛成 N+M |
+| blog/04 | [Identity Resolution](./blog/04-identity-resolution.md) | 同一资源不同 ID 的合并 + 决定性不变量 + 「何时不做」 |
 
 ## 🧭 按角色选路
 
