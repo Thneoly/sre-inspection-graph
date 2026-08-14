@@ -116,12 +116,12 @@ graph_data/
 ### 常用命令
 
 ```bash
-# Engine
-cargo build --workspace                      # 一次出 engine binaries + Tauri binary
-cargo test --workspace                       # 全 Rust 单测
-cargo clippy --workspace --all-targets -- -D warnings
-engine-cli tick                              # 加载 manifest + 跑一次 sync_all
-engine-cli tick --loop --interval=30         # 持续 sync(Ctrl-C 退)
+# Engine(engine/ 是独立 workspace,命令在 engine/ 下跑)
+cd engine && cargo build --workspace
+cd engine && cargo test --workspace
+cd engine && cargo clippy --workspace --all-targets -- -D warnings
+cargo run --release -p engine-cli -- tick              # 加载 manifest + 跑一次 sync_all
+cargo run --release -p engine-cli -- tick --loop --interval=30   # 持续 sync(Ctrl-C 退)
 
 # WASM modules(独立 workspace,target 隔离)
 cd modules && cargo wasi-build               # 出 wasm32-wasip2 产物

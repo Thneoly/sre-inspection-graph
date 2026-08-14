@@ -76,7 +76,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 - **Tauri 后端**:`#[tauri::command]` 薄命令层 + AppState
 - **前端**:React 18 + TypeScript + AntD 6 + Cytoscape + TanStack Query
 
-规模:~32k 行手写代码(Rust 28.7k + TS 3.3k),517 个 Rust 测试。
+规模:~32k 行手写代码(Rust 28.7k + TS 3.3k),403 个 Rust 测试。
 
 最深的感受是**契约的价值**。单人项目最大的风险不是写不完,是改不动 —— 三个月前的自己就是最陌生的协作者。所以我从第一天就定了三层数据契约(WIT / Tauri IPC / Arrow),后面每加一个 connector、每加一个视图,内核几乎不用动。这个展开是[下一篇](./03-canonical-fact-data-contract.md)的主题。
 
@@ -102,7 +102,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 这个项目教给我的,比「学会 Rust」多得多:
 
 - **架构是关于边界的**:WIT 边界、IPC 边界、存储边界 —— 每层契约清晰,扩展才便宜。
-- **可测性是设计出来的**:领域逻辑全部写成吃 `&Topology` 的纯函数,不碰 I/O,517 个测试才写得动。
+- **可测性是设计出来的**:领域逻辑全部写成吃 `&Topology` 的纯函数,不碰 I/O,403 个测试才写得动。
 - **桌面工具被低估了**:不是所有东西都要长成 SaaS。
 
 仓库(含完整架构文档和 case study):**https://github.com/Thneoly/sre-inspection-graph**

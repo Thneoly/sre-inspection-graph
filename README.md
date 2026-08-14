@@ -99,7 +99,7 @@ flowchart TB
 | WASM connector | Rust guests,`wasm32-wasip2` + module-sdk | ~5.4k LOC,6 connector |
 | Tauri 后端 | Rust,薄命令层 + AppState + 托管 kubectl proxy + 调度/SMTP | ~3.4k LOC |
 | 前端 | React 18 + TypeScript + AntD 6 + Cytoscape + @tanstack/react-query | ~3.3k LOC |
-| 测试 | Rust 单测 + e2e + 前端 vitest | **517 Rust** + 21 vitest |
+| 测试 | Rust 单测 + e2e + 前端 vitest | **403 Rust** + 21 vitest |
 
 **手写代码合计 ~32k LOC**(Rust ~28.7k + TS ~3.3k)。另有 `engine-bindings`(wasmtime bindgen 生成的 host 胶水,不计入手写)。
 
@@ -108,21 +108,20 @@ flowchart TB
 ## 怎么跑
 
 ```bash
-# 1. 构建 WASM connector(modules 是独立 workspace,target 隔离)
+# 1. WASM connector(modules 是独立 workspace,target 隔离)
 cd modules && cargo wasi-build          # 或:make modules-build
 
-# 2. 构建 engine + Tauri binary
-cargo build --workspace                 # 仓库根
+# 2. engine workspace(独立;Tauri 后端随下一步 tauri 命令一起构建)
+cd ../engine && cargo build --workspace
 
-# 3a. 桌面端 dev(GPU 合成层问题时:GDK_BACKEND=x11)
-cd desktop && npm install && npm run tauri dev
+# 3. 桌面端(在 desktop/ 下)
+cd ../desktop && npm install
+npm run tauri dev        # dev(GPU 合成层问题时:GDK_BACKEND=x11)
+npm run tauri build      # 产物 → .AppImage / .deb / .rpm
 
-# 3b. 或出可分发产物
-cd desktop && npm run tauri build       # → .AppImage / .deb / .rpm
-
-# 验证(gate)
-cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
-cd desktop && npm test                  # vitest
+# 验证 gate(仓库根 Makefile 聚合三个 workspace)
+make test-all            # engine 测试 + 前端 vitest
+make check-all           # engine + desktop + modules 的 clippy -D warnings
 ```
 
 > 连真集群:本地 `kubectl proxy --port=8001`,manifest 里 connector 的 `api_base` 指向它。TLS/认证留在 proxy,WASM 只走明文 HTTP,不碰凭据、不加 capability。
@@ -154,7 +153,7 @@ cd desktop && npm test                  # vitest
 
 A single-engineer, full-stack cloud-native SRE control plane: a Rust engine + WebAssembly-sandboxed connectors build a live resource graph from Kubernetes (fused with traces / changes / code), surfaced through a Tauri 2.x desktop UI for topology-aware diagnosis and recovery (dry-run → approve → rollback → auto-verify).
 
-**Stack:** Rust (8 engine crates, wasmtime host, wasm32-wasip2 guests) · Tauri 2.x · React 18 + AntD 6 + Cytoscape · SQLite (latest topology) + Parquet (archive) + Arrow (batch contract). ~32k LOC hand-written (28.7k Rust + 3.3k TS), 517 Rust tests.
+**Stack:** Rust (8 engine crates, wasmtime host, wasm32-wasip2 guests) · Tauri 2.x · React 18 + AntD 6 + Cytoscape · SQLite (latest topology) + Parquet (archive) + Arrow (batch contract). ~32k LOC hand-written (28.7k Rust + 3.3k TS), 403 Rust tests.
 
 **Not a scale story** — deliberately desktop-first, data-stays-on-machine (cf. k9s/Lens). The value is architectural depth and engineering judgment: a 3-layer data contract (WIT / Tauri IPC / Arrow), a deny-by-default capability sandbox for untrusted connectors, and pure I/O-free domain functions with behavior-level contract tests. Validated against a real OpenTelemetry Demo deployment on a local kubeadm cluster (169 nodes / 350 edges).
 
