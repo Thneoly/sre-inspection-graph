@@ -140,6 +140,28 @@ function expandedRowRender(c: ConnectorStatus) {
       {c.last_synced_at && (
         <Descriptions.Item label="last_synced_at"><code>{c.last_synced_at}</code></Descriptions.Item>
       )}
+      {(c.history ?? []).length > 0 && (
+        <Descriptions.Item label={`近 ${c.history.length} 轮(耗时/错误趋势)`}>
+          {(() => {
+            const hist = c.history ?? [];
+            const maxDur = Math.max(...hist.map((s) => s.duration_ms), 1);
+            return (
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 40 }}>
+                {hist.map((s, i) => (
+                  <Tooltip key={i} title={`${s.synced_at} · ${s.fact_count} facts · ${s.duration_ms}ms · ${s.error_count} err`}>
+                    <div style={{
+                      width: 10,
+                      height: Math.max(4, Math.round((s.duration_ms / maxDur) * 40)),
+                      background: s.error_count > 0 ? "#cf1322" : "#52c41a",
+                      borderRadius: 1,
+                    }} />
+                  </Tooltip>
+                ))}
+              </div>
+            );
+          })()}
+        </Descriptions.Item>
+      )}
       {c.last_errors.length > 0 && (
         <Descriptions.Item label="last_errors">
           <ul style={{ margin: 0, paddingLeft: 18 }}>{c.last_errors.map((e, i) => <li key={i}><Text type="danger">{e}</Text></li>)}</ul>

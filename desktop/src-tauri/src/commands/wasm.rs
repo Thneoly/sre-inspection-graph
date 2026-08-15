@@ -148,6 +148,7 @@ pub async fn sync_all_now(
 
 /// sync 管线主体(sync -> upsert facts -> resolve+merge+diff -> detect_changes 自动录
 /// -> apply_change_set -> 返回增量)。`sync_all_now` command 与后台 `sync_loop` 共用。
+#[tracing::instrument(skip(state, config_json))]
 pub async fn run_sync(
     state: &AppState,
     config_json: &str,
@@ -166,11 +167,12 @@ pub async fn run_sync(
     .await;
 
     // 1. raw facts 落 append-only 真相源
-    state
-        .storage
-        .upsert_facts(summary.batch.as_slice())
-        .await
-        .map_err(|e| e.to_string())?;
+    tracing::Instrument::instrument(
+        state.storage.upsert_facts(summary.batch.as_slice()),
+        tracing::info_span!("stage: persist_raw_facts"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // 2. Identity Resolver v0:resolve(最新 topology facts)→ 合入 metric-derived
     //    health(doc/11 §4.3)→ diff(当前 materialized)→ apply。materialized 表是
@@ -196,12 +198,18 @@ pub async fn run_sync(
             &engine_identity::HealthThresholds::default(),
         );
     }
-    let current = state
-        .storage
-        .materialized_topology()
-        .await
-        .map_err(|e| e.to_string())?;
-    let change_set = engine_identity::diff(&current, &next);
+    let current = tracing::Instrument::instrument(
+        state.storage.materialized_topology(),
+        tracing::info_span!("stage: load_current_topology"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let change_set =
+        tracing::Instrument::instrument(
+            std::future::ready(engine_identity::diff(&current, &next)),
+            tracing::info_span!("stage: diff"),
+        )
+        .await;
     // Phase 4.3 后续 - k8s 变更自动录(poll-diff):非首次 sync 时,detect_changes(current,next)
     // -> record_change。首次 sync 抑制(对齐 reference first_sync,防重启录历史 burst)。
     // 必须在 apply_change_set 之前读 current 旧 attrs(之后 materialized 表被覆盖)。
@@ -268,11 +276,12 @@ pub async fn run_sync(
         }
     }
 
-    state
-        .storage
-        .apply_change_set(&change_set)
-        .await
-        .map_err(|e| e.to_string())?;
+    tracing::Instrument::instrument(
+        state.storage.apply_change_set(&change_set),
+        tracing::info_span!("stage: apply_changes"),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let facts: Vec<FactDto> = summary.batch.as_slice().iter().map(FactDto::from).collect();
     let per_connector = summary

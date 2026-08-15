@@ -31,6 +31,8 @@ serde_json   = "1"
 anyhow             = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Phase 6 observability — 日志落盘 + 按天轮转(tracing writer,与现有 fmt 并存)
+tracing-appender   = "0.2"
 # Phase 3.6 - alert event ID 生成(already transitively in lock via tauri)
 uuid = { version = "1", features = ["v4"] }
 

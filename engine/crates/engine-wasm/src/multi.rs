@@ -63,6 +63,7 @@ impl ConnectorEntry {
     /// 给单 connector 跑一次 `sync(config_json)`,返 host-side 的 SyncOutcome。
     /// 错误整理成字符串放入返回的 outcome.errors —— 不向上抛(沿用 sync_all 的
     /// 「单 connector 失败不影响其它」策略)。
+    #[tracing::instrument(skip(self, config_json), fields(connector = %self.name))]
     pub async fn run_sync(&self, config_json: &str) -> SyncOutcome {
         let mut c = self.connector.lock().await;
         match c.sync(config_json).await {
@@ -259,6 +260,7 @@ impl WasmRuntime {
     /// - `batch` —— 全部 connector 产出的 [`engine_core::Fact`] 聚合后的批,可直接
     ///   `.to_record_batch()` 走 Arrow
     /// - `summary` —— 每个 connector 的 sync 摘要(facts 数 / errors / 耗时)
+    #[tracing::instrument(skip(self, config_json))]
     pub async fn sync_all(&self, config_json: &str) -> SyncSummary {
         let mut batch = FactBatch::new();
         let mut per_connector = Vec::with_capacity(self.entries.len());

@@ -183,14 +183,55 @@ pub struct AppState {
 }
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
+/// 解析日志落盘目录:env `SRE_GRAPH_LOG_DIR` 优先,默认与 SQLite 同基准的 app data 目录下 `logs/`。
+/// 在 Tauri builder 之前初始化(早于 setup,拿不到 AppHandle),故手工推导 Linux 默认路径。
+fn resolve_log_dir() -> PathBuf {
+    if let Ok(v) = std::env::var("SRE_GRAPH_LOG_DIR") {
+        return PathBuf::from(v);
+    }
+    let base = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".local/share/io.sregraph.desktop"))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let dir = base.join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// 启动时清理过期日志文件(tracing-appender 只轮转不清理,保留期自己管)。
+fn prune_old_logs(dir: &std::path::Path, keep_days: u64) {
+    prune_old_logs_with_now(dir, keep_days, std::time::SystemTime::now());
+}
+
+fn prune_old_logs_with_now(dir: &std::path::Path, keep_days: u64, now: std::time::SystemTime) {
+    let cutoff = now - std::time::Duration::from_secs(keep_days * 86_400);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let Ok(md) = e.metadata() else { continue };
+            if md.is_file() && md.modified().map(|m| m < cutoff).unwrap_or(false) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
 pub fn run() {
+    // Phase 6 observability —— 日志落盘:按天滚动文件(stderr 同步保留)+ 启动清理过期文件。
+    // span 关闭事件(含耗时)在更细的日志级别,RUST_LOG 调到 debug/trace 可见。
+    let log_dir = resolve_log_dir();
+    prune_old_logs(&log_dir, 14);
+    let appender = tracing_appender::rolling::daily(&log_dir, "sre-graph.log");
     // tracing-subscriber 失败(已被初始化)不致命,可忽略
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .with_writer(
+            tracing_subscriber::fmt::writer::MakeWriterExt::and(std::io::stderr, appender),
+        )
         .try_init();
+    tracing::info!(log_dir = %log_dir.display(), "file logging enabled (daily rotation, keep 14d)");
 
     let (runtime, connector_statuses) = load_wasm_runtime();
 
@@ -403,4 +444,26 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_old_logs_respects_retention_boundary() {
+        // 注入 now 边界测保留期:文件 mtime=真实创建时刻 T;
+        // now=T+13d(未过期)→ 保留;now=T+15d(过期)→ 清理。
+        let dir = std::env::temp_dir().join(format!("sre-log-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("sre-graph.log.2099.01.01");
+        std::fs::write(&f, "x").unwrap();
+        let created = std::fs::metadata(&f).unwrap().modified().unwrap();
+        prune_old_logs_with_now(&dir, 14, created + std::time::Duration::from_secs(13 * 86_400));
+        assert!(f.exists(), "13 天(未过 14 天线)保留");
+        prune_old_logs_with_now(&dir, 14, created + std::time::Duration::from_secs(15 * 86_400));
+        assert!(!f.exists(), "15 天(过线)清理");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -74,6 +74,14 @@ export interface ConnectorStatus {
   last_fact_count: number | null;
   last_errors: string[];
   last_duration_ms: number | null;
+  /** 最近 N 轮 sync 采样(oldest→newest,服务端环形截断)。 */
+  history: SyncSample[];
+}
+export interface SyncSample {
+  synced_at: string;
+  fact_count: number;
+  duration_ms: number;
+  error_count: number;
 }
 export async function getConnectorsStatus(): Promise<ConnectorStatus[]> {
   return invoke<ConnectorStatus[]>("get_connectors_status");

@@ -29,6 +29,18 @@ use tauri::State;
 
 use crate::AppState;
 
+/// 历史保留轮数:12 轮 × 默认 30s interval ≈ 6 分钟窗口(手动 sync 同样入列)。
+const SYNC_HISTORY_LEN: usize = 12;
+
+/// 单轮 sync 的采样(观测历史;oldest → newest 追加,超长截头)。
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncSample {
+    pub synced_at: String,
+    pub fact_count: usize,
+    pub duration_ms: u64,
+    pub error_count: usize,
+}
+
 /// 单个模块(connector / handler)的可观测状态:静态 manifest 字段 + 最近一次 sync 的运行时字段。
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectorStatus {
@@ -60,6 +72,9 @@ pub struct ConnectorStatus {
     pub last_errors: Vec<String>,
     /// 最近一次 sync guest 自报耗时(毫秒)。
     pub last_duration_ms: Option<u64>,
+    /// 最近 N 轮 sync 采样(oldest → newest,环形截断见 [`SYNC_HISTORY_LEN`];
+    /// 未 sync 过 = 空)。Phase 6 observability:快照 → 准时间序列。
+    pub history: Vec<SyncSample>,
 }
 
 /// 启动播种:从完整 manifest + runtime 加载结果建初始状态表。
@@ -105,6 +120,7 @@ pub fn seed_connector_statuses(
                 last_fact_count: None,
                 last_errors: Vec::new(),
                 last_duration_ms: None,
+                history: Vec::new(),
             }
         })
         .collect()
@@ -127,6 +143,16 @@ pub async fn update_connector_statuses(
             s.last_fact_count = Some(pcs.fact_count);
             s.last_errors = pcs.errors.clone();
             s.last_duration_ms = Some(pcs.duration_ms);
+            s.history.push(SyncSample {
+                synced_at: now_iso.clone(),
+                fact_count: pcs.fact_count,
+                duration_ms: pcs.duration_ms,
+                error_count: pcs.errors.len(),
+            });
+            if s.history.len() > SYNC_HISTORY_LEN {
+                let excess = s.history.len() - SYNC_HISTORY_LEN;
+                s.history.drain(..excess);
+            }
         }
     }
 }
@@ -249,6 +275,34 @@ mod tests {
         assert!(by_name["k8s"].last_errors.is_empty());
         assert_eq!(by_name["prometheus"].last_fact_count, Some(0));
         assert_eq!(by_name["prometheus"].last_errors, vec!["timeout".to_string()]);
+        // 历史采样:两个 connector 各入列 1 条
+        assert_eq!(by_name["k8s"].history.len(), 1);
+        assert_eq!(by_name["k8s"].history[0].fact_count, 5);
+        assert_eq!(by_name["k8s"].history[0].duration_ms, 120);
+        assert_eq!(by_name["prometheus"].history[0].error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn history_accumulates_and_truncates_at_cap() {
+        let m = manifest(vec![module("k8s", "connector", true)]);
+        let runtime = engine_wasm::WasmRuntime::empty(std::path::PathBuf::new());
+        let statuses = tokio::sync::Mutex::new(seed_connector_statuses(&m, &runtime));
+        // 连推 15 轮:历史应截到 12,且最后一条是第 15 轮
+        for i in 0..15u64 {
+            let per = vec![engine_wasm::ConnectorSyncStatus {
+                name: "k8s".into(),
+                fact_count: i as usize,
+                errors: vec![],
+                duration_ms: i,
+            }];
+            update_connector_statuses(&statuses, &per, format!("2026-07-26T01:00:{i:02}Z")).await;
+        }
+        let guard = statuses.lock().await;
+        let s = &guard[0];
+        assert_eq!(s.history.len(), 12, "capped at SYNC_HISTORY_LEN");
+        assert_eq!(s.history[0].fact_count, 3, "oldest retained = round 3(index 2)");
+        assert_eq!(s.history.last().unwrap().fact_count, 14, "newest = latest round");
+        assert_eq!(s.last_fact_count, Some(14));
     }
 
     #[tokio::test]
