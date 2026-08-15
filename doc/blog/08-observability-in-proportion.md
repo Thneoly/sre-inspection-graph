@@ -60,7 +60,9 @@ fn prune_old_logs_with_now(dir: &std::path::Path, keep_days: u64, now: std::time
 
 ```rust
 #[tracing::instrument(skip(self, config_json), fields(connector = %self.name))]
-pub async fn run_sync(&self, config_json: &str) -> SyncOutcome { ... }
+pub async fn run_sync(&self, config_json: &str) -> SyncOutcome {
+    // …(函数体,略)
+}
 ```
 
 desktop 侧整条 `run_sync` 一个 span,内部四个阶段各一个子 span。这里有个 **Rust 异步的陷阱值得记**:直觉写法是在阶段前后 `info_span!(...).entered()` 拿 guard —— 但 guard 跨 `.await` 不是 `Send`,而 Tauri 命令要求 future 是 Send,直接编译失败。正确姿势是用 `Instrument` **包 future**:
