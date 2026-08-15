@@ -115,7 +115,7 @@ impl HttpClientHost for State {
   ↓ 否 → PermissionDenied
 ```
 
-符号链接逃逸同理 —— canonicalize 之后藏不住。这几条路径都有单测钉死(`../../etc/passwd`、符号链接跳出 root、空 roots)。真实代码长这样(`engine-wasm/src/fs_host.rs`,节选):
+符号链接逃逸同理 —— canonicalize 之后藏不住。这几条路径都有单测钉死(`../../etc/passwd`、符号链接跳出 root、空 roots)。函数本体逐字如下(`engine-wasm/src/fs_host.rs`):
 
 ```rust
 fn resolve_and_check(
@@ -124,16 +124,23 @@ fn resolve_and_check(
     path: &str,
 ) -> Result<PathBuf, HostFsError> {
     if !allowed_capabilities.contains(CAP_FS_READ) {
-        return Err(HostFsError::PermissionDenied(/* capability 未申明 */));
+        return Err(HostFsError::PermissionDenied(format!(
+            "capability '{CAP_FS_READ}' not declared in module manifest"
+        )));
     }
     if allowed_roots.is_empty() {
-        return Err(HostFsError::PermissionDenied(/* 有 cap 无 roots = 无访问 */));
+        return Err(HostFsError::PermissionDenied(
+            "fs-read capability granted but no fs_roots configured in manifest".to_string(),
+        ));
     }
-    // canonicalize 解析 `..` 和符号链接到真实绝对路径 —— 阻断穿越/逃逸的关键
+    // canonicalize 解析 `..` 和符号链接到真实绝对路径 —— 这是阻断目录穿越 /
+    // 符号链接逃逸的关键。路径不存在 -> NotFound。
     let canonical = std::fs::canonicalize(path).map_err(|e| map_io_err(path, e))?;
-    // starts_with 是组件级匹配(/a/b 对 /a/bb 为 false),非字符串前缀
+    // starts_with 是组件级匹配(/a/b 对 /a/bb 为 false),非字符串前缀。
     if !allowed_roots.iter().any(|root| canonical.starts_with(root)) {
-        return Err(HostFsError::PermissionDenied(/* 解析后落在所有 roots 之外 */));
+        return Err(HostFsError::PermissionDenied(format!(
+            "path '{path}' resolves outside all allowed fs_roots"
+        )));
     }
     Ok(canonical)
 }

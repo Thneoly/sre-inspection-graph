@@ -19,22 +19,54 @@
 subgraph(topology, start, max_depth, allowed_edges, direction)
 ```
 
-实现就是 BFS 收集可达节点 ID,然后过滤节点 + 过滤边(两端都在子图内、且边类型在白名单)—— 返回 **induced subgraph**(子图内部的边全保留,不只有 BFS 走过的边)。真实代码(`engine-identity/src/views.rs`,节选):
+实现就是 BFS 收集可达节点 ID,然后过滤节点 + 过滤边(两端都在子图内、且边类型在白名单)—— 返回 **induced subgraph**(子图内部的边全保留,不只有 BFS 走过的边)。逐字摘录(`engine-identity/src/views.rs`;`// …` 开头行是我标的省略,其余与源文件完全一致):
 
 ```rust
-pub fn subgraph(topo: &Topology, start: &str, max_depth: usize,
-                allowed: &[&str], dir: TraversalDir) -> Topology {
+pub fn subgraph(
+    topo: &Topology,
+    start: &str,
+    max_depth: usize,
+    allowed: &[&str],
+    dir: TraversalDir,
+) -> Topology {
+    // start 不在拓扑 -> 空(起点缺失返空图)
     if !topo.nodes.iter().any(|n| n.resource_id == start) {
-        return Topology::default();               // 起点缺失 -> 空图
+        return Topology::default();
     }
+
     let allowed: HashSet<&str> = allowed.iter().copied().collect();
-    // BFS 收集可达节点 ID;每条边须同时过「白名单 + 方向」两道闸:
-    let next = match dir {
-        TraversalDir::Forward => (e.source == node).then(|| e.target.as_str()),
-        TraversalDir::Reverse => (e.target  == node).then(|| e.source.as_str()),
-        TraversalDir::Both    => /* 任一端命中,取另一端 */,
-        ...
-    };
+
+    // BFS 收集可达节点 ID
+    // …(frontier 初始化与起点入队,略)
+    while let Some((node, depth)) = frontier.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        for e in &topo.edges {
+            if !allowed.contains(e.edge_type.as_str()) {
+                continue;
+            }
+            let next = match dir {
+                TraversalDir::Forward => {
+                    if e.source == node {
+                        Some(e.target.as_str())
+                    } else {
+                        None
+                    }
+                }
+                TraversalDir::Reverse => {
+                    if e.target == node {
+                        Some(e.source.as_str())
+                    } else {
+                        None
+                    }
+                }
+                // …(Both 分支同构:任一端命中取另一端,略)
+            };
+            // …(visited 去重后入队,略)
+        }
+    }
+    // …(按 visited 过滤 nodes + edges,返回 induced subgraph,略)
 }
 ```
 

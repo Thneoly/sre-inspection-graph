@@ -90,31 +90,35 @@ verifier 每个动作一个,读孪生上 handler 写的字段验谓词。两个�
 
 **第一层:症状。**verifier 读的是执行后节点的 `attributes_json`,翻执行记录发现:handler 返回的 result 里根本没有 verifier 期望的字段名(`new_replicas`)。那为什么 mock 模式从来没暴露过?—— mock handler 和 verifier 是我同期写的,字段名**恰好互相咬合**;而 WASM handler 是另一端独立实现的,它返回的是自己的字段名(`desired_replicas`)。两个独立实现要对齐到一份**谁也没写下来的隐式契约**上,不咬合是必然,咬合才是巧合。
 
-**第二层:更深的雷。**修字段名时发现真正危险的问题:宿主若把 WASM handler 返回的 attrs **整体替换**到节点上,会把 connector 之前写入的字段(`cluster` / `name` / `replicas_desired`…)全部擦掉 —— 图谱节点从此残缺,残缺还会被物化,下一轮 diff 把它放大成「全图变更」。修法是显式的 **overlay 合并**(真实代码):
+**第二层:更深的雷。**修字段名时发现真正危险的问题:宿主若把 WASM handler 返回的 attrs **整体替换**到节点上,会把 connector 之前写入的字段(`cluster` / `name` / `replicas_desired`…)全部擦掉 —— 图谱节点从此残缺,残缺还会被物化,下一轮 diff 把它放大成「全图变更」。修法是显式的 **overlay 合并** —— 逐字如下(`engine-wasm/src/handler_executor.rs`,动作字段覆盖同名键、connector 字段原样保留):
 
 ```rust
-// engine-wasm/src/handler_executor.rs
 fn merge_values(base: Value, overlay: Value) -> Value {
-    let mut m = match base { Value::Object(m) => m, _ => Map::new() };
+    let mut m = match base {
+        Value::Object(m) => m,
+        _ => Map::new(),
+    };
     if let Value::Object(o) = overlay {
-        for (k, v) in o { m.insert(k, v); }   // 动作字段覆盖,connector 字段保留
+        for (k, v) in o {
+            m.insert(k, v);
+        }
     }
     Value::Object(m)
 }
 ```
 
-**第三层:把隐式契约写显。**verifier 期望的字段名各不相同(scale 看 `new_replicas`,rollback 看 `new_revision`…),与其要求每个 handler 记住这张映射表,不如宿主按 action 统一合成(真实代码):
+**第三层:把隐式契约写显。**verifier 期望的字段名各不相同(scale 看 `new_replicas`,rollback 看 `new_revision`…),与其要求每个 handler 记住这张映射表,不如宿主按 action 统一合成 —— 完整函数逐字如下(同文件):
 
 ```rust
-// 据 action_id 从合并后的 attrs 合成 verifier 期望的 result 字段
 fn synthesize_result_field(action_id: &str, merged_attrs: &Value) -> Option<Value> {
     let pick = |k: &str| merged_attrs.get(k).cloned();
     match action_id {
         "scale_deployment" => pick("desired_replicas").map(|v| json!({ "new_replicas": v })),
-        "restart_pod"      => pick("restart_count").map(|v| json!({ "new_restart_count": v })),
-        "refresh_secret"   => pick("secret_version").map(|v|   json!({ "new_version": v })),
+        "restart_pod" => pick("restart_count").map(|v| json!({ "new_restart_count": v })),
+        "restart_service" => pick("endpoints_refresh_count").map(|v| json!({ "endpoints_refresh_count": v })),
+        "refresh_secret" => pick("secret_version").map(|v| json!({ "new_version": v })),
         "rollback_deployment" => pick("current_revision").map(|v| json!({ "new_revision": v })),
-        // ...
+        _ => None,
     }
 }
 ```

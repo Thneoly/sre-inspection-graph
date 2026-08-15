@@ -59,22 +59,23 @@ code-repo 侧节点 attrs:
         loser 节点丢弃
 ```
 
-winner 仲裁的真实代码(`engine-identity/src/correlation.rs`,节选):
+winner 仲裁逐字如下(`engine-identity/src/correlation.rs`;源码注释是英文的,意思是「高优先级在前,平局取字典序最小 id」):
 
 ```rust
 fn source_priority(source: &str) -> u32 {
     match source {
-        "k8s" => 10,       // 运行时源
-        "code-repo" => 5,  // 声明源
+        "k8s" => 10,
+        "code-repo" => 5,
         _ => 0,
     }
 }
 
-let winner = cluster.iter()
+let winner = cluster
+    .iter()
     .min_by(|a, b| {
         let pa = source_priority(rid_source.get(a.as_str()).map(String::as_str).unwrap_or(""));
         let pb = source_priority(rid_source.get(b.as_str()).map(String::as_str).unwrap_or(""));
-        pb.cmp(&pa).then_with(|| a.cmp(b)) // 高优先级在前;平局 -> lex-min rid
+        pb.cmp(&pa).then_with(|| a.cmp(b)) // higher priority first; tie -> lex-min rid
     })
     .cloned()
     .unwrap();
