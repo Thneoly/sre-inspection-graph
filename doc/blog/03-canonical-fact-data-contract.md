@@ -62,11 +62,34 @@ Fact 解决「数据长什么样」,但一个系统里还有别的边界。我�
 
 最有说服力的不是道理,是后来的账。
 
-**加 connector 变成了「纯增量」**。整个项目先后加了 5 个 connector —— prometheus(PromQL)、jaeger(聚合跨服务 span 成 CALLS 边)、k8s-events(K8s 事件流)、flagd(特性开关 diff)、code-repo(扫描本地仓库)。**每一个都是只新增一个 WASM 模块 + 一条 manifest 配置,内核和全部下游零改动。** 拓扑合并、去重、悬空过滤、视图、恢复引擎对新数据源一无所知,但自动生效 —— 因为它们只认 Fact。
+**加 connector 的真实改动面(git 为证)**。别信我的结论,看提交记录。以 jaeger connector 那次提交为例:15 个文件、+988 行 —— 引擎侧只有:
+
+```
+engine/crates/engine-core/src/types.rs              | 3 +    ← 词表注册表加 CALLS 边类型
+engine/crates/engine-identity/src/views.rs          | 1 +    ← 访问链视图白名单加一行
+engine/crates/engine-wasm/tests/jaeger_http_e2e.rs  | 136 +  ← e2e 测试
+```
+
+管线本身(storage / resolve / graph / 恢复 / 变更)**零改动** —— 其余 800 多行全是 connector 自己和它的测试。拓扑合并、去重、悬空过滤、视图对新数据源一无所知,但自动生效,因为它们只认 Fact。
+
+两个诚实的例外:**k8s-events** 是首个产出 `kind="change"` 的 connector,desktop 的 sync 管线为此加了一处 61 行的路由 —— 新 kind 的语义归属,属于管线的一次性扩展,不是数据源耦合;**code-repo** 引入新 capability `fs-read`,动了 WIT 接口和 host 实现 —— 那是能力模型的扩展点,正是「该被改的那一层」。分清「管线的扩展」和「管线的耦合」,这张账才诚实。
 
 **新增一种 Fact 语义只动一处**。后来要支持「变更事件」(ChangeEvent),做法是引入 `kind="change"` 的 Fact,在 sync 管线里加一个路由:遇到这种 kind 就转成变更记录而不是拓扑。下游的图逻辑完全没动。
 
 **契约测试有了明确的锚**。因为 schema 唯一,每个领域函数的测试就是「喂一组 Fact fixture + 断言输出」,没有各数据源的形状要 mock。403 个测试里相当一部分就是这么写的,便宜且稳。
+
+## 这套契约跑起来多快(实测)
+
+拿本地那张真实集群库(403 条 latest facts → 169 节点 / 350 边)压内核各路径(`engine-storage/examples/bench_core.rs`,release,n=50):
+
+```
+resolve(correlation 合并 + facts_to_graph):  mean 0.77ms(p50 0.76 / max 0.99)
+facts_to_graph only(基线):                  mean 0.28ms
+diff(无变化的最坏全比对):                   mean 0.05ms
+get_graph 读路径(materialized → to_graph):   mean 1.45ms
+```
+
+两个读数值得停下来看:**correlation 合并 pass 在真实数据上的净开销 ≈ 0.5ms**(0.77 − 0.28)—— 「多源拓扑合并」这个复杂性是买得起的;**每 30 秒一轮的增量同步,稳态(无变化)的判定成本是 0.05ms** —— 字符串相等判增量这个「笨办法」在真实规模上完全成立。同一库做 Parquet 归档:403 条 facts 正确落 6 个 `(date, source)` 分区文件(跨天 + 跨源切分),分区键从 Fact 时间戳派生。两个 bench 都是仓库常驻 example,可复跑。
 
 ## 一些实操细节
 

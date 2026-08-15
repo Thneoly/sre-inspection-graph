@@ -84,11 +84,48 @@ verifier 每个动作一个,读孪生上 handler 写的字段验谓词。两个�
 
 链级审批语义:**任一步是 medium/high,整链审一次** —— 不是每步卡一道门。这在「安全」和「紧急时刻可用」之间取了实用的一点。
 
-## 一个真实的坑:跨层字段合并
+## 一次完整的排查:real 模式第一天,verifier 全军覆没
 
-接真实 K8s handler 时踩过一个隐性契约 bug,值得一提:WASM handler 执行完只返回动作生效的字段(`{desired_replicas: 4}`),宿主如果**整体替换**目标节点的 attributes,会把 connector 之前写入的字段(`cluster` / `name` / `replicas_desired`…)全部擦掉 —— verifier 接着读不到字段,全数失败,误触发自动回滚。
+这是整个引擎开发里最值得复盘的一战。接真实 K8s handler(WASM handler 经 `http-write` 真改集群)后的第一次端到端验证:scale +1 执行成功、集群副本数真的变了 —— 然后 **8 个 verifier 全部判 fail,自动回滚被误触发,把刚做的扩容又缩了回去**。
 
-修法是宿主侧做 **overlay 合并**:读目标现有 attrs,WASM 返回的字段覆盖上去,返回合并后的全量;再按动作类型从合并结果里合成 verifier 期望的字段名。教训:凡是「两层各自写同一个对象」的地方,合并语义就是一个必须显式声明的契约。
+**第一层:症状。**verifier 读的是执行后节点的 `attributes_json`,翻执行记录发现:handler 返回的 result 里根本没有 verifier 期望的字段名(`new_replicas`)。那为什么 mock 模式从来没暴露过?—— mock handler 和 verifier 是我同期写的,字段名**恰好互相咬合**;而 WASM handler 是另一端独立实现的,它返回的是自己的字段名(`desired_replicas`)。两个独立实现要对齐到一份**谁也没写下来的隐式契约**上,不咬合是必然,咬合才是巧合。
+
+**第二层:更深的雷。**修字段名时发现真正危险的问题:宿主若把 WASM handler 返回的 attrs **整体替换**到节点上,会把 connector 之前写入的字段(`cluster` / `name` / `replicas_desired`…)全部擦掉 —— 图谱节点从此残缺,残缺还会被物化,下一轮 diff 把它放大成「全图变更」。修法是显式的 **overlay 合并**(真实代码):
+
+```rust
+// engine-wasm/src/handler_executor.rs
+fn merge_values(base: Value, overlay: Value) -> Value {
+    let mut m = match base { Value::Object(m) => m, _ => Map::new() };
+    if let Value::Object(o) = overlay {
+        for (k, v) in o { m.insert(k, v); }   // 动作字段覆盖,connector 字段保留
+    }
+    Value::Object(m)
+}
+```
+
+**第三层:把隐式契约写显。**verifier 期望的字段名各不相同(scale 看 `new_replicas`,rollback 看 `new_revision`…),与其要求每个 handler 记住这张映射表,不如宿主按 action 统一合成(真实代码):
+
+```rust
+// 据 action_id 从合并后的 attrs 合成 verifier 期望的 result 字段
+fn synthesize_result_field(action_id: &str, merged_attrs: &Value) -> Option<Value> {
+    let pick = |k: &str| merged_attrs.get(k).cloned();
+    match action_id {
+        "scale_deployment" => pick("desired_replicas").map(|v| json!({ "new_replicas": v })),
+        "restart_pod"      => pick("restart_count").map(|v| json!({ "new_restart_count": v })),
+        "refresh_secret"   => pick("secret_version").map(|v|   json!({ "new_version": v })),
+        "rollback_deployment" => pick("current_revision").map(|v| json!({ "new_revision": v })),
+        // ...
+    }
+}
+```
+
+修完给这两个纯函数补了单测 —— 不启动任何 WASM 就能测,因为它们本来就与绑定层解耦。复盘三条:
+
+1. **mock 的「全绿」不等于接通了** —— mock 双方共享同一个心智模型,真实对接的两端不共享;
+2. **两层各自写同一个对象时,合并语义是必须显式声明的契约**,不是实现细节;
+3. 排查最好的产物不是那处修复,是把隐式约定变成代码里的显式映射。
+
+坦白说,这三个 bug 在此前的实现里一直是潜伏的 —— real 模式那条路从未真正跑通过,直到这次带真集群的端到端验证才现形。这也是我一直坚持「验证要接真数据源」的原因:有些契约 bug,合成环境里永远绿。
 
 ## 小结
 

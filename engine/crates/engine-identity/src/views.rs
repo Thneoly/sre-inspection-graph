@@ -83,7 +83,7 @@ pub const ACCESS_LINK_EDGES: &[&str] = &[
 /// image-risk 视图 edge 白名单(照 reference view5 Cypher + `USES_IMAGE`),Reverse。
 ///
 /// reference view5 用 plain `USES`;本 port 加 `USES_IMAGE`(k8s connector 产的
-/// container→image 边,语义区别于 config 的 USES,对齐 reference 模型的 USES_IMAGE 概念)。
+/// container→image 边,语义区别于 config 的 USES,对齐模型的 USES_IMAGE 概念)。
 pub const IMAGE_RISK_EDGES: &[&str] = &[
     edge_type::USES,
     edge_type::USES_IMAGE,
@@ -108,7 +108,7 @@ pub fn subgraph(
     allowed: &[&str],
     dir: TraversalDir,
 ) -> Topology {
-    // start 不在拓扑 -> 空(对齐 reference:start 节点缺失返空图)
+    // start 不在拓扑 -> 空(起点缺失返空图)
     if !topo.nodes.iter().any(|n| n.resource_id == start) {
         return Topology::default();
     }

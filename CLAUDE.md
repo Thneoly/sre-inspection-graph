@@ -116,11 +116,11 @@ graph_data/
   - `http_host.rs` / `fs_host.rs` — capability 纯函数实装(与 WIT 绑定解耦,可单测)
   - `handler_executor.rs` — `WasmHandlerExecutor`(impl `HandlerExecutor`,real 模式真改集群)
   - `multi.rs` — `WasmRuntime` 多 connector 编排 + `SyncSummary`(per-connector 计数/错误/耗时)
-  - `lib.rs` — manifest schema(`ModuleManifest`)+ `WasiVersion`
+  - `lib.rs` — manifest schema(`ModuleManifest`)+ `WasiVersion`;`examples/bench_load.rs` 实例化耗时基准
 - **engine-storage** —— `Storage` trait + 双后端:
   - `sqlite.rs` — latest 真相源 + materialized 拓扑 + 各领域表(facts/recovery/change/alert/report)
   - `parquet_store.rs` — append-only 归档(按 date/source 分区)
-  - `examples/` — `dump_topology` / `inspect_views` / `archive_facts`(GUI-less 验证工具)
+  - `examples/` — `dump_topology` / `inspect_views` / `archive_facts`(GUI-less 验证)+ `bench_core`(resolve/diff/get_graph 计时)
 - **engine-recovery** —— PRD-001 恢复引擎:`action_defs.rs`(8 action + 传播规则)· `cascade.rs`(dry-run BFS 爆炸半径)· `execution.rs`(管线/审批/回滚)· `verifiers.rs`(执行后验证 + 自动回滚)· `chains.rs`(多步链)· `handlers.rs`(mock twin handler)· `executor.rs`(`HandlerExecutor` trait)· `models.rs`
 - **engine-changes** —— PRD-002 变更追踪:`models.rs`(ChangeEvent)· `propagation.rs`(反向 BFS + 8 边白名单)· `event_service.rs`(registry + record_change)· `yaml_diff.rs`(噪声剥离 + 确定性 diff)· `frequency.rs`(过频检测)· `alerts.rs` · `alert_correlation.rs`(时间窗关联)· `watch.rs`(poll-diff detect_changes)· `alert_aggregation.rs`(告警聚合视图)· `iso.rs`(ISO8601 工具)
 - **engine-reports** —— PRD-003 自检报告:`gatherers.rs` / `cluster_gatherers.rs` / `incident_gatherers.rs`(I/O-free 采集器)· `health_score.rs` · `generator.rs`(Tera 渲染)· `templates/`(3 模板)· `subscription.rs`(订阅 CRUD)· `scheduler.rs`(no-catch-up 调度)· `email.rs`(EmailSender trait + InMemory 回退)· `runner.rs` · `models.rs`

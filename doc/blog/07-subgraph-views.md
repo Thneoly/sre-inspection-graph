@@ -19,7 +19,26 @@
 subgraph(topology, start, max_depth, allowed_edges, direction)
 ```
 
-实现就是 BFS 收集可达节点 ID,然后过滤节点 + 过滤边(两端都在子图内、且边类型在白名单)—— 返回 **induced subgraph**(子图内部的边全保留,不只有 BFS 走过的边)。~35 行,8 个单测。然后五个视图是五张参数表:
+实现就是 BFS 收集可达节点 ID,然后过滤节点 + 过滤边(两端都在子图内、且边类型在白名单)—— 返回 **induced subgraph**(子图内部的边全保留,不只有 BFS 走过的边)。真实代码(`engine-identity/src/views.rs`,节选):
+
+```rust
+pub fn subgraph(topo: &Topology, start: &str, max_depth: usize,
+                allowed: &[&str], dir: TraversalDir) -> Topology {
+    if !topo.nodes.iter().any(|n| n.resource_id == start) {
+        return Topology::default();               // 起点缺失 -> 空图
+    }
+    let allowed: HashSet<&str> = allowed.iter().copied().collect();
+    // BFS 收集可达节点 ID;每条边须同时过「白名单 + 方向」两道闸:
+    let next = match dir {
+        TraversalDir::Forward => (e.source == node).then(|| e.target.as_str()),
+        TraversalDir::Reverse => (e.target  == node).then(|| e.source.as_str()),
+        TraversalDir::Both    => /* 任一端命中,取另一端 */,
+        ...
+    };
+}
+```
+
+~35 行,8 个单测。然后五个视图是五张参数表:
 
 ```
 节点影响:  start 类型 = Node,   方向 = Reverse,  深度 4   (谁调度/运行在这台上)

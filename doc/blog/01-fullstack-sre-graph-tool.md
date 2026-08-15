@@ -76,7 +76,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 - **Tauri 后端**:`#[tauri::command]` 薄命令层 + AppState
 - **前端**:React 18 + TypeScript + AntD 6 + Cytoscape + TanStack Query
 
-规模:~32k 行手写代码(Rust 28.7k + TS 3.3k),403 个 Rust 测试。
+规模:~32k 行手写代码(Rust 28.7k + TS 3.3k),403 个 Rust 测试。关键路径都量过(仓库带两个可复跑的 bench example):connector 实例化 **6–24ms**、全图 resolve(含多源合并)**0.77ms**、稳态增量判定 **0.05ms** —— 各篇有完整数字。
 
 最深的感受是**契约的价值**。单人项目最大的风险不是写不完,是改不动 —— 三个月前的自己就是最陌生的协作者。所以我从第一天就定了三层数据契约(WIT / Tauri IPC / Arrow),后面每加一个 connector、每加一个视图,内核几乎不用动。这个展开是[下一篇](./03-canonical-fact-data-contract.md)的主题。
 
@@ -99,6 +99,22 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 5. **报告** → 按模板生成 Markdown 巡检报告,cron 订阅邮件发送
 
 每一步都是真数据,没有一步是写死的演示。
+
+## 复现
+
+```bash
+git clone https://github.com/Thneoly/sre-inspection-graph && cd sre-inspection-graph
+make modules-build                 # 构建 6 个 WASM connector
+
+# 实测沙箱成本(本系列数字的来源之一,可直接复跑)
+cargo run --manifest-path engine/Cargo.toml --release \
+  -p engine-wasm --example bench_load -- modules/target/wasm32-wasip2/release 20
+
+# 连真实集群(本地 kubectl proxy --port=8001 后,单次 headless 同步)
+cargo run --manifest-path engine/Cargo.toml --release -p engine-cli -- tick
+```
+
+桌面端与完整 quickstart 见仓库 README。
 
 ## 写在最后
 

@@ -51,6 +51,19 @@ current_revision: 1 → 2
 
 一行,精确,就是这次变更的全部人话。这也顺带修掉一个误报陷阱:如果拿 `ready < desired` 当变更信号,一次普通的滚动过程会被误判成「变更了好几次」。
 
+信号字段表在代码里就是这样一张映射(`engine-changes/src/watch.rs`,真实代码):
+
+```rust
+fn signal_keys(resource_type: &str) -> Option<&'static [&'static str]> {
+    match resource_type {
+        "ConfigMap" | "Secret" => Some(&["data_keys"]),
+        "Deployment" => Some(&["current_revision", "images",
+                               "replicas_desired", "replicas_ready"]),
+        _ => None,
+    }
+}
+```
+
 一个实现细节:diff 的 YAML 输出是我**自己写的确定性发射器**(按键名排序、固定 block-style),没有引入 serde_yaml —— 序列化库的格式随版本漂移的话,「字符串相等的 diff 基准」就烂了。确定性在这里不是洁癖,是正确性依赖。
 
 ## 自动录入:桌面架构下的两条路

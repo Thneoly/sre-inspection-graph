@@ -59,6 +59,27 @@ code-repo 侧节点 attrs:
         loser 节点丢弃
 ```
 
+winner 仲裁的真实代码(`engine-identity/src/correlation.rs`,节选):
+
+```rust
+fn source_priority(source: &str) -> u32 {
+    match source {
+        "k8s" => 10,       // 运行时源
+        "code-repo" => 5,  // 声明源
+        _ => 0,
+    }
+}
+
+let winner = cluster.iter()
+    .min_by(|a, b| {
+        let pa = source_priority(rid_source.get(a.as_str()).map(String::as_str).unwrap_or(""));
+        let pb = source_priority(rid_source.get(b.as_str()).map(String::as_str).unwrap_or(""));
+        pb.cmp(&pa).then_with(|| a.cmp(b)) // 高优先级在前;平局 -> lex-min rid
+    })
+    .cloned()
+    .unwrap();
+```
+
 拿真实数据跑:K8s 的镜像节点赢了(运行时源 > 声明源,这符合直觉 —— 运行时观察到的更可信),code-repo 的 `BUILDS` 边 remap 到 K8s 镜像节点上。于是图上出现了这条横跨两个世界的链:
 
 ```
@@ -84,6 +105,8 @@ diff(current_topology, next_topology)
 如果合并在不同 sync 顺序下产出属性顺序不同的 JSON(哪怕内容一样),diff 会把所有合并节点判为「变了」,每次 sync 都全量重写 —— 图谱的增量维护就废了。所以 winner 平局要字典序、属性要 canonical 排序,并且专门有一个单测:**打乱输入顺序,断言节点集合一致 + 合并后 attrs 字节一致**。
 
 这种「不变量没守住就静默劣化」的坑,最好在写算法之前就想清楚,而不是等症状出现再倒查。
+
+顺带给个实测的代价数字:这套合并 pass 在真实集群库(403 条 facts)上的净开销 ≈ **0.5ms**(resolve 全路径 0.77ms,其中 facts_to_graph 基线 0.28ms;`engine-storage/examples/bench_core.rs`,release,n=50)。多源合并的复杂性,在这个规模上是明确买得起的。
 
 ## 零 schema 改动:把线索藏在 attributes 里
 

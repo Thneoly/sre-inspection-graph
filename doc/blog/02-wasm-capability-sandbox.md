@@ -115,7 +115,31 @@ impl HttpClientHost for State {
   ↓ 否 → PermissionDenied
 ```
 
-符号链接逃逸同理 —— canonicalize 之后藏不住。这几条路径都有单测钉死(`../../etc/passwd`、符号链接跳出 root、空 roots)。
+符号链接逃逸同理 —— canonicalize 之后藏不住。这几条路径都有单测钉死(`../../etc/passwd`、符号链接跳出 root、空 roots)。真实代码长这样(`engine-wasm/src/fs_host.rs`,节选):
+
+```rust
+fn resolve_and_check(
+    allowed_capabilities: &HashSet<String>,
+    allowed_roots: &[PathBuf],
+    path: &str,
+) -> Result<PathBuf, HostFsError> {
+    if !allowed_capabilities.contains(CAP_FS_READ) {
+        return Err(HostFsError::PermissionDenied(/* capability 未申明 */));
+    }
+    if allowed_roots.is_empty() {
+        return Err(HostFsError::PermissionDenied(/* 有 cap 无 roots = 无访问 */));
+    }
+    // canonicalize 解析 `..` 和符号链接到真实绝对路径 —— 阻断穿越/逃逸的关键
+    let canonical = std::fs::canonicalize(path).map_err(|e| map_io_err(path, e))?;
+    // starts_with 是组件级匹配(/a/b 对 /a/bb 为 false),非字符串前缀
+    if !allowed_roots.iter().any(|root| canonical.starts_with(root)) {
+        return Err(HostFsError::PermissionDenied(/* 解析后落在所有 roots 之外 */));
+    }
+    Ok(canonical)
+}
+```
+
+十来行,每行都能对着威胁模型讲出来 —— 这就是「能力收敛成可审计代码」的含义。
 
 对比一下「直接给 WASI preopen 目录」:那等于给了该目录下的**完整读写删**,而且 WASI 的 preopen 语义里防不住程序自己 `canonicalize` 之后再探测。capability 接口让我把「能读什么」收敛成宿主代码里肉眼可审计的十行。
 
@@ -124,6 +148,22 @@ impl HttpClientHost for State {
 插件拿到拒绝时,宿主返回的是**结构化错误**而不是 panic。http-client 把 401/403 映射为 `Unauthorized`、404 为 `NotFound`、超时为 `Timeout`,其余透传给插件自决。fs-read 统一 `PermissionDenied`。
 
 这带来一个很实用的副作用:**故障也是可观测的**。我的 UI 上有个 connectors 管理页,某 connector 本轮 sync 产出 0 fact 时,错误列表里能看到「permission denied: fs-read not granted」—— 用户能立刻明白是配置问题不是玄学。而插件侧,「拿到 Unauthorized → 记一条 error note、返回 0 fact、不崩溃」是每个 connector 的标准行为。
+
+## 沙箱的价格(实测)
+
+隔离不是免费的,所以给个实测数。wasmtime 加载一个 connector(Component 实例化)的真实成本(`cargo run -p engine-wasm --release --example bench_load`,n=20):
+
+| connector | wasm 大小 | 实例化 mean / p50(ms) |
+|---|---|---|
+| hello-world | 61 KB | 5.9 / 5.9 |
+| k8s-mini | 154 KB | 10.1 / 10.2 |
+| code-repo | 202 KB | 12.2 / 12.2 |
+| jaeger | 225 KB | 13.1 / 13.2 |
+| k8s | 265 KB | 23.7 / 23.7 |
+
+(handler-world 的两个 wasm 不是 connector world,bench 自动跳过。)
+
+单 connector **6–24ms、随 wasm 体积近似线性** —— 而且是**启动时一次性**成本:实例常驻,跨每轮 sync 复用。运行期的 capability 校验只是一次 `HashSet` 查询。对比「为每个插件拉容器」的秒级开销,这个价格在桌面进程里可以忽略。这个 bench 是仓库里的常驻 example(`engine-wasm/examples/bench_load.rs`),上面的数字可以自己复跑。
 
 ## 效果与边界
 
