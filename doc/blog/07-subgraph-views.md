@@ -121,4 +121,4 @@ pub fn subgraph(
 
 实现:`engine-identity/src/views.rs`(subgraph 原语)+ `desktop commands/views.rs`(参数表)/**https://github.com/Thneoly/sre-inspection-graph**
 
-> 系列上一篇:[变更与告警的时间线](./06-change-tracking-timeline.md) ｜ 回到开篇:[一个人从 Rust 内核做到 React 前端](./01-fullstack-sre-graph-tool.md)
+> 系列上一篇:[变更与告警的时间线](./06-change-tracking-timeline.md) ｜ 下一篇:[给观测工具自己做观测](./08-observability-in-proportion.md)

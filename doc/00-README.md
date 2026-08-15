@@ -1,6 +1,6 @@
 # 00 — 文档导航
 
-本目录共 23 份文档(00 导航 + 01-13 设计规约 + 15/17 架构 + blog/7 篇),按"读者动机"分组。
+本目录共 24 份文档(00 导航 + 01-13 设计规约 + 15/17 架构 + blog/8 篇),按"读者动机"分组。
 
 ## 📁 分组速查
 
@@ -59,6 +59,7 @@
 | blog/05 | [恢复动作引擎](./blog/05-recovery-action-engine.md) | dry-run / 审批门 / mutable twin / 自动回滚 / 链 |
 | blog/06 | [变更与告警的时间线](./blog/06-change-tracking-timeline.md) | 传播 BFS + YAML diff 去噪 + poll-diff 自动录入 |
 | blog/07 | [一个 subgraph 原语,六个巡检视图](./blog/07-subgraph-views.md) | 参数化视图 + 词表漂移的教训 |
+| blog/08 | [给观测工具自己做观测](./blog/08-observability-in-proportion.md) | 按比例 observability:三件补齐 + 三件刻意不做 |
 
 ## 🧭 按角色选路
 

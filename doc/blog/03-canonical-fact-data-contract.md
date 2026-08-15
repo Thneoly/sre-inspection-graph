@@ -76,7 +76,7 @@ engine/crates/engine-wasm/tests/jaeger_http_e2e.rs  | 136 +  ← e2e 测试
 
 **新增一种 Fact 语义只动一处**。后来要支持「变更事件」(ChangeEvent),做法是引入 `kind="change"` 的 Fact,在 sync 管线里加一个路由:遇到这种 kind 就转成变更记录而不是拓扑。下游的图逻辑完全没动。
 
-**契约测试有了明确的锚**。因为 schema 唯一,每个领域函数的测试就是「喂一组 Fact fixture + 断言输出」,没有各数据源的形状要 mock。403 个测试里相当一部分就是这么写的,便宜且稳。
+**契约测试有了明确的锚**。因为 schema 唯一,每个领域函数的测试就是「喂一组 Fact fixture + 断言输出」,没有各数据源的形状要 mock。405 个测试里相当一部分就是这么写的,便宜且稳。
 
 ## 这套契约跑起来多快(实测)
 

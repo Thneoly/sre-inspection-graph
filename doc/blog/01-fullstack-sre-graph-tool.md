@@ -1,6 +1,6 @@
 # 一个人从 Rust 内核做到 React 前端:我做了一个云原生 SRE 巡检图谱桌面工具
 
-> 这是系列的入口篇。后面六篇会分别拆开讲 WASM 插件沙箱、数据契约、多源拓扑合并、恢复动作引擎、变更追踪、巡检视图 —— 那些是这个项目里最有意思的部分,但你得先看见全貌。
+> 这是系列的入口篇。后面七篇会分别拆开讲 WASM 插件沙箱、数据契约、多源拓扑合并、恢复动作引擎、变更追踪、巡检视图、观测配比 —— 那些是这个项目里最有意思的部分,但你得先看见全貌。
 
 ## 从一个真实的痛点说起
 
@@ -76,7 +76,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 - **Tauri 后端**:`#[tauri::command]` 薄命令层 + AppState
 - **前端**:React 18 + TypeScript + AntD 6 + Cytoscape + TanStack Query
 
-规模:~32k 行手写代码(Rust 28.7k + TS 3.3k),403 个 Rust 测试。关键路径都量过(仓库带两个可复跑的 bench example):connector 实例化 **6–24ms**、全图 resolve(含多源合并)**0.77ms**、稳态增量判定 **0.05ms** —— 各篇有完整数字。
+规模:~32k 行手写代码(Rust 29k + TS 3.3k),405 个 Rust 测试。关键路径都量过(仓库带两个可复跑的 bench example):connector 实例化 **6–24ms**、全图 resolve(含多源合并)**0.77ms**、稳态增量判定 **0.05ms** —— 各篇有完整数字。
 
 最深的感受是**契约的价值**。单人项目最大的风险不是写不完,是改不动 —— 三个月前的自己就是最陌生的协作者。所以我从第一天就定了三层数据契约(WIT / Tauri IPC / Arrow),后面每加一个 connector、每加一个视图,内核几乎不用动。这个展开是[下一篇](./03-canonical-fact-data-contract.md)的主题。
 
@@ -87,6 +87,7 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 - **恢复动作怎么让人敢按下去**?dry-run / 审批门 / 自动回滚 / mutable twin → [恢复动作引擎](./05-recovery-action-engine.md)
 - **「最近改了什么」怎么回答**?传播 BFS / YAML diff 去噪 / 自动录入 → [变更追踪](./06-change-tracking-timeline.md)
 - **六个巡检视图**其实是一个图遍历原语 —— 顺带一个词表漂移的教训 → [subgraph 与视图](./07-subgraph-views.md)
+- **观测工具自己需要多少观测**?按比例补三件、刻意不做三件 → [观测配比](./08-observability-in-proportion.md)
 
 ## 一条完整的链路(真实数据)
 
@@ -121,7 +122,7 @@ cargo run --manifest-path engine/Cargo.toml --release -p engine-cli -- tick
 这个项目教给我的,比「学会 Rust」多得多:
 
 - **架构是关于边界的**:WIT 边界、IPC 边界、存储边界 —— 每层契约清晰,扩展才便宜。
-- **可测性是设计出来的**:领域逻辑全部写成吃 `&Topology` 的纯函数,不碰 I/O,403 个测试才写得动。
+- **可测性是设计出来的**:领域逻辑全部写成吃 `&Topology` 的纯函数,不碰 I/O,405 个测试才写得动。
 - **桌面工具被低估了**:不是所有东西都要长成 SaaS。
 
 仓库(含完整架构文档和 case study):**https://github.com/Thneoly/sre-inspection-graph**

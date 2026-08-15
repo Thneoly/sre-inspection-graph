@@ -216,7 +216,7 @@ fn prune_old_logs_with_now(dir: &std::path::Path, keep_days: u64, now: std::time
 
 pub fn run() {
     // Phase 6 observability —— 日志落盘:按天滚动文件(stderr 同步保留)+ 启动清理过期文件。
-    // span 关闭事件(含耗时)在更细的日志级别,RUST_LOG 调到 debug/trace 可见。
+    // FmtSpan::CLOSE:span 关闭时输出一行含 time.busy/time.idle 的耗时记录。
     let log_dir = resolve_log_dir();
     prune_old_logs(&log_dir, 14);
     let appender = tracing_appender::rolling::daily(&log_dir, "sre-graph.log");

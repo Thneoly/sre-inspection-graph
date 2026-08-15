@@ -6,7 +6,7 @@
 
 一个人从 Rust 内核到 WebAssembly 沙箱、Tauri 桌面端、React UI **全栈设计与实现**的云原生「感知 → 定位 → 恢复」控制面:把分散的 K8s 拓扑、调用链、变更、代码、指标汇成一张资源图谱,让 SRE 在一个桌面端上完成故障定位与恢复编排。
 
-**规模**:~32k 行手写代码(Rust ~28.7k + TS ~3.3k),403 个 Rust 测试 + 21 前端测试,8 个 engine crate + 6 个 WASM connector。
+**规模**:~32k 行手写代码(Rust ~29k + TS ~3.3k),405 个 Rust 测试 + 21 前端测试,8 个 engine crate + 6 个 WASM connector。
 
 ---
 
@@ -83,7 +83,7 @@ SQLite(latest 拓扑)+ Parquet(归档)+ Arrow(批契约)
 
 - **I/O-free 纯领域核**:identity `resolve`/`diff`、recovery `cascade::dry_run`、changes `derive_propagation` 全是吃 `&Topology` / `&ChangeRegistry` 的纯函数,不碰 I/O → 单测覆盖,持久化是独立一层。这是「逻辑可测、I/O 边界薄」的纪律。
 - **mutable twin 架构(recovery)**:handler mock 动作时 mutate `&mut Topology` 孪生的 attrs,verifier 读 mutated attrs 验 predicate,rollback 读 post-action 状态做正确反转 —— 动作生效/验证/回滚全在内存模型上自洽。
-- **行为契约测试**:每个领域函数配 fixture-based 契约测试(合成拓扑 + 期望),403 Rust 测试 + 21 前端测试守住行为。
+- **行为契约测试**:每个领域函数配 fixture-based 契约测试(合成拓扑 + 期望),405 Rust 测试 + 21 前端测试守住行为。
 - **零跨进程 RPC 桌面架构**:webview ↔ Rust 进程内 IPC,无 HTTP server(刻意反模式规避)。
 
 ---
@@ -92,8 +92,8 @@ SQLite(latest 拓扑)+ Parquet(归档)+ Arrow(批契约)
 
 | 维度 | 数 |
 |---|---|
-| 手写代码 | ~32k 行(Rust 28.7k + TS 3.3k) |
-| Rust 测试 | 403(+ 前端 21) |
+| 手写代码 | ~32k 行(Rust 29k + TS 3.3k) |
+| Rust 测试 | 405(+ 前端 21) |
 | engine crate | 8 业务 + 2 基建 |
 | WASM connector | 6 数据源 + 2 handler |
 | 巡检视图 | 6 个图遍历(BFS + edge 白名单 + induced subgraph) |
