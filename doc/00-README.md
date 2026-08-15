@@ -1,6 +1,6 @@
 # 00 — 文档导航
 
-本目录共 20 份文档(00 导航 + 01-13 设计规约 + 15/17 架构 + blog/4 篇),按"读者动机"分组。
+本目录共 23 份文档(00 导航 + 01-13 设计规约 + 15/17 架构 + blog/7 篇),按"读者动机"分组。
 
 ## 📁 分组速查
 
@@ -56,6 +56,9 @@
 | blog/02 | [WASM capability 沙箱](./blog/02-wasm-capability-sandbox.md) | 不可信插件的 deny-by-default 模型 + fs 路径逃逸防御 |
 | blog/03 | [canonical Fact 与三层数据契约](./blog/03-canonical-fact-data-contract.md) | N×M 耦合怎么收敛成 N+M |
 | blog/04 | [Identity Resolution](./blog/04-identity-resolution.md) | 同一资源不同 ID 的合并 + 决定性不变量 + 「何时不做」 |
+| blog/05 | [恢复动作引擎](./blog/05-recovery-action-engine.md) | dry-run / 审批门 / mutable twin / 自动回滚 / 链 |
+| blog/06 | [变更与告警的时间线](./blog/06-change-tracking-timeline.md) | 传播 BFS + YAML diff 去噪 + poll-diff 自动录入 |
+| blog/07 | [一个 subgraph 原语,六个巡检视图](./blog/07-subgraph-views.md) | 参数化视图 + 词表漂移的教训 |
 
 ## 🧭 按角色选路
 

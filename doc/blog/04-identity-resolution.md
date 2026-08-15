@@ -112,4 +112,4 @@ diff(current_topology, next_topology)
 
 完整实现(`engine-identity/src/correlation.rs`,8 个单测 + resolve 级集成测试):**https://github.com/Thneoly/sre-inspection-graph**
 
-> 系列上一篇:[canonical Fact 与三层数据契约](./03-canonical-fact-data-contract.md) ｜ 回到系列开篇:[一个人从 Rust 内核做到 React 前端](./01-fullstack-sre-graph-tool.md)
+> 系列上一篇:[canonical Fact 与三层数据契约](./03-canonical-fact-data-contract.md) ｜ 下一篇:[让恢复动作敢按下去:恢复动作引擎](./05-recovery-action-engine.md)

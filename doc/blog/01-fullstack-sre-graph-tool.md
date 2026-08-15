@@ -1,6 +1,6 @@
 # 一个人从 Rust 内核做到 React 前端:我做了一个云原生 SRE 巡检图谱桌面工具
 
-> 这是系列的入口篇。后面几篇会分别拆开讲 WASM 插件沙箱、数据契约、多源拓扑合并 —— 那些是这个项目里最有意思的部分,但你得先看见全貌。
+> 这是系列的入口篇。后面六篇会分别拆开讲 WASM 插件沙箱、数据契约、多源拓扑合并、恢复动作引擎、变更追踪、巡检视图 —— 那些是这个项目里最有意思的部分,但你得先看见全貌。
 
 ## 从一个真实的痛点说起
 
@@ -80,10 +80,13 @@ pending → dry_run_ok → awaiting_approval → executing → succeeded → (ve
 
 最深的感受是**契约的价值**。单人项目最大的风险不是写不完,是改不动 —— 三个月前的自己就是最陌生的协作者。所以我从第一天就定了三层数据契约(WIT / Tauri IPC / Arrow),后面每加一个 connector、每加一个视图,内核几乎不用动。这个展开是[下一篇](./03-canonical-fact-data-contract.md)的主题。
 
-另外两个值得说的实践,各自成篇:
+另外几个值得说的实践,各自成篇:
 
 - **connector 是不可信插件**,怎么让它们安全地访问集群?→ [WASM 沙箱 + capability 模型](./02-wasm-capability-sandbox.md)
 - **K8s API 和代码仓对同一个镜像用不同 ID**,怎么合并成同一个节点?→ [Identity Resolution](./04-identity-resolution.md)
+- **恢复动作怎么让人敢按下去**?dry-run / 审批门 / 自动回滚 / mutable twin → [恢复动作引擎](./05-recovery-action-engine.md)
+- **「最近改了什么」怎么回答**?传播 BFS / YAML diff 去噪 / 自动录入 → [变更追踪](./06-change-tracking-timeline.md)
+- **六个巡检视图**其实是一个图遍历原语 —— 顺带一个词表漂移的教训 → [subgraph 与视图](./07-subgraph-views.md)
 
 ## 一条完整的链路(真实数据)
 
