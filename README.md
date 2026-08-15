@@ -14,6 +14,14 @@
 
 > 想看完整的工程决策叙事(4 个 STAR 架构决策 + 量化 + 深入探讨 Q&A)?见 **[CASE_STUDY.md](CASE_STUDY.md)**。
 
+## 界面一览(真集群数据,非 mock)
+
+![拓扑总览](doc/images/topology.png)
+
+| 节点详情 → 恢复动作 | 节点影响(爆炸半径) | Connectors 状态 + 趋势 |
+|---|---|---|
+| ![节点详情](doc/images/node-detail.png) | ![节点影响](doc/images/node-impact.png) | ![Connectors](doc/images/connectors.png) |
+
 ## 解决什么问题
 
 真实 SRE 场景里,定位一次故障要在五六个割裂的系统之间来回跳:拓扑看 Grafana、调用链看 Jaeger、变更看 Argo/Git、指标看 Prometheus、恢复靠手敲 kubectl。**它们之间没有一张共享的资源图谱** —— 于是「这个挂掉的 Pod 影响了哪些业务」「这次变更和这个告警有没有关系」「恢复一个 Deployment 会炸到谁」全靠人脑拼接。
