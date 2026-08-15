@@ -748,7 +748,7 @@ Tauri 解锁的功能 Web 版做不到:
 
 ## 15. 相关文档
 
-- 仓库结构:见根 `README.md` + `CLAUDE.md`「活跃栈 · 顶层结构」
+- 仓库结构:见根 `README.md`「顶层结构」
 - 数据契约(WIT/Arrow):[`15-data-contract-spec.md`](./15-data-contract-spec.md)
 - 导航:[`00-README.md`](./00-README.md)
 

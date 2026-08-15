@@ -26,13 +26,13 @@
 
 | 范围 | 文档锚点 | 状态 |
 |------|---------|------|
-| **PRD-001** 恢复动作引擎 | CLAUDE.md / README.md(本目录暂无独立 PRD 文档,以代码 + 工作文档为准) | ✅ 100% |
+| **PRD-001** 恢复动作引擎 | README.md / CASE_STUDY.md(本目录暂无独立 PRD 文档,以代码 + 实践文为准) | ✅ 100% |
 | **PRD-002** 变更事件追踪 | 同上 | ✅ 100% |
 | **PRD-003** 自检报告 | 同上 | ✅ 100% |
 | **PRD-004** OTel Demo 真实接入 | 同上 | ✅ 100% |
 | 视图 / API / 前端 | [05](./05-six-views-design.md) / [06](./06-api-specification.md) / [07](./07-frontend-component-tree.md) | ✅ |
 
-> **说明**:PRD-001/002/003/004 因迭代节奏快(每个 PRD 跨多个 Sprint + Phase 2 补丁),设计描述维护在 `CLAUDE.md` 的对应章节里,与代码同步。`doc/` 下的 PRD 文档只在**实施前的规划阶段**写入(见 D 组)。
+> **说明**:PRD-001/002/003/004 因迭代节奏快(每个 PRD 跨多个 Sprint + Phase 2 补丁),设计描述维护在 `doc/blog/` 实践系列与 `CASE_STUDY.md`,与代码同步。`doc/` 下的 PRD 文档只在**实施前的规划阶段**写入(见 D 组)。
 
 ### D. 规划中的 PRD(未实施,详细设计已就绪)
 
@@ -116,9 +116,9 @@ PRD-005 实施时遵循 doc/15 的三层契约。
 后续       Unknown Dep Queue(需真实外部依赖集群)· C1 v2(provenance/arbiter)
 ```
 
-## ✅ 验证基线(Phase 1–4.3;Phase 5–8 验证见 `CLAUDE.md` 对应条目)
+## ✅ 验证基线(Phase 1–4.3;Phase 5–8 验证散见 `doc/blog/` 各篇的数字与复现命令)
 
-- Phase 1 桌面 GUI 验证走 `.claude/skills/verifier-tauri-gui/`:强制 `GDK_BACKEND=x11 npm run tauri dev`,点击/激活 `Sync all now`,观察 `k8s-mini sync: cluster=demo namespaces=2 with_topology=true`,并用截图像素确认 Cytoscape 绿色拓扑节点。
+- Phase 1 桌面 GUI 验证:强制 `GDK_BACKEND=x11 npm run tauri dev`,点击/激活 `Sync all now`,观察 `k8s-mini sync: cluster=demo namespaces=2 with_topology=true`,并用截图像素确认 Cytoscape 绿色拓扑节点。
 - Phase 2.1 持久化验证:`SRE_GRAPH_DB_PATH=/tmp/x.sqlite` fresh 启动拓扑空 → sync 后写入 SQLite(34 facts / 12 resources)→ 重启同一 DB 不再 sync,`get_topology` 从库恢复拓扑(日志无新 `sync invoked`,绿色节点仍渲染)。
 - Phase 2.4 GraphResponse 验证:seed SQLite 一棵 K8s 拓扑(Cluster/Node/2×Namespace/2×Pod/Service)→ 重启 app,boot 调 `get_graph`(`facts_to_graph` → `GraphResponse{nodes:7,edges:6,summary}`)→ 前端 `graphToElements` 成图,Cytoscape 渲染层级拓扑(hexagon→octagon/round-rect→ellipse/diamond,9.2k 绿色像素,header 显示「7 node · 6 edge」),全程不 sync。
 - Phase 2.5 Identity Resolver v0 验证:`engine-identity` 8 单测(`resolve` 去重+派生边、attributes canonical 排序、`topology_to_graph` 与 `facts_to_graph` 等价、summary 重算)+ `engine-storage` `materialized_topology_round_trips_resolve_diff_apply`(对真实 SQLite 跑 resolve→diff→apply→回读 + remove 分支);GUI-less 端到端:seed materialized `topology_nodes`/`topology_edges` → `cargo run --example dump_topology` 走 `get_graph` 读路径(`materialized_topology` + `topology_to_graph`)产出 `GraphResponse{nodes:7,edges:6, risk{high:1,low:4,medium:2}, health{critical:1,normal:4,warning:2}}`,字段对齐 设计。注:本环境沙箱拦截 GUI 进程伴随 capture 的启动(exit 144),无法新截图,故新读路径走 headless 验证 + 2.4 GUI 基线传递性覆盖(`topology_to_graph(resolve(f)) == facts_to_graph(f)` 已单测,前端 `graphToElements` 与 2.4 字节一致)。
@@ -142,7 +142,7 @@ PRD-005 实施时遵循 doc/15 的三层契约。
 
 - 每份 PRD 文档统一 **14 节**:背景 / 设计原则 / 目标架构 / 核心契约 / 关键算法 / 工业对标 / Sprint 计划 / 验收 / 风险 / 不做 / File Map(其余按需)
 - L1-L4 模型文档稳定,改动需在 CHANGELOG 留痕
-- 已实施 PRD 的"在做"细节走 `CLAUDE.md`,**不**塞进 `doc/`(避免实施波动污染规划文档)
+- 已实施 PRD 的"在做"细节走 commit history 与 `doc/blog/`,**不**塞进 `doc/`(避免实施波动污染规划文档)
 - 跨文档链接用相对路径 `./11-PRD-005-...md`,不用绝对 URL
 
 ## 🔍 找东西

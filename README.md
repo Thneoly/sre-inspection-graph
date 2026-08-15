@@ -152,7 +152,6 @@ make check-all           # engine + desktop + modules 的 clippy -D warnings
 - `doc/15` + `doc/17` —— 数据契约规范(WIT / Tauri IPC / Arrow)· Tauri 桌面架构。
 - `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
 - `doc/01-10` —— 原始需求 / 4 层图模型 / 6 视图 / 故障类型 / 数据源服务。
-- `CLAUDE.md` —— 完整的增量开发日志(每个 phase 的设计决策与偏差,中文,commit 粒度)。
 
 ---
 
@@ -165,7 +164,7 @@ A single-engineer, full-stack cloud-native SRE control plane: a Rust engine + We
 
 **Not a scale story** — deliberately desktop-first, data-stays-on-machine (cf. k9s/Lens). The value is architectural depth and engineering judgment: a 3-layer data contract (WIT / Tauri IPC / Arrow), a deny-by-default capability sandbox for untrusted connectors, and pure I/O-free domain functions with behavior-level contract tests. Validated against a real OpenTelemetry Demo deployment on a local kubeadm cluster (169 nodes / 350 edges).
 
-See `doc/15` & `doc/17` for data contract & architecture, `CLAUDE.md` for the full incremental dev log.
+See `doc/15` & `doc/17` for data contract & architecture, `CASE_STUDY.md` for the engineering narrative.
 
 </details>
 

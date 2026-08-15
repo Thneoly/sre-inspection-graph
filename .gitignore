@@ -26,9 +26,8 @@ Thumbs.db
 *.sqlite-wal
 
 # ===== Claude =====
-.claude/*
-!.claude/skills/
-!.claude/skills/**
+.claude/
+CLAUDE.md
 
 # ===== Misc =====
 *.log
