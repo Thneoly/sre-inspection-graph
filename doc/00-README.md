@@ -100,18 +100,22 @@ PRD-005 实施时遵循 doc/15 的三层契约。
 ## 📜 演进时间线
 
 ```
-2026 Q1   PRD-001/002/003/004 全部上线(MVP 100% 完成)
-2026 Q2   ✅ Phase 0 + Phase 1 完成:A→G + mock 拓扑视图 + Blog Part 1 + GUI verifier + 首屏 polish
-  ↓
-2026 Q3   ▶ 当前 — Phase 2:2.1 SQLite-backed topology persistence ✅ + 2.4 GraphResponse DTO ✅ + 2.5 Identity Resolver v0(ChangeSet + materialized 表)✅ + 2.6 Prometheus connector(首个 http-client capability 消费方)✅ + 2.6b 真实 K8s connector(via kubectl proxy,真集群验证)✅ + 2.7 metric->topology health 合并(engine-identity field-ownership v0)+ desktop 托管 kubectl proxy + per-connector manifest config + 真集群拓扑真色(fill=health/border=risk)✅
-2026 Q4   Phase 2 续:5 connector WASM 化 + SQLite/Parquet 存储 + Tauri 视图迁
-2026 Q4   Phase 3 起步 - 3.1 engine-recovery action_defs(8 action 元数据 + propagation + rule/change 推荐)+ cascade dry_run(BFS blast radius,I/O-free 吃 &Topology)✅;审批语义定(桌面单机确认门,doc/15 §9)
-2027 Q1   Phase 3:PRD-006 + 实现 PRD-001/002(⚠️ PRD-001 审批流桌面语义需在此 Phase 定)
-2027 Q2   Phase 4:实现 PRD-003/004 + v1.0 release(macOS/Linux/Windows)
-2027 Q3   Buffer / 社区 / 技术分享
+2026 Q2   ✅ Phase 1:WASM/WIT/契约地基 + 最小拓扑视图(A→G 纵切片)
+2026 Q2   ✅ Phase 2:SQLite 持久化 + Identity v0 + 真实 K8s/Prometheus connector
+              + metric→topology health 合并 + 托管 kubectl proxy
+2026 Q3   ✅ Phase 3:PRD-001 恢复引擎(dry-run/审批/回滚/自动验证/链)
+              + PRD-002 变更追踪 + real handler(WasmHandlerExecutor)
+          ✅ Phase 4:PRD-003 报告(3 模板 + cron 订阅 + SMTP)+ 后台 sync loop
+          ✅ Phase 5:6 巡检视图(subgraph 原语)
+          ✅ Phase 6:技术债(词表注册表 C2 / Parquet 归档 C3 / Makefile C4)
+              + Connectors UI
+          ✅ Phase 7:PRD-004 connector 收官 5/5(jaeger / k8s-events / flagd)
+2026-07   ✅ Phase 8:code-repo 源(PRD-006)+ Identity v1 correlation-key 合并(C1)
+              → v0.4.0 发布(完整 v2 story)
+后续       Unknown Dep Queue(需真实外部依赖集群)· C1 v2(provenance/arbiter)
 ```
 
-## ✅ 当前验证基线
+## ✅ 验证基线(Phase 1–4.3;Phase 5–8 验证见 `CLAUDE.md` 对应条目)
 
 - Phase 1 桌面 GUI 验证走 `.claude/skills/verifier-tauri-gui/`:强制 `GDK_BACKEND=x11 npm run tauri dev`,点击/激活 `Sync all now`,观察 `k8s-mini sync: cluster=demo namespaces=2 with_topology=true`,并用截图像素确认 Cytoscape 绿色拓扑节点。
 - Phase 2.1 持久化验证:`SRE_GRAPH_DB_PATH=/tmp/x.sqlite` fresh 启动拓扑空 → sync 后写入 SQLite(34 facts / 12 resources)→ 重启同一 DB 不再 sync,`get_topology` 从库恢复拓扑(日志无新 `sync invoked`,绿色节点仍渲染)。
