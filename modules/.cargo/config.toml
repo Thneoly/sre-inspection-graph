@@ -8,7 +8,7 @@
 # 故采用 alias 模式:`cargo wasi-build` / `cargo wasi-check` 是短写
 # `cargo build/check --target wasm32-wasip2`,host 测试不动。
 #
-# 对照 `/home/cc/Desktop/code/ntx/show/ntxdemo/plugins/.cargo/config.toml`:
+# 对照另一个内部项目的 .cargo/config.toml(同样用 alias 模式):
 #   他们也不 pin 默认 target,只加 rustflags。我们走同样选择。
 #
 # 参考 ntx executor/.cargo/config.toml 的 [build] target = "wasm32-wasip2":

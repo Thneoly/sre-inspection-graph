@@ -7,7 +7,7 @@ package sre:inspection@0.1.0;
 // 使用**,把 logging / clock / http-client 三个 capability 接口集合到一个 world,
 // 让 host 一次 add_to_linker 就把全部 capability 接进 wasmtime::Linker。
 //
-// 设计参考:`/home/cc/Desktop/code/ntx/show/ntxdemo/component/wit/host/world.wit`
+// 设计参考:另一个内部项目的 host world.wit(同构方案)
 // 的 `hostnet` world 模式(单一 host imports world + `Hostnet::add_to_linker` 一行)。
 //
 // 用法对照:

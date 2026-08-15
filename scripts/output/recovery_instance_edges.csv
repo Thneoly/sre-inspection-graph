@@ -1,0 +1,10 @@
+edge_id,source_node_id,relationship_type,target_node_id,relationship_name,dependency_strength,is_required,discovery_method,health_status,risk_signal,last_verified_at,attrs_json
+r001,finding-run1-001,SUGGESTS,scale_deployment,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-003"", ""rationale"": ""副本不足 → 直接补到期望值"", ""confidence"": 0.9}"
+r002,finding-run1-001,SUGGESTS,rollback_deployment,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-003"", ""rationale"": ""若是新版本启动失败 → 回滚"", ""confidence"": 0.55}"
+r003,finding-run1-002,SUGGESTS,refresh_secret,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-004"", ""rationale"": ""Secret 过期 → 直接轮换"", ""confidence"": 0.95}"
+r004,finding-run1-003,SUGGESTS,rollback_deployment,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-005"", ""rationale"": ""高危 CVE → 回滚到无漏洞版本"", ""confidence"": 0.8}"
+r005,finding-run2-001,SUGGESTS,scale_deployment,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-001"", ""rationale"": ""Pod CPU 高且单副本 → 水平扩容缓解"", ""confidence"": 0.85}"
+r006,finding-run2-001,SUGGESTS,restart_pod,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-001"", ""rationale"": ""重启可能临时缓解,不解决根因"", ""confidence"": 0.45}"
+r007,finding-run2-002,SUGGESTS,rollback_deployment,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-002"", ""rationale"": ""频繁重启常因新版本 bug → 回滚版本"", ""confidence"": 0.75}"
+r008,finding-run2-002,SUGGESTS,restart_pod,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-002"", ""rationale"": ""短期止血,需配合根因排查"", ""confidence"": 0.4}"
+r009,finding-run2-003,SUGGESTS,drain_node,推荐,中,否,规则匹配,normal,,2026-06-15T10:00:00+08:00,"{""rule_id"": ""rule-008"", ""rationale"": ""节点压力 → 驱逐 Pod 到其他节点"", ""confidence"": 0.7}"

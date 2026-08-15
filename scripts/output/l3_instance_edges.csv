@@ -1,0 +1,31 @@
+edge_id,source_node_id,relationship_type,target_node_id,relationship_name,dependency_strength,is_required,discovery_method,health_status,risk_signal,last_verified_at,attrs_json
+e101,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcde,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e102,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdz,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e103,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e104,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdg,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e105,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdh,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e106,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdi,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e107,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdj,包含,强,是,Kubernetes API,warning,"Pod Pending, 重启0次",2026-06-15T10:00:00+08:00,{}
+e108,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdk,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e109,deploy:cce-prod-01:order:order-api,CONTAINS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdl,包含,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e110,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcde,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcde:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e111,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcde,SCHEDULED_ON,node:cce-prod-01:worker-01,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e112,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdz,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdz:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e113,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdz,SCHEDULED_ON,node:cce-prod-01:worker-01,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e114,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e115,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf,SCHEDULED_ON,node:cce-prod-01:worker-02,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e116,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdg,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdg:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e117,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdg,SCHEDULED_ON,node:cce-prod-01:worker-02,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e118,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdh,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdh:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e119,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdh,SCHEDULED_ON,node:cce-prod-01:worker-02,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e120,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdi,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdi:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e121,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdi,SCHEDULED_ON,node:cce-prod-01:worker-03,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e122,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdj,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdj:order-api,运行,强,是,Kubernetes API,warning,,2026-06-15T10:00:00+08:00,{}
+e123,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdj,SCHEDULED_ON,node:cce-prod-01:worker-03,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e124,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdk,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdk:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e125,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdk,SCHEDULED_ON,node:cce-prod-01:worker-03,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e126,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdl,RUNS,container:cce-prod-01:order:order-api-6fd9c8b7c9-abcdl:order-api,运行,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e127,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdl,SCHEDULED_ON,node:cce-prod-01:worker-01,调度在,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e128,node:cce-prod-01:worker-01,BELONGS_TO,cluster:cce-prod-01,属于,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e129,node:cce-prod-01:worker-02,BELONGS_TO,cluster:cce-prod-01,属于,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}
+e130,node:cce-prod-01:worker-03,BELONGS_TO,cluster:cce-prod-01,属于,强,是,Kubernetes API,normal,,2026-06-15T10:00:00+08:00,{}

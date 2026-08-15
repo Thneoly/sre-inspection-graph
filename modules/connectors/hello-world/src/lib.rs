@@ -5,7 +5,7 @@
 //! wit-bindgen 的 `generate!` 宏生成 export glue)。host 端
 //! engine-wasm 用 wasmtime 加载此产物并调 sync,拿回 Fact 列表。
 //!
-//! 设计参考 /home/cc/Desktop/code/ntx/show/ntxdemo/component/scheduler/src/lib.rs
+//! 设计参考:另一个内部项目的 scheduler connector(同构方案)
 //! 的 `wit_bindgen::generate!` + `export!` 双段模式。
 //!
 //! cfg(target_arch = "wasm32") 隔离:wit-bindgen 生成的 export symbol 包含

@@ -4,7 +4,7 @@
 # 第一次在 modules/ 下跑 cargo 会自动 rustup install stable + add target,
 # 新人 onboard 零摩擦。
 #
-# 与 ntx/show 对照:他们 pin "1.91.1",我们用 floating "stable"。Phase 2 起
+# 对照另一内部项目:他们 pin 固定版本,我们用 floating "stable"。Phase 2 起
 # Cargo.lock 已锁所有依赖,toolchain 浮动不会影响产物可重现。如真需固定,
 # 锁到具体版本(例 "1.86")即可。
 #

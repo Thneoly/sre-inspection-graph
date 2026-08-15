@@ -1,0 +1,7 @@
+edge_id,source_node_id,source_node_name,source_label,relationship_type,relationship_name,target_node_id,target_node_name,target_label,dependency_strength,is_required,auto_discovery,impact_analysis,inspection_purpose,inspection_check_item,risk_signal,impact_direction,alert_aggregation,discovery_method,graph_view
+REL-042,RT-020,,InspectionRun,GENERATED,生成了,RT-022,,InspectionFinding,强,是,自动,是,一次巡检运行产生一组发现,巡检是否完整执行；是否有规则未执行,巡检运行失败；大量新发现,Run -> Finding -> Resource,,巡检引擎回调,巡检视图
+REL-043,RT-022,,InspectionFinding,VIOLATES,违反,RT-021,,InspectionRule,强,是,自动,是,发现命中了哪条规则,规则命中率；高命中率规则是否需要调整阈值,核心规则大量命中,Finding -> Rule,,巡检引擎,巡检视图
+REL-044,RT-022,,InspectionFinding,AFFECTS,影响,RT-015,,Pod,强,是,自动,是,发现关联到具体资源,Affected 资源是否存在；传播链是否完整,核心资源关联高危发现,Finding -> Resource -> upstream to Application,,巡检引擎 + 图推导,巡检视图
+REL-045,RT-022,,InspectionFinding,PROPAGATES_TO,传播到,RT-003,,ApplicationComponent,中,否,推导,是,影响传播链——Finding 影响 Pod → 传播到 Deployment → Component,影响传播链是否完整,底层风险向上传播影响业务应用,Finding -> Pod -> Deployment -> Component -> Application,,图遍历推导,影响分析视图
+REL-046,RT-023,,AlertEvent,FIRED_ON,触发在,RT-015,,Pod,强,是,自动,是,告警触发在某个具体资源上,告警关联资源是否存在；标签匹配是否正确,同一资源多个告警；同一应用多个资源告警,Alert -> Resource -> upstream to Application,多 Pod 告警向 Deployment/Component 归并,AlertManager Webhook + 标签匹配,告警归并视图
+REL-047,RT-023,,AlertEvent,AGGREGATES_TO,归并到,RT-002,,Application,中,否,推导,是,告警按应用归并——判断多个告警是否属于同一应用故障,告警归并是否遗漏；是否过度归并,单个应用多告警 => 可能是一个根因引发的多条告警,,Alert -> Pod -> Deployment -> Component -> Application 归并,图遍历推导,告警归并视图

@@ -1,6 +1,6 @@
 //! Phase 2 host runtime — 真实 wasmtime Component 加载 + capability 注入。
 //!
-//! 设计参考:`/home/cc/Desktop/code/ntx/show/ntxdemo/src/wasm_engine/engine.rs`。
+//! 设计参考:另一个内部项目的 wasm engine(同构方案)。
 //!
 //! - `bindgen!` 一次生成 connector-world 的 host trait + 强类型 export
 //! - `State` 持 WasiCtx + ResourceTable;`WasiView::ctx` 同时给 ctx 和 table
@@ -22,7 +22,7 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 // 一次性 bindgen connector-world。
-// `imports / exports: { default: async }` 与 ntx/show 的 actions-executor
+// `imports / exports: { default: async }` 与另一内部项目的 actions-executor
 // 同款,与 wasmtime 46 默认开启的 component-model-async 配套。
 mod bindings {
     wasmtime::component::bindgen!({

@@ -1,0 +1,8 @@
+edge_id,source_node_id,source_node_name,source_label,relationship_type,relationship_name,target_node_id,target_node_name,target_label,dependency_strength,is_required,auto_discovery,impact_analysis,inspection_purpose,inspection_check_item,risk_signal,impact_direction,alert_aggregation,discovery_method,graph_view
+REL-035,RT-006,Deployment,Deployment,CONTAINS,包含,RT-015,Pod,Pod,强,是,自动,是,Deployment 管理 Pod 副本（通过 ReplicaSet）,Pod 数量与期望副本数一致性；CrashLoopBackOff；Pending 超时,Pod 数量不足；频繁重启；Pending 超过 N 分钟,Deployment -> Pod -> Container,Pod 告警向 Deployment 归并,Kubernetes API 标签匹配,应用拓扑视图
+REL-036,RT-015,Pod,Pod,RUNS,运行,RT-016,容器,Container,强,是,自动,是,Pod 内含一个或多个容器,容器是否 Ready；镜像拉取是否成功；OOM Kill 次数,ContainerCreating 超时；ImagePullBackOff；OOMKilled,Pod -> Container,容器异常向 Pod 归并,Kubernetes API,应用拓扑视图
+REL-037,RT-015,Pod,Pod,SCHEDULED_ON,调度在,RT-017,Kubernetes节点,KubernetesNode,强,是,自动,是,Pod 被调度到特定节点——节点故障爆炸半径分析核心关系,节点资源是否充足；Affinity/Anti-affinity 冲突,节点不可用导致所有 Pod 受影响；节点磁盘压力导致 Pod Eviction,Node -> Pod -> Deployment -> Component -> App,节点告警向下关联到 Pod,Kubernetes API,节点影响视图
+REL-038,RT-017,Kubernetes节点,KubernetesNode,BELONGS_TO,属于,RT-004,Kubernetes集群,KubernetesCluster,强,是,自动,是,节点是集群成员——集群级巡检入口,节点状态 Ready/NotReady；节点组/可用区分布,大量节点 NotReady；节点分布不均,Cluster -> Node -> Pod,节点告警按集群聚合,Kubernetes API/集群注册表,平台位置视图
+REL-039,RT-015,Pod,Pod,HAS_METRIC,有指标查询,RT-018,指标查询模板,MetricQuery,中,否,半自动,否,关联指标查询模板，前端按需查询 Prometheus,指标查询是否有效；数据源是否可达,指标查询返回空；数据源不可用,,,手动配置 + Prometheus 服务发现,指标覆盖视图
+REL-040,RT-018,指标查询模板,MetricQuery,SNAPSHOTS_TO,快照到,RT-019,指标快照,MetricSnapshot,中,否,自动,否,查询定期产生快照值，存入 Neo4j 供快速展示,快照是否在 TTL 内；快照值趋势是否偏离基线,快照过期；值超过阈值,,,指标采集器定时同步,指标趋势视图
+REL-041,RT-019,指标快照,MetricSnapshot,MEASURES,测量,RT-015,Pod,Pod,中,否,自动,否,快照关联到具体资源实例,快照值与资源节点匹配,快照关联到不存在的资源,,,指标采集器标签匹配,指标趋势视图

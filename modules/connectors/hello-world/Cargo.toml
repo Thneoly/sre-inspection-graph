@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 # Phase 2 起接 cargo-component / wac compose 工具链时读此段。
 # 即使不装 cargo-component,留这段也不影响 `cargo build` —— 它只是 metadata。
-# 参考 /home/cc/Desktop/code/ntx/show/ntxdemo/component/scheduler/Cargo.toml。
+# 参考另一个内部项目的 scheduler Cargo.toml。
 [package.metadata.component]
 package = "sre:inspection-hello-world@0.1.0"
 

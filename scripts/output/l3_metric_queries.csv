@@ -1,0 +1,8 @@
+query_id,metric_name,target_resource_type,promql_template,datasource_uid,unit,warning_threshold,critical_threshold,enabled_status,datasource_status
+mq-cpu-usage,cpu_usage,Pod,"sum(rate(container_cpu_usage_seconds_total{namespace=""{{namespace}}"",pod=""{{pod}}""}[5m])) * 100",prometheus-prod,percent,80,95,enabled,connected
+mq-memory-usage,memory_usage,Pod,"container_memory_working_set_bytes{namespace=""{{namespace}}"",pod=""{{pod}}""}",prometheus-prod,bytes,80,95,enabled,connected
+mq-qps,qps,Pod,"sum(rate(http_requests_total{namespace=""{{namespace}}"",pod=""{{pod}}""}[5m]))",prometheus-prod,requests/s,,,enabled,connected
+mq-error-rate,error_rate,Pod,"sum(rate(http_requests_total{namespace=""{{namespace}}"",pod=""{{pod}}"",status=~""5..""}[5m])) / sum(rate(http_requests_total{namespace=""{{namespace}}"",pod=""{{pod}}""}[5m]))",prometheus-prod,fraction,0.01,0.05,enabled,connected
+mq-restart-count,restart_count,Pod,"kube_pod_container_status_restarts_total{namespace=""{{namespace}}"",pod=""{{pod}}""}",prometheus-prod,count,3,10,enabled,connected
+mq-node-cpu,node_cpu_usage,KubernetesNode,"100 - (avg(rate(node_cpu_seconds_total{mode=""idle"",node=""{{node_name}}""}[5m])) * 100)",prometheus-prod,percent,80,95,enabled,connected
+mq-node-memory,node_memory_usage,KubernetesNode,"(1 - node_memory_MemAvailable_bytes{node=""{{node_name}}""} / node_memory_MemTotal_bytes{node=""{{node_name}}""}) * 100",prometheus-prod,percent,80,95,enabled,connected

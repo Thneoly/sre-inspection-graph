@@ -22,7 +22,7 @@ Use this verifier when the change reaches:
 The default GNOME session may run Tauri as a Wayland surface. In that mode common X11 tools (`xwininfo`, XTest input, XGetImage screenshots) cannot see the window. For verifier automation, **force X11**:
 
 ```bash
-cd /home/cc/Desktop/code/SRE/graph_data/desktop
+cd <repo>/desktop   # repo 根下
 GDK_BACKEND=x11 npm run tauri dev
 ```
 

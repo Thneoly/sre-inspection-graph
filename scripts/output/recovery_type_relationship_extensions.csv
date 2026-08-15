@@ -1,0 +1,8 @@
+edge_id,source_node_id,source_node_name,source_label,relationship_type,relationship_name,target_node_id,target_node_name,target_label,dependency_strength,is_required,auto_discovery,impact_analysis,inspection_purpose,inspection_check_item,risk_signal,impact_direction,alert_aggregation,discovery_method,graph_view
+REL-048,RT-022,,InspectionFinding,SUGGESTS,推荐,RT-024,,RecoveryAction,中,否,推导,是,Finding 关联到推荐恢复动作,Finding 是否有可推荐动作; 推荐准确率; 是否被采纳,无可推荐动作的 critical Finding,Finding -> RecoveryAction,,规则匹配,快恢决策视图
+REL-049,RT-024,,RecoveryAction,EXECUTES_ON,可执行于,RT-XXX,,ResourceType,强,是,自动,是,类型层动作适用性,动作目标类型与实际资源是否匹配,类型不匹配错误执行,Action -> ResourceType,,动作模板配置,快恢决策视图
+REL-050,RT-025,,RecoveryExecution,TARGETS,针对,RT-XXX,,ResourceInstance,强,是,自动,是,执行实例关联到具体资源,目标资源是否仍存在;执行后状态变化,执行失败的核心资源,Execution -> Resource,,API 调用,快恢决策视图
+REL-051,RT-025,,RecoveryExecution,TRIGGERED_BY,触发自,RT-022,,InspectionFinding,中,否,自动,是,执行可追溯到具体 Finding,Finding-动作转化率;Finding 解决率,Finding 被关闭但执行失败,Execution -> Finding,,API 调用上下文,快恢决策视图
+REL-052,RT-025,,RecoveryExecution,REQUIRES_APPROVAL,需审批,RT-026,,ApprovalRequest,强,条件性,自动,是,high_risk 动作必须有审批记录,high_risk 动作无审批 = 违规,high_risk 未审批直接执行,Execution -> ApprovalRequest,,动作风险分级,快恢决策视图
+REL-053,RT-026,,ApprovalRequest,APPROVED_BY,审批人,RT-XXX,,User,强,条件性,自动,否,审批责任链,审批人权限合规,无权限用户审批高风险动作,ApprovalRequest -> User,,RBAC,快恢决策视图
+REL-054,RT-025,,RecoveryExecution,ROLLED_BACK_BY,被回滚,RT-025,,RecoveryExecution,中,否,自动,是,回滚双向链接,回滚执行成功率,回滚也失败的连环故障,Execution -> Execution(双向),,用户主动回滚,快恢决策视图

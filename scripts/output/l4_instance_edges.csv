@@ -1,0 +1,34 @@
+edge_id,source_node_id,relationship_type,target_node_id,relationship_name,dependency_strength,is_required,discovery_method,health_status,risk_signal,last_verified_at,attrs_json
+e201,run-20260615-001,GENERATED,finding-run1-001,生成了,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e202,run-20260615-001,GENERATED,finding-run1-002,生成了,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e203,run-20260615-001,GENERATED,finding-run1-003,生成了,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e204,run-20260615-002,GENERATED,finding-run2-001,生成了,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e205,run-20260615-002,GENERATED,finding-run2-002,生成了,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e206,run-20260615-002,GENERATED,finding-run2-003,生成了,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e207,finding-run1-001,VIOLATES,rule-003,违反,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e208,finding-run1-002,VIOLATES,rule-004,违反,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e209,finding-run1-003,VIOLATES,rule-005,违反,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e210,finding-run2-001,VIOLATES,rule-001,违反,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e211,finding-run2-002,VIOLATES,rule-002,违反,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e212,finding-run2-003,VIOLATES,rule-008,违反,强,是,巡检引擎,normal,,2026-06-15T10:00:00+08:00,{}
+e213,finding-run1-001,AFFECTS,deploy:cce-prod-01:order:order-api,影响,强,是,巡检引擎,warning,Deployment order-api 期望副本 3，可用副本 2,2026-06-15T10:00:00+08:00,{}
+e214,finding-run1-002,AFFECTS,secret:cce-prod-01:order:order-api-secret,影响,强,是,巡检引擎,warning,Secret order-api-secret 将在 14 天后过期,2026-06-15T10:00:00+08:00,{}
+e215,finding-run1-003,AFFECTS,image:order-api:1.2.3,影响,强,是,巡检引擎,warning,镜像 order-api:1.2.3 存在 1 个 Critical 级别 CVE: CVE-2026-1234 (CVSS 9.8),2026-06-15T10:00:00+08:00,{}
+e216,finding-run2-001,AFFECTS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf,影响,强,是,巡检引擎,warning,Pod order-api-6fd9c8b7c9-abcdf CPU 使用率 86.5% 超过 80% 阈值,2026-06-15T10:00:00+08:00,{}
+e217,finding-run2-002,AFFECTS,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf,影响,强,是,巡检引擎,warning,Pod order-api-6fd9c8b7c9-abcdf 24h 内重启 3 次,2026-06-15T10:00:00+08:00,{}
+e218,finding-run2-003,AFFECTS,node:cce-prod-01:worker-02,影响,强,是,巡检引擎,warning,节点 worker-02 磁盘使用率 72%，接近 80% 阈值,2026-06-15T10:00:00+08:00,{}
+e219,finding-run1-001,PROPAGATES_TO,comp:order-api,传播到,中,否,图推导,warning,风险向上传播,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e220,finding-run1-002,PROPAGATES_TO,app:order,传播到,中,否,图推导,warning,风险向上传播,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e221,finding-run1-003,PROPAGATES_TO,app:order,传播到,中,否,图推导,warning,风险向上传播,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e222,finding-run2-001,PROPAGATES_TO,comp:order-api,传播到,中,否,图推导,warning,风险向上传播,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e223,finding-run2-002,PROPAGATES_TO,comp:order-api,传播到,中,否,图推导,warning,风险向上传播,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e224,alert-order-api-error-rate,FIRED_ON,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdf,触发在,强,是,AlertManager,warning,订单 API 错误率超过 5%,2026-06-15T10:00:00+08:00,{}
+e225,alert-pod-restart-loop,FIRED_ON,pod:cce-prod-01:order:order-api-6fd9c8b7c9-abcdl,触发在,强,是,AlertManager,warning,Pod order-api-6fd9c8b7c9-abcdl 频繁重启,2026-06-15T10:00:00+08:00,{}
+e226,alert-node-disk-pressure,FIRED_ON,node:cce-prod-01:worker-02,触发在,强,是,AlertManager,warning,节点 worker-02 磁盘空间不足,2026-06-15T10:00:00+08:00,{}
+e227,alert-tls-cert-expiring,FIRED_ON,ing:cce-prod-01:order:order-api,触发在,强,是,AlertManager,warning,Ingress TLS 证书即将过期,2026-06-15T10:00:00+08:00,{}
+e228,alert-deploy-replicas-mismatch,FIRED_ON,deploy:cce-prod-01:order:order-api,触发在,强,是,AlertManager,warning,Deployment order-api 副本不一致,2026-06-15T10:00:00+08:00,{}
+e229,alert-order-api-error-rate,AGGREGATES_TO,app:order,归并到,中,否,图推导,normal,,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e230,alert-pod-restart-loop,AGGREGATES_TO,app:order,归并到,中,否,图推导,normal,,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e231,alert-node-disk-pressure,AGGREGATES_TO,app:order,归并到,中,否,图推导,normal,,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e232,alert-tls-cert-expiring,AGGREGATES_TO,app:order,归并到,中,否,图推导,normal,,2026-06-15T10:00:00+08:00,"{""derived"":true}"
+e233,alert-deploy-replicas-mismatch,AGGREGATES_TO,app:order,归并到,中,否,图推导,normal,,2026-06-15T10:00:00+08:00,"{""derived"":true}"
