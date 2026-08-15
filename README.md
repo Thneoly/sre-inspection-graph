@@ -81,7 +81,7 @@ flowchart TB
 
 ## 为什么这么设计(4 个架构决策)
 
-> 这些是面试时会被追问的判断点,每个都是「有多个选项 → 选了一个 → 因为……」。
+> 这些是最值得深究的判断点,每个都是「有多个选项 → 选了一个 → 因为……」。
 
 1. **canonical `Fact` 作为唯一数据契约,而不是让各模块直连数据源**。所有 connector 不管数据源(K8s API / Jaeger / Prometheus / 本地 fs),产出统一压平成 7 字段 canonical Fact;所有下游(storage / identity resolve / graph build / Arrow 批传输)只认它,一个 `engine-core::fact_schema()` Arrow Schema 把契约焊死。新增数据源只需写一个产出 Fact 的 WASM connector,内核零改 —— 这是整个平台可扩展的支点。
 
@@ -139,7 +139,7 @@ make check-all           # engine + desktop + modules 的 clippy -D warnings
 
 ## 文档导航
 
-- **[`CASE_STUDY.md`](CASE_STUDY.md)** —— 完整工程叙事:4 个架构决策的 STAR 权衡 + 量化 + 深入探讨 Q&A(面试/深读用)。
+- **[`CASE_STUDY.md`](CASE_STUDY.md)** —— 完整工程叙事:4 个架构决策的 STAR 权衡 + 量化 + 深入探讨 Q&A(深读用)。
 - `doc/blog/` —— 7 篇实践博客:全栈纵切 · WASM 沙箱 · 数据契约 · Identity Resolution · 恢复引擎 · 变更追踪 · 巡检视图。
 - `doc/15` + `doc/17` —— 数据契约规范(WIT / Tauri IPC / Arrow)· Tauri 桌面架构。
 - `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
