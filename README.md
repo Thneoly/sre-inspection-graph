@@ -77,13 +77,13 @@ flowchart TB
 **巡检图谱(6 个图遍历视图)** —— 从起点 BFS、depth 限深、edge-type 白名单过滤的通用 `subgraph` 原语支撑:
 应用拓扑 · 访问链路 · 节点影响(Node 故障爆炸半径)· 配置影响(Secret/ConfigMap 传播)· 镜像风险 · 告警聚合。
 
-**恢复动作引擎(PRD-001 复刻)** —— 8 个动作(scale / restart_pod / rollback_deployment / refresh_secret / drain_node / kill_query / restart_service / clear_cache)。生命周期:`pending → dry_run_ok → awaiting_approval → executing → succeeded/failed → rolled_back`。一键回滚跳过二次审批;执行后自动验证,verify_failed 触发自动反向回滚;支持多步动作链 + 3 种失败策略。桌面单机确认门审批语义。
+**恢复动作引擎(PRD-001)** —— 8 个动作(scale / restart_pod / rollback_deployment / refresh_secret / drain_node / kill_query / restart_service / clear_cache)。生命周期:`pending → dry_run_ok → awaiting_approval → executing → succeeded/failed → rolled_back`。一键回滚跳过二次审批;执行后自动验证,verify_failed 触发自动反向回滚;支持多步动作链 + 3 种失败策略。桌面单机确认门审批语义。
 
-**变更追踪(PRD-002 复刻)** —— 4 类变更(configmap/secret/deployment/image),反向 BFS 算传播影响面,YAML diff(剔 10 个 K8s 噪声字段),过频变更自动升 severity,ChangeEvent ↔ AlertEvent 时间窗关联,k8s poll-diff 自动录入。
+**变更追踪(PRD-002)** —— 4 类变更(configmap/secret/deployment/image),反向 BFS 算传播影响面,YAML diff(剔 10 个 K8s 噪声字段),过频变更自动升 severity,ChangeEvent ↔ AlertEvent 时间窗关联,k8s poll-diff 自动录入。
 
 **Identity Resolver** —— 多源拓扑合并:同一资源被 K8s API 和代码仓用不同 ID 描述时(如 `image:{c}:{ns}:{ref}` vs `image-ref:<ref>`),经共享 correlation key 合并成单一节点,边端点自动 remap。`resolve()` 委托 `facts_to_graph` 前做 pre-rewrite 合并,零 schema 改(correlation_keys 走 attributes_json)。
 
-**自检报告(PRD-003 复刻)** —— 3 个模板(application_health / cluster_overview / incident_report),Tera 渲染 Markdown,cron 订阅调度 + SMTP 发送 + .md 附件,SQLite 持久化跨重启。
+**自检报告(PRD-003)** —— 3 个模板(application_health / cluster_overview / incident_report),Tera 渲染 Markdown,cron 订阅调度 + SMTP 发送 + .md 附件,SQLite 持久化跨重启。
 
 **WASM connector 沙箱(PRD-004 + PRD-006)** —— 6 个数据源 connector,经 deny-by-default capability 访问数据源;首个非网络 capability `fs-read`(path-root allow-list,canonicalize 防目录穿越/符号链接逃逸)。
 

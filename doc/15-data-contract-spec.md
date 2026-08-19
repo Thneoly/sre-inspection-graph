@@ -619,7 +619,7 @@ utoipa-swagger-ui = "8"
 
 Contract test 是 **单 Rust runner**(无双语言双跑)。
 
-每个被复刻的模块,写 Rust contract test(参考 设计 的 pytest 行为):
+每个核心模块,写 Rust contract test(钉住关键行为):
 
 ```rust
 // tests/contract/prd-002-changes/record_change.rs
@@ -645,17 +645,13 @@ async fn configmap_update_propagation() {
 }
 ```
 
-**测试 fixture 同时被 设计 跑**(本地 dev,非 CI):
+契约测试与实现在同一 workspace,直接跑:
 
 ```bash
-# 终端 1 — 对照基线跑同一 fixture
-cd 设计 && cargo run pytest tests/test_change_events.py::test_configmap_propagation
-
-# 终端 2 — 新 Rust 跑
 cargo test --test contract -p engine-changes configmap_update_propagation
-
-# 对比:行为对齐(包括 propagated_to 长度等同 / severity 一致)即通过复刻
 ```
+
+行为断言(propagated_to 长度 / severity 档位 / ID 格式 / 副作用计数)全部写在测试内,不依赖外部基线。
 
 
 
