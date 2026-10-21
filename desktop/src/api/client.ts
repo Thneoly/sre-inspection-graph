@@ -22,6 +22,16 @@ export async function getAppVersion(): Promise<string> {
   return invoke<string>("get_app_version");
 }
 
+/** recovery handler 模式(`get_handler_mode` 返回)。real = 恢复动作真改集群。 */
+export interface HandlerModeDto {
+  real_mode: boolean;
+  api_base: string;
+}
+
+export async function getHandlerMode(): Promise<HandlerModeDto> {
+  return invoke<HandlerModeDto>("get_handler_mode");
+}
+
 export interface ConnectorInfo {
   name: string;
   version: string;

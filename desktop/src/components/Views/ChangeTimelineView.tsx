@@ -6,7 +6,7 @@ import {
 } from "antd";
 import {
   listChangeEvents, recordChangeEvent, frequentChanges, changeEventImpact,
-  changeEventAlerts, changeEventRecoverySuggestion, executeRecovery, getGraph,
+  changeEventAlerts, changeEventRecoverySuggestion, executeRecovery, getGraph, getHandlerMode,
   type ChangeEvent, type ChangeType,
 } from "../../api/client";
 
@@ -79,12 +79,28 @@ function ChangeDetail({ event }: { event: ChangeEvent }) {
   const { data: impact } = useQuery({ queryKey: ["change-impact", event.change_event_id], queryFn: () => changeEventImpact(event.change_event_id) });
   const { data: alerts } = useQuery({ queryKey: ["change-alerts", event.change_event_id], queryFn: () => changeEventAlerts(event.change_event_id) });
   const { data: sug } = useQuery({ queryKey: ["change-suggestion", event.change_event_id], queryFn: () => changeEventRecoverySuggestion(event.change_event_id) });
+  const { data: handlerMode } = useQuery({ queryKey: ["handler-mode"], queryFn: getHandlerMode });
   const qc = useQueryClient();
   const execM = useMutation({
     mutationFn: (v: { actionId: string; targetResourceId: string }) => executeRecovery({ actionId: v.actionId, targetResourceId: v.targetResourceId, inputParams: {} }),
     onSuccess: (e) => { message.success(`执行已创建:${e.status}`); qc.invalidateQueries({ queryKey: ["recovery-executions"] }); },
     onError: (e) => message.error(String(e)),
   });
+
+  /** 建议按钮的确认门:此前一键直达 execute(空参数、无 dry-run 预览)。real 模式下
+   * 这一击会真改集群 —— 必须先看清动作与目标;mock 模式也过一遍确认,统一交互。 */
+  const confirmExec = (s: { action_id: string; action_name?: string; resolved_target_resource_id?: string | null; requires_approval?: boolean }) => {
+    const target = s.resolved_target_resource_id ?? "";
+    Modal.confirm({
+      title: `执行恢复动作:${s.action_id}`,
+      content: handlerMode?.real_mode
+        ? `⚠ REAL 模式:该动作将真实修改集群(${handlerMode.api_base})。\n目标:${target}`
+        : `mock 模式(动作在内存 twin 上演练,不改集群)。\n目标:${target}`,
+      okText: handlerMode?.real_mode ? "确认执行(真改集群)" : "执行",
+      okButtonProps: { danger: handlerMode?.real_mode === true },
+      onOk: () => execM.mutate({ actionId: s.action_id, targetResourceId: target }),
+    });
+  };
 
   return (
     <Tabs
@@ -126,7 +142,7 @@ function ChangeDetail({ event }: { event: ChangeEvent }) {
           key: "sug", label: `恢复建议 (${sug?.total ?? 0})`, children: (
             <List size="small" dataSource={sug?.suggestions ?? []} locale={{ emptyText: "无" }} renderItem={(s) => (
               <List.Item actions={s.target_match !== "unresolved" && s.resolved_target_resource_id ? [
-                <Button size="small" type="primary" loading={execM.isPending} onClick={() => execM.mutate({ actionId: s.action_id, targetResourceId: s.resolved_target_resource_id! })}>
+                <Button size="small" type="primary" loading={execM.isPending} onClick={() => confirmExec(s)}>
                   {s.requires_approval ? "请求审批" : "执行"}
                 </Button>,
               ] : []}>

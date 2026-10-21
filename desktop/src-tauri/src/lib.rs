@@ -41,7 +41,7 @@ use commands::recovery::{
     list_chain_templates, list_recovery_actions, list_recovery_chains, list_recovery_executions,
     recovery_suggestions_for_rule, reverify_recovery_execution, rollback_recovery_execution,
 };
-use commands::system::get_app_version;
+use commands::system::{get_app_version, get_engine_version, get_handler_mode};
 use commands::topology::{get_graph, get_topology};
 use commands::views::{
     access_link, alert_aggregation, config_impact, image_risk, list_resources_by_types, node_impact,
@@ -53,21 +53,38 @@ use commands::reports_scheduler::{
     list_subscriptions, trigger_subscription_now, update_subscription,
 };
 
-/// 解析 modules/ 根目录。
+/// 解析 modules/ 根目录(三级,Phase 2 承诺的 bundle-resource 兜底在此落地)。
 ///
 /// 优先级:
 /// 1. `MODULES_ROOT` env(测试 / CI / 用户自定义)
-/// 2. `CARGO_MANIFEST_DIR/../../modules` —— dev build 时 manifest 是
-///    `desktop/src-tauri/Cargo.toml`,上溯两层正好到 repo/modules
+/// 2. `CARGO_MANIFEST_DIR/../../modules` —— dev build / 源码机上 manifest 是
+///    `desktop/src-tauri/Cargo.toml`,上溯两层正好到 repo/modules;不存在则继续
+///    (安装机上这个编译期路径不在,不能停在它)
+/// 3. `resource_dir()/modules` —— tauri bundle resources(tauri.conf.json 的
+///    `bundle.resources` 把 manifest.toml + wasm 随安装包分发),安装机的正路
 ///
-/// Phase 2 上 bundle 后,modules wasm 会随 resources 打包,这里再加 bundle-resource
-/// 兜底。本期 dev 路径就够。
-fn resolve_modules_root() -> PathBuf {
+/// 都不中 → 回退 2 的路径(保持旧行为:load_wasm_runtime 读不到 manifest 走
+/// 空 runtime + UI 引导),并 warn。
+fn resolve_modules_root(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(v) = std::env::var("MODULES_ROOT") {
         return PathBuf::from(v);
     }
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).join("../../modules")
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    if dev_path.join("manifest.toml").is_file() {
+        return dev_path;
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("modules");
+        if bundled.join("manifest.toml").is_file() {
+            return bundled;
+        }
+    }
+    tracing::warn!(
+        dev_path = %dev_path.display(),
+        "no modules/ found (env MODULES_ROOT, source tree, or bundle resources) \
+         — desktop will start with empty wasm runtime"
+    );
+    dev_path
 }
 
 fn resolve_storage_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -83,13 +100,16 @@ fn resolve_storage_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("sre-graph.sqlite"))
 }
 
-/// 在 builder 之前同步加载 WasmRuntime,并从 manifest 播种 connector 状态注册表。
+/// 在 setup 阶段同步加载 WasmRuntime,并从 manifest 播种 connector 状态注册表。
 ///
 /// 失败 fallback 到 empty runtime,而不是 panic —— 用户首跑可能 modules 还没 build,
 /// 让 UI 起来但 connector 列表空,前端提示 build 步骤。返 `(runtime, statuses)`:
 /// manifest 解析成功即播种(即便 runtime 加载全失败,模块表仍反映 manifest + 全部 not-loaded)。
-fn load_wasm_runtime() -> (WasmRuntime, Vec<ConnectorStatus>) {
-    let modules_root = resolve_modules_root();
+///
+/// 需要 `AppHandle`:`resolve_modules_root` 的第三优先级(bundle resources)走
+/// `app.path().resource_dir()`,故本函数从 run() 顶部(builder 之前)挪进 setup。
+fn load_wasm_runtime(app: &tauri::AppHandle) -> (WasmRuntime, Vec<ConnectorStatus>) {
+    let modules_root = resolve_modules_root(app);
     let manifest_path = modules_root.join("manifest.toml");
     let toml_text = match std::fs::read_to_string(&manifest_path) {
         Ok(t) => t,
@@ -160,7 +180,8 @@ pub struct AppState {
     pub change_events: tokio::sync::Mutex<engine_changes::ChangeRegistry>,
     /// Phase 3.6 - alert 注册表(无 live 源,k8s-watch/webhook 延后;仅手动 record_alert)。
     pub alerts: tokio::sync::Mutex<engine_changes::AlertRegistry>,
-    /// Phase 4.1 - 报告注册表(内存;SQLite 持久化留后续)。
+    /// Phase 4.1 - 报告注册表(Phase 4.3 后续起 SQLite 持久化:启动从 report_tasks 表载入,
+    /// 生成后回写)。内存态 + storage 恢复,与其它 registry 同一模式。
     pub reports: tokio::sync::Mutex<engine_reports::ReportStore>,
     /// Phase 4.3 - 报告订阅注册表。启动从 `report_subscriptions` 表载入;
     /// create/update/delete + 调度触发后 upsert 回写。
@@ -176,6 +197,11 @@ pub struct AppState {
     /// 防重启录历史 burst + 时间戳误导)。首次 sync 后置 true,后续 sync 跑 detect_changes。
     pub first_sync_done: std::sync::atomic::AtomicBool,
     pub handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor>,
+    /// Phase D - handler 模式镜像(real 改集群 vs mock)。UI 徽标 / recovery command
+    /// 的 ApprovalPolicy 选择都读它(此前 real_mode 只活在 setup 局部,全程不可见)。
+    pub handler_real_mode: bool,
+    /// handler 的 K8s API base(kubectl proxy),UI 诊断显示用。
+    pub handler_api_base: String,
     /// Phase 6 connectors-ui - connector/handler 可观测状态注册表。启动从 manifest 播种
     /// (禁用/失败模块也入表),每次 sync(手动 + 后台 loop)在 run_sync 内刷新
     /// last_synced_at/fact_count/errors/duration。前端 ConnectorsPage 读此表。
@@ -184,28 +210,42 @@ pub struct AppState {
 
 /// Tauri app builder 入口。`main.rs` 调用,确保 macOS / iOS 共享同一 builder。
 /// 解析日志落盘目录:env `SRE_GRAPH_LOG_DIR` 优先,默认与 SQLite 同基准的 app data 目录下 `logs/`。
-/// 在 Tauri builder 之前初始化(早于 setup,拿不到 AppHandle),故手工推导 Linux 默认路径。
+/// 在 Tauri builder 之前初始化(早于 setup,拿不到 AppHandle),故手工推导各平台 app data 路径:
+/// - Windows:`%APPDATA%\io.sregraph.desktop`(对齐 tauri app_data_dir 的 Roaming 路径;
+///   刻意不看 HOME —— Git Bash 环境常设 HOME,会把日志引去 `~/.local/share` 与 DB 分裂)
+/// - Unix:`$HOME/.local/share/io.sregraph.desktop`(XDG 风格,保持既有行为)
 fn resolve_log_dir() -> PathBuf {
     if let Ok(v) = std::env::var("SRE_GRAPH_LOG_DIR") {
         return PathBuf::from(v);
     }
-    let base = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".local/share/io.sregraph.desktop"))
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let dir = base.join("logs");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    let base = if cfg!(windows) {
+        std::env::var("APPDATA")
+            .map(|d| PathBuf::from(d).join("io.sregraph.desktop"))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".local/share/io.sregraph.desktop"))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    };
+    base.join("logs")
 }
 
 /// 启动时清理过期日志文件(tracing-appender 只轮转不清理,保留期自己管)。
+/// 只删 `sre-graph.log*` 前缀的自家文件 —— SRE_GRAPH_LOG_DIR 指向共享目录时,
+/// 不能把别人的超龄文件一并清掉。
 fn prune_old_logs(dir: &std::path::Path, keep_days: u64) {
     prune_old_logs_with_now(dir, keep_days, std::time::SystemTime::now());
 }
 
 fn prune_old_logs_with_now(dir: &std::path::Path, keep_days: u64, now: std::time::SystemTime) {
+    const LOG_PREFIX: &str = "sre-graph.log";
     let cutoff = now - std::time::Duration::from_secs(keep_days * 86_400);
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
+            let name = e.file_name();
+            if !name.to_string_lossy().starts_with(LOG_PREFIX) {
+                continue;
+            }
             let Ok(md) = e.metadata() else { continue };
             if md.is_file() && md.modified().map(|m| m < cutoff).unwrap_or(false) {
                 let _ = std::fs::remove_file(e.path());
@@ -214,33 +254,74 @@ fn prune_old_logs_with_now(dir: &std::path::Path, keep_days: u64, now: std::time
     }
 }
 
+/// setup 阶段的致命错误弹窗(阻塞,用户点掉后 setup 返回 Err、应用退出)。
+fn show_fatal_dialog(app: &tauri::AppHandle, msg: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    app.dialog()
+        .message(format!(
+            "应用启动失败:\n{msg}\n\n详情见日志(app data 目录 io.sregraph.desktop/logs/)。"
+        ))
+        .kind(MessageDialogKind::Error)
+        .title("SRE Inspection Graph")
+        .blocking_show();
+}
+
 pub fn run() {
     // Phase 6 observability —— 日志落盘:按天滚动文件(stderr 同步保留)+ 启动清理过期文件。
     // FmtSpan::CLOSE:span 关闭时输出一行含 time.busy/time.idle 的耗时记录。
+    // 目录创建失败(Program Files 只读等)-> 降级 stderr-only,不留无日志的静默失败。
     let log_dir = resolve_log_dir();
+    let file_logging = match std::fs::create_dir_all(&log_dir) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("WARN: create log dir {} failed: {e}; falling back to stderr-only", log_dir.display());
+            false
+        }
+    };
     prune_old_logs(&log_dir, 14);
-    let appender = tracing_appender::rolling::daily(&log_dir, "sre-graph.log");
-    // tracing-subscriber 失败(已被初始化)不致命,可忽略
-    let _ = tracing_subscriber::fmt()
+    // tracing-subscriber 失败(已被初始化)不致命,可忽略。
+    // 注意 rolling::daily 构造时目录仍不可写会 panic,故只在 file_logging 分支构造。
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .with_writer(
-            tracing_subscriber::fmt::writer::MakeWriterExt::and(std::io::stderr, appender),
-        )
-        .try_init();
-    tracing::info!(log_dir = %log_dir.display(), "file logging enabled (daily rotation, keep 14d)");
-
-    let (runtime, connector_statuses) = load_wasm_runtime();
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE);
+    if file_logging {
+        let appender = tracing_appender::rolling::daily(&log_dir, "sre-graph.log");
+        let _ = builder
+            .with_writer(
+                tracing_subscriber::fmt::writer::MakeWriterExt::and(std::io::stderr, appender),
+            )
+            .try_init();
+        tracing::info!(log_dir = %log_dir.display(), "file logging enabled (daily rotation, keep 14d)");
+    } else {
+        let _ = builder.with_writer(std::io::stderr).try_init();
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        // 单实例:双开 exe 会双写同一 SQLite + 双起 sync loop/kubectl proxy。
+        // 第二实例启动时聚焦已有窗口后自行退出(官方插件默认行为)。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+                let _ = w.unminimize();
+            }
+        }))
         .setup(move |app| {
-            let storage_path = resolve_storage_path(app.handle())?;
-            let (storage, recovery_executions, recovery_chains, change_events, alerts, subscriptions, reports) =
-                tauri::async_runtime::block_on(async {
+            // wasm 加载在 setup 内做(需要 AppHandle 解析 bundle resource_dir,
+            // 见 resolve_modules_root 三级注释)。block_on 与下方 storage 同模式。
+            let (runtime, connector_statuses) = load_wasm_runtime(app.handle());
+            let storage_path = match resolve_storage_path(app.handle()) {
+                Ok(p) => p,
+                Err(e) => {
+                    show_fatal_dialog(app.handle(), &e);
+                    return Err(e.into());
+                }
+            };
+            let loaded = tauri::async_runtime::block_on(async {
                     let storage = SqliteStorage::connect(&storage_path)
                         .await
                         .map_err(|e| format!("connect sqlite {}: {e}", storage_path.display()))?;
@@ -284,7 +365,17 @@ pub fn run() {
                         engine_reports::SubscriptionStore::from_subscriptions(subs),
                         engine_reports::ReportStore::from_tasks(rpts),
                     ))
-                })?;
+                });
+            // sqlite 连接/迁移/载入失败:弹窗说明再退出(此前 `?` 直接闪退,
+            // GUI 无 console,用户什么也看不到 —— 最需要日志的时刻恰好无窗可显)。
+            let (storage, recovery_executions, recovery_chains, change_events, alerts, subscriptions, reports) =
+                match loaded {
+                    Ok(v) => v,
+                    Err(e) => {
+                        show_fatal_dialog(app.handle(), &e);
+                        return Err(e.into());
+                    }
+                };
             tracing::info!(path = %storage_path.display(), "sqlite storage ready");
             // Phase 4.3 - 邮件发送器(SMTP_HOST 空 -> InMemory 回退)
             let email_sender = email_smtp::get_email_sender();
@@ -302,6 +393,8 @@ pub fn run() {
                 .iter()
                 .find(|h| h.name == "k8s-handler")
                 .map(|h| h.handler.clone());
+            // AppState 的模式镜像在 api_base move 进 executor 之前留一份。
+            let api_base_for_state = api_base.clone();
             let handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor> =
                 if let Some(h) = scale_handler {
                     tracing::info!(
@@ -333,6 +426,8 @@ pub fn run() {
                 sync_loop_handle: Mutex::new(None),
                 first_sync_done: std::sync::atomic::AtomicBool::new(false),
                 handler_executor,
+                handler_real_mode: real_mode,
+                handler_api_base: api_base_for_state,
                 connector_statuses: tokio::sync::Mutex::new(connector_statuses),
             });
             // Phase 4.3 - 起调度循环(60s tick);存 handle 供 RunEvent::Exit abort
@@ -355,6 +450,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_version,
+            get_engine_version,
+            get_handler_mode,
             list_connectors,
             sync_all_now,
             get_topology,

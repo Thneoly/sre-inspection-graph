@@ -220,26 +220,57 @@ pub async fn proxy_status(state: State<'_, AppState>) -> Result<ProxyStatusDto, 
 // 内部 helper
 // ============================================================================
 
+/// kubectl 候选文件名:无后缀 + `.exe`。Windows 的 `Path::is_file` 与
+/// CreateProcess 都不做 PATH 内扩展名补全,`kubectl.exe` 必须显式探测;
+/// 两个都试,兼容 WSL/跨平台 PATH 混挂的边角。
+const KUBECTL_NAMES: &[&str] = &["kubectl", "kubectl.exe"];
+
 /// 找 kubectl 可执行文件:`KUBECTL_PATH` env -> PATH 扫描 -> 常见绝对路径。
+///
+/// PATH 解析用 `std::env::split_paths`(Windows `;` / Unix `:` 分隔符都正确),
+/// 不再手写 `split(':')`(Windows 上会把 `C:\...` 按盘符切碎)。
 fn resolve_kubectl() -> Result<PathBuf, String> {
     let env_val = std::env::var("KUBECTL_PATH").ok();
-    let path_dirs: Vec<String> = std::env::var("PATH")
-        .ok()
-        .map(|p| p.split(':').map(str::to_string).collect())
+    let path_dirs: Vec<String> = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect()
+        })
         .unwrap_or_default();
     let path_refs: Vec<&str> = path_dirs.iter().map(String::as_str).collect();
-    resolve_kubectl_from(
-        env_val.as_deref(),
-        &path_refs,
-        &["/snap/bin/kubectl", "/usr/bin/kubectl", "/usr/local/bin/kubectl"],
-    )
+    resolve_kubectl_from(env_val.as_deref(), &path_refs, &common_kubectl_paths())
+}
+
+/// 按平台给常见绝对路径兜底(Unix 包管理器位置 / Windows choco·scoop·winget)。
+fn common_kubectl_paths() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        // winget/手动安装(ProgramFiles)、choco(ProgramData)、scoop(USERPROFILE)
+        let mut v = Vec::new();
+        if let Some(b) = std::env::var_os("ProgramFiles") {
+            v.push(PathBuf::from(b).join("Kubernetes").join("kubectl.exe"));
+        }
+        if let Some(b) = std::env::var_os("ProgramData") {
+            v.push(PathBuf::from(b).join("chocolatey").join("bin").join("kubectl.exe"));
+        }
+        if let Some(b) = std::env::var_os("USERPROFILE") {
+            v.push(PathBuf::from(b).join("scoop").join("shims").join("kubectl.exe"));
+        }
+        v
+    } else {
+        ["/snap/bin/kubectl", "/usr/bin/kubectl", "/usr/local/bin/kubectl"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+    }
 }
 
 /// `resolve_kubectl` 的纯逻辑核心(可测):env > path_dirs 扫描 > common 绝对路径。
+/// path_dirs 扫描时对每个目录试 [`KUBECTL_NAMES`] 全部候选名。
 fn resolve_kubectl_from(
     env_val: Option<&str>,
     path_dirs: &[&str],
-    common: &[&str],
+    common: &[PathBuf],
 ) -> Result<PathBuf, String> {
     if let Some(p) = env_val {
         let pb = PathBuf::from(p);
@@ -248,15 +279,16 @@ fn resolve_kubectl_from(
         }
     }
     for d in path_dirs {
-        let cand = PathBuf::from(d).join("kubectl");
-        if cand.is_file() {
-            return Ok(cand);
+        for name in KUBECTL_NAMES {
+            let cand = PathBuf::from(d).join(name);
+            if cand.is_file() {
+                return Ok(cand);
+            }
         }
     }
     for c in common {
-        let pb = PathBuf::from(c);
-        if pb.is_file() {
-            return Ok(pb);
+        if c.is_file() {
+            return Ok(c.clone());
         }
     }
     Err("kubectl not found on PATH; set KUBECTL_PATH or install kubectl".into())
@@ -352,8 +384,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_kubectl_from_finds_exe_variant_in_path_dirs() {
+        // Windows 场景:目录里只有 kubectl.exe(无后缀的不存在),候选名
+        // 兜底应能命中 kubectl.exe(跨平台跑:is_file 只看存在性,与 OS 无关)。
+        let dir =
+            std::env::temp_dir().join(format!("sre-proxy-test-exe-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("mkdir");
+        touch(&dir, "kubectl.exe");
+        let got = resolve_kubectl_from(None, &[dir.to_str().unwrap()], &[]);
+        assert_eq!(got.unwrap(), dir.join("kubectl.exe"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn resolve_kubectl_from_errors_when_missing() {
-        let got = resolve_kubectl_from(None, &["/nonexistent-dir-xyz"], &["/nope/kubectl"]);
+        let got = resolve_kubectl_from(
+            None,
+            &["/nonexistent-dir-xyz"],
+            &[PathBuf::from("/nope/kubectl")],
+        );
         assert!(got.is_err());
     }
 

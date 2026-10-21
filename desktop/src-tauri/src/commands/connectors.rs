@@ -113,7 +113,9 @@ pub fn seed_connector_statuses(
                 loaded,
                 capabilities: m.capabilities.clone(),
                 sync_interval_seconds: m.sync_interval_seconds,
-                config: m.config.clone(),
+                // [defaults] overlay 后的合成 config(与 sync_all 实际喂给 guest 的
+                // 一致;显示原始 config 会缺 cluster/namespace,误导排障)。
+                config: Some(engine_wasm::merge_defaults(m.config.as_ref(), &manifest.defaults)),
                 fs_roots: m.fs_roots.clone().unwrap_or_default(),
                 load_error: load_errors.get(m.name.as_str()).map(|s| (*s).to_string()),
                 last_synced_at: None,
@@ -192,6 +194,8 @@ mod tests {
         ManifestFile {
             schema_version: "1".into(),
             modules,
+            defaults: Default::default(),
+            network: Default::default(),
         }
     }
 

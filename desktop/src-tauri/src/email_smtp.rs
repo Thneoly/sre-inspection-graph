@@ -49,6 +49,21 @@ impl SmtpEmailSender {
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host)
                 .map_err(|e| format!("smtp starttls builder: {e}"))?
         } else {
+            // 明文链路(builder_dangerous)上带凭据 = 密码裸奔 —— 拒绝这种组合,
+            // 除非显式 SMTP_ALLOW_PLAIN_AUTH=true(自认风险的封闭测试环境)。
+            if user.is_some() && password.is_some() {
+                let explicit = std::env::var("SMTP_ALLOW_PLAIN_AUTH")
+                    .map(|s| s.to_lowercase() == "true")
+                    .unwrap_or(false);
+                if !explicit {
+                    return Err(
+                        "SMTP_USE_TLS=false 时拒绝携带凭据(明文链路会裸传密码)。\
+                         开 TLS(SMTP_USE_TLS=true)或显式设 SMTP_ALLOW_PLAIN_AUTH=true"
+                            .into(),
+                    );
+                }
+                tracing::warn!("SMTP credentials over PLAIN link (SMTP_ALLOW_PLAIN_AUTH=true)");
+            }
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
         };
         builder = builder.port(port);

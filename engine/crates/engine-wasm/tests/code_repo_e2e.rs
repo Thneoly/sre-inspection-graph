@@ -69,7 +69,12 @@ async fn code_repo_scans_fixtures_into_topology_facts() {
         .into_iter()
         .map(String::from)
         .collect();
-    let mut conn = WasmConnector::load_with_roots(&wasm_path, caps, vec![root.clone()])
+    let mut conn = WasmConnector::load_with_roots(
+        &wasm_path,
+        caps,
+        vec![root.clone()],
+        engine_wasm::http_host::AllowedHosts::NotConfigured,
+    )
         .await
         .expect("load code_repo.wasm");
     let config = serde_json::json!({
@@ -142,7 +147,12 @@ async fn code_repo_denied_without_fs_read_capability() {
     let root = make_fixture_tree("denied");
     // 缺 fs-read cap:host 每次 read 拒回 permission-denied -> 0 fact + error。
     let caps: HashSet<String> = ["logging", "clock"].into_iter().map(String::from).collect();
-    let mut conn = WasmConnector::load_with_roots(&wasm_path, caps, vec![root.clone()])
+    let mut conn = WasmConnector::load_with_roots(
+        &wasm_path,
+        caps,
+        vec![root.clone()],
+        engine_wasm::http_host::AllowedHosts::NotConfigured,
+    )
         .await
         .expect("load");
     let config = serde_json::json!({ "roots": [root.to_string_lossy()] });

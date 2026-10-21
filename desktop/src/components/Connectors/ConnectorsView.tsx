@@ -27,7 +27,16 @@ export default function ConnectorsView() {
   const syncM = useMutation({
     mutationFn: () => syncAllNow(),
     onSuccess: (s) => {
-      message.success(`sync 完成:${s.facts.length} facts, ${s.total_errors} errors, ${s.total_duration_ms}ms`);
+      // 按 total_errors 分级:有错误时不再弹绿色 success(误导"一切正常"),
+      // 指向最常见根因 —— kubectl proxy 未启动(Topology 页 Connect)。
+      if (s.total_errors > 0) {
+        message.warning(
+          `sync 完成但有 ${s.total_errors} 个错误:${s.facts.length} facts, ${s.total_duration_ms}ms。` +
+            `数据源不可达?先在 Topology 页 Connect(kubectl proxy)。详情见下表 errors 列。`
+        );
+      } else {
+        message.success(`sync 完成:${s.facts.length} facts, ${s.total_errors} errors, ${s.total_duration_ms}ms`);
+      }
       qc.invalidateQueries({ queryKey: ["connectors-status"] });
     },
     onError: (e) => message.error(String(e)),

@@ -194,9 +194,16 @@ pub async fn execute_recovery(
     finding_id: Option<String>,
 ) -> Result<engine_recovery::RecoveryExecution, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
+    // real 模式收紧审批:一切动作(含 low-risk)停 awaiting_approval —— 真改集群
+    // 不能静默直达;mock 模式保持 low-risk 直达的既有演练语义。
+    let policy = if state.handler_real_mode {
+        engine_recovery::ApprovalPolicy::All
+    } else {
+        engine_recovery::ApprovalPolicy::LowRiskAutoRun
+    };
     let exec = {
         let mut reg = state.recovery_executions.lock().await;
-        let mut exec = engine_recovery::execute(
+        let mut exec = engine_recovery::execute_with_policy(
             &mut reg,
             &action_id,
             &target_resource_id,
@@ -205,6 +212,7 @@ pub async fn execute_recovery(
             &initiated_by.unwrap_or_default(),
             &request_reason.unwrap_or_default(),
             &*state.handler_executor,
+            policy,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -363,10 +371,16 @@ pub async fn execute_chain(
 ) -> Result<engine_recovery::RecoveryChain, String> {
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let on_failure = on_failure_override.as_deref().and_then(parse_on_failure);
+    // 同 execute_recovery:real 模式整链全走确认门。
+    let policy = if state.handler_real_mode {
+        engine_recovery::ApprovalPolicy::All
+    } else {
+        engine_recovery::ApprovalPolicy::LowRiskAutoRun
+    };
     let chain = {
         let mut chain_reg = state.recovery_chains.lock().await;
         let mut exec_reg = state.recovery_executions.lock().await;
-        engine_recovery::execute_chain(
+        engine_recovery::execute_chain_with_policy(
             &mut chain_reg,
             &mut exec_reg,
             &mut topo,
@@ -376,6 +390,7 @@ pub async fn execute_chain(
             on_failure,
             &request_reason.unwrap_or_default(),
             &*state.handler_executor,
+            policy,
         )
         .await
         .map_err(|e| e.to_string())?

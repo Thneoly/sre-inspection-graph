@@ -201,7 +201,7 @@ pub static ROLLBACK_DEPLOYMENT: ActionDef = ActionDef {
     requires_approval: true,
     rollback_action_id: Some("rollback_deployment"),
     estimated_duration_seconds: 180,
-    description: "kubectl rollout undo,把 Deployment 回退到上一版本(或指定 revision)。",
+    description: "回退 Deployment 版本。real handler(v0)打 restartedAt 注解触发滚动重启,非完整 rollout-undo 的 revision 回退 —— 完整实现见 roadmap",
     input_schema: &[
         ParamSpec { name: "revision", kind: ParamKind::Integer, required: false },
     ],
@@ -227,7 +227,7 @@ pub static REFRESH_SECRET: ActionDef = ActionDef {
     requires_approval: true,
     rollback_action_id: None,
     estimated_duration_seconds: 300,
-    description: "更新 Secret 内容并(可选)滚动重启所有引用它的 Pod。",
+    description: "轮换 Secret。real handler(v0)仅打 rotatedAt 注解做标记,不更新 Secret data、不重启引用 Pod —— 完整实现见 roadmap",
     input_schema: &[
         ParamSpec { name: "trigger_pod_restart", kind: ParamKind::Boolean, required: false },
     ],
@@ -252,7 +252,7 @@ pub static DRAIN_NODE: ActionDef = ActionDef {
     requires_approval: true,
     rollback_action_id: None,
     estimated_duration_seconds: 600,
-    description: "对 Node 执行 cordon + drain,将其上 Pod 迁移到其他节点。",
+    description: "腾空 Node(cordon + drain,迁移其上 Pod 到其他节点)。real handler(v0)仅 cordon(设 unschedulable),不做 Pod evict —— 完整实现见 roadmap",
     input_schema: &[
         ParamSpec { name: "ignore_daemonsets", kind: ParamKind::Boolean, required: false },
         ParamSpec { name: "delete_local_data", kind: ParamKind::Boolean, required: false },

@@ -99,6 +99,20 @@ modules-clippy: ## clippy on WASM module code paths (--target wasm32-wasip2 -D w
 modules-build-one: ## Build one module: make modules-build-one MOD=modules/connectors/k8s
 	cd $(ROOT_DIR)$(MOD) && cargo wasi-build
 
+modules-pin-hashes: ## Print sha256 of each built wasm (paste into manifest sha256 before distribution).
+	@cd $(MODULES) && for f in target/wasm32-wasip2/release/*.wasm; do \
+		printf '%s  %s\n' "$$(sha256sum $$f | cut -d' ' -f1)" "$$f"; done
+	@echo ''
+	@echo 'engine-wasm 从_manifest 对非空 sha256 强制校验(不匹配拒载);'
+	@echo '空值 = warn 放行(dev 兼容)。分发前把上列 hash 回填 manifest 各模块 sha256。'
+
+stats: ## LOC / test counts per layer (refresh README scale table before release).
+	@printf 'engine crates   : '; find $(ENGINE)/crates -name '*.rs' -not -path '*/target/*' | xargs wc -l | tail -1 | awk '{print $$1}'
+	@printf 'modules (wasm)  : '; find $(MODULES) -name '*.rs' -not -path '*/target/*' | xargs wc -l | tail -1 | awk '{print $$1}'
+	@printf 'desktop backend : '; find $(DESKTOP)/src-tauri/src -name '*.rs' | xargs wc -l | tail -1 | awk '{print $$1}'
+	@printf 'frontend ts/tsx : '; find $(DESKTOP)/src -name '*.ts' -o -name '*.tsx' | xargs wc -l | tail -1 | awk '{print $$1}'
+	@printf 'rust tests      : '; grep -rE '#\[(tokio::)?test\]' $(ENGINE)/crates $(MODULES) $(DESKTOP)/src-tauri/src --include='*.rs' | wc -l
+
 # ---------------------------------------------------------------
 #  Desktop (Tauri 2.x — React 18 + AntD + Cytoscape)
 # ---------------------------------------------------------------

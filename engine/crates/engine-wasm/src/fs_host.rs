@@ -122,8 +122,14 @@ pub fn read_file(
 /// host 端 capability-gated + root-gated 目录列举。
 ///
 /// 同 [`read_file`] 的前置校验,然后 `std::fs::read_dir` 列子项,返回各子项
-/// 的完整路径(canonical 根 + 子项名,已排序便于确定性测试)。供 guest 驱动
-/// 递归扫描(读到子项路径后再 read_file / read_dir)。
+/// 的完整路径(已排序便于确定性测试)。供 guest 驱动递归扫描(读到子项路径后
+/// 再 read_file / read_dir)。
+///
+/// **返回路径统一 POSIX 风格**(`/` 分隔 + 剥 Windows verbatim `\\?\` 前缀):
+/// guest(WASM 内)按 POSIX 习惯解析路径(basename 等),Windows host 的 `\`
+/// 分隔与 `\\?\` 前缀会破坏 guest 侧识别(code-repo 的 repo-marker 判定),
+/// 且 `//?/` 形态的 verbatim 前缀 Windows API 不认。guest 拿 plain 路径回调
+/// read_file/read_dir 时,canonicalize 两侧(root/请求)一致,root 校验不受影响。
 pub fn read_dir(
     allowed_capabilities: &HashSet<String>,
     allowed_roots: &[PathBuf],
@@ -134,7 +140,12 @@ pub fn read_dir(
     let mut out: Vec<String> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| map_io_err(path, e))?;
-        out.push(entry.path().to_string_lossy().into_owned());
+        let p = entry
+            .path()
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/");
+        out.push(p);
     }
     out.sort();
     Ok(out)
@@ -151,7 +162,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sre-fs-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create scratch dir");
-        dir
+        // canonicalize 后返回 —— 对齐生产语义(multi.rs from_manifest 对 fs_roots
+        // canonicalize 后传入)。Windows 上 canonicalize 加 `\\?\` verbatim 前缀,
+        // 与请求路径 canonicalize 后同形;若此处不 canonicalize,Windows 下
+        // starts_with 组件匹配(verbatim vs 非 verbatim 前缀)恒 false,正路径
+        // 测试全误拒、拒绝类测试变假阳性(拒绝原因错位)。
+        dir.canonicalize().expect("canonicalize scratch dir")
     }
 
     fn allow_fs() -> HashSet<String> {
@@ -199,10 +215,17 @@ mod tests {
     fn read_file_blocks_traversal_outside_root() {
         let root = scratch_dir("traversal");
         let outside = scratch_dir("outside"); // 另一个独立目录
-        // root/../../../<outside> —— canonicalize 后落在 root 之外
+        // root/../../../<outside> —— canonicalize 后落在 root 之外。
+        // crafted 用「逻辑路径」拼 ..(Windows 的 verbatim 路径 `\\?\...` 不支持
+        // `..`,os error 123)—— root 是 canonicalize 形态,先剥掉 verbatim 前缀
+        // (Linux 无前缀,no-op),请求侧 canonicalize 自会解析 `..` 到真实位置。
+        let root_plain = root
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string();
         let crafted = format!(
             "{}/../{}",
-            root.display(),
+            root_plain,
             outside.file_name().unwrap().to_string_lossy()
         );
         let err = read_file(&allow_fs(), std::slice::from_ref(&root), &crafted).expect_err("should deny");
@@ -227,17 +250,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // symlink 仅 unix 测(Windows 建符号链接要特权;函数级 cfg
+                 // 让整个测试在 windows 下不编译,避免 early-return 的 unreachable)
     fn read_file_blocks_symlink_escape() {
         let root = scratch_dir("symlink");
         let outside = scratch_dir("symlink-outside");
         let real = outside.join("real.txt");
         fs::write(&real, b"secret").unwrap();
         // root/link -> outside/real.txt(符号链接指向根外)
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&real, root.join("link")).expect("symlink");
-        // 非 unix:跳过(本仓 target 含 wasm + linux host,unix 路径为主)
-        #[cfg(not(unix))]
-        return;
         let err = read_file(
             &allow_fs(),
             std::slice::from_ref(&root),

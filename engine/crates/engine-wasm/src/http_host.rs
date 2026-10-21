@@ -22,9 +22,10 @@
 //! 4. **reqwest::Client 共享** —— `Client` 内部是 `Arc<Inner>`,clone 廉价。
 //!    一个 WasmConnector 一份 clone,各自独立的连接池;Phase 3 可以提到
 //!    `WasmRuntime` 级共享
-//! 5. **URL allow-list 留 Phase 3** —— 拿到 `"http-client"` 能力的 guest
-//!    当前能 GET 任意 URL。Phase 3 加 `[modules.network] allowed_hosts = [...]`
-//!    manifest 段,在这里加 host 校验
+//! 5. **URL allow-list**(Phase 3 落地)—— manifest 顶层 `[network]` 段配
+//!    `allowed_hosts = [...]`,[`check_url_allowed`] 按 host(可带 :port)查表;
+//!    未配置时向后兼容 allow-all(启动时 warn,由 `multi.rs` 打)。无论配置与否,
+//!    link-local 目标(169.254.0.0/16、fe80::/10 —— 云 metadata 面)硬拒。
 
 use std::collections::HashSet;
 
@@ -35,6 +36,21 @@ pub const CAP_HTTP_CLIENT: &str = "http-client";
 /// 申明 http-write capability 时使用的字符串(Phase 3.9)。write 比 read 危险,
 /// 单独 capability deny-by-default,manifest `capabilities = [..., "http-write"]` 才放行。
 pub const CAP_HTTP_WRITE: &str = "http-write";
+
+/// manifest `[network].allowed_hosts` 的解析形态。
+///
+/// - [`AllowedHosts::NotConfigured`] —— manifest 没配 `[network]` 段:
+///   allow-all(向后兼容,不 break 现有 manifest;`multi.rs` 启动时 warn 提示 pin)。
+/// - [`AllowedHosts::Configured`] —— 配置了:`Some` 列表按 host 查表,
+///   空列表 = 显式全拒(比未配置更严)。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AllowedHosts {
+    /// 未配置(allow-all,向后兼容;生产应 pin)。
+    #[default]
+    NotConfigured,
+    /// 已配置。条目 `host` 或 `host:port`(大小写不敏感);`host` 条目匹配任意端口。
+    Configured(Vec<String>),
+}
 
 /// host 侧 HTTP 响应 —— [`crate::runtime`] 把它转 WIT `response` record。
 #[derive(Debug, Clone)]
@@ -65,18 +81,81 @@ pub enum HostHttpError {
     Timeout,
 }
 
+/// URL 目标校验 —— capability 之后的第二道门(Phase 3)。
+///
+/// 规则(先于 allow-list、无论配置与否生效):
+/// 1. **link-local 硬拒** —— URL host 是 IP literal 且落在 `169.254.0.0/16` 或
+///    `fe80::/10`(云 metadata 服务面)→ [`HostHttpError::Unauthorized`]。
+///    本项目 connector 打 `127.0.0.1`(kubectl proxy,loopback 非 link-local)不受影响。
+/// 2. [`AllowedHosts::NotConfigured`] → 放行(向后兼容;`multi.rs` 启动 warn)。
+/// 3. [`AllowedHosts::Configured`] → URL 的 host(小写)须命中列表条目:
+///    条目带 `:port` 时还须端口相同;纯 host 条目匹配任意端口。
+pub fn check_url_allowed(url: &str, allowed: &AllowedHosts) -> Result<(), HostHttpError> {
+    // reqwest 传递依赖里的 url crate,这里显式声明使用
+    let parsed = url::Url::parse(url)
+        .map_err(|e| HostHttpError::Unauthorized(format!("invalid url {url:?}: {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| HostHttpError::Unauthorized(format!("url {url:?} has no host")))?;
+
+    // 规则 1:link-local IP literal 硬拒(metadata 面)。
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_link_local = match ip {
+            std::net::IpAddr::V4(v4) => v4.octets()[0] == 169 && v4.octets()[1] == 254,
+            std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        };
+        if is_link_local {
+            return Err(HostHttpError::Unauthorized(format!(
+                "link-local target {host} denied (cloud metadata surface)"
+            )));
+        }
+    }
+
+    // 规则 2:未配置 → allow-all。
+    let AllowedHosts::Configured(entries) = allowed else {
+        return Ok(());
+    };
+
+    // 规则 3:按条目查表(host 小写;带 :port 的条目还须端口匹配)。
+    let host_lc = host.to_ascii_lowercase();
+    let port = parsed.port();
+    for entry in entries {
+        let entry = entry.to_ascii_lowercase();
+        match entry.rsplit_once(':') {
+            // 条目带端口:host+port 都须匹配(仅当 URL 有显式端口;URL 无显式端口
+            // 走 scheme 默认端口,此时按纯 host 条目匹配更符合直觉)。
+            Some((e_host, e_port)) if port.is_some() => {
+                if e_host == host_lc && *e_port == port.map(|p| p.to_string()).unwrap_or_default()
+                {
+                    return Ok(());
+                }
+            }
+            _ => {
+                if entry == host_lc {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(HostHttpError::Unauthorized(format!(
+        "host '{host}' not in [network].allowed_hosts"
+    )))
+}
+
 /// host 端 capability-gated HTTP GET。
 ///
 /// 流程:
 /// 1. 查 `allowed_capabilities`,缺 `"http-client"` → [`HostHttpError::Unauthorized`]
-/// 2. 用传入的 `client` 发 GET,把 `headers` 一对一加进去
-/// 3. 拿响应 → 按状态码映射 → 把 body 转 `Vec<u8>`
+/// 2. [`check_url_allowed`] 查 host allow-list(link-local 硬拒 + 按表放行)
+/// 3. 用传入的 `client` 发 GET,把 `headers` 一对一加进去
+/// 4. 拿响应 → 按状态码映射 → 把 body 转 `Vec<u8>`
 ///
 /// `client` 走入参注入(不在内部创建)—— 便于测试时换成预配 timeout 的 Client,
 /// 也便于 WasmConnector 共享一个 Client 跨多次 sync 复用连接池。
 pub async fn http_get(
     client: &reqwest::Client,
     allowed_capabilities: &HashSet<String>,
+    allowed_hosts: &AllowedHosts,
     url: &str,
     headers: &[(String, String)],
 ) -> Result<HostHttpResponse, HostHttpError> {
@@ -85,6 +164,7 @@ pub async fn http_get(
             "capability '{CAP_HTTP_CLIENT}' not declared in module manifest"
         )));
     }
+    check_url_allowed(url, allowed_hosts)?;
 
     let mut req = client.get(url);
     for (k, v) in headers {
@@ -113,13 +193,15 @@ pub async fn http_get(
 ///
 /// 流程:
 /// 1. 查 `allowed_capabilities`,缺 `"http-write"` -> [`HostHttpError::Unauthorized`]
-/// 2. 按 `method`(PATCH/POST/DELETE)建 reqwest 请求,加 headers + body(DELETE 可无)
-/// 3. 拿响应 -> 按状态码映射(同 [`http_get`]:401/403->Unauthorized,404->NotFound)
+/// 2. [`check_url_allowed`] 查 host allow-list(与 GET 同一道门,write 更没有绕过的理由)
+/// 3. 按 `method`(PATCH/POST/DELETE)建 reqwest 请求,加 headers + body(DELETE 可无)
+/// 4. 拿响应 -> 按状态码映射(同 [`http_get`]:401/403->Unauthorized,404->NotFound)
 ///
 /// `body: Option<&[u8]>` -- `None` = 无 body(DELETE);`Some` = 请求 body 字节。
 pub async fn http_write(
     client: &reqwest::Client,
     allowed_capabilities: &HashSet<String>,
+    allowed_hosts: &AllowedHosts,
     method: &str,
     url: &str,
     headers: &[(String, String)],
@@ -130,6 +212,7 @@ pub async fn http_write(
             "capability '{CAP_HTTP_WRITE}' not declared in module manifest"
         )));
     }
+    check_url_allowed(url, allowed_hosts)?;
 
     let mut req = match method {
         "PATCH" => client.patch(url),
@@ -218,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn http_get_denies_when_capability_missing() {
         let client = test_client();
-        let err = http_get(&client, &empty_caps(), "http://127.0.0.1:1/", &[])
+        let err = http_get(&client, &empty_caps(), &AllowedHosts::NotConfigured, "http://127.0.0.1:1/", &[])
             .await
             .expect_err("should deny");
         match err {
@@ -237,7 +320,7 @@ mod tests {
     async fn http_get_returns_network_error_for_closed_port() {
         let client = test_client();
         // 127.0.0.1:1 — 几乎一定是关的(reserved port 1)
-        let err = http_get(&client, &allow_http(), "http://127.0.0.1:1/", &[])
+        let err = http_get(&client, &allow_http(), &AllowedHosts::NotConfigured, "http://127.0.0.1:1/", &[])
             .await
             .expect_err("should fail to connect");
         match &err {
@@ -261,6 +344,7 @@ mod tests {
         let resp = http_get(
             &client,
             &allow_http(),
+            &AllowedHosts::NotConfigured,
             &format!("http://127.0.0.1:{port}/"),
             &[],
         )
@@ -281,6 +365,7 @@ mod tests {
         let err = http_get(
             &client,
             &allow_http(),
+            &AllowedHosts::NotConfigured,
             &format!("http://127.0.0.1:{port}/"),
             &[],
         )
@@ -301,6 +386,7 @@ mod tests {
         let err = http_get(
             &client,
             &allow_http(),
+            &AllowedHosts::NotConfigured,
             &format!("http://127.0.0.1:{port}/forbidden"),
             &[],
         )
@@ -329,6 +415,7 @@ mod tests {
         let resp = http_get(
             &client,
             &allow_http(),
+            &AllowedHosts::NotConfigured,
             &format!("http://127.0.0.1:{port}/"),
             &[
                 ("authorization".to_string(), "Bearer test-token".to_string()),
@@ -355,6 +442,7 @@ mod tests {
         let err = http_write(
             &client,
             &empty_caps(),
+            &AllowedHosts::NotConfigured,
             "PATCH",
             "http://127.0.0.1:1/",
             &[],
@@ -379,6 +467,7 @@ mod tests {
         let resp = http_write(
             &client,
             &allow_http_write(),
+            &AllowedHosts::NotConfigured,
             "PATCH",
             &format!("http://127.0.0.1:{port}/"),
             &[("content-type".to_string(), "application/merge-patch+json".to_string())],
@@ -397,6 +486,7 @@ mod tests {
         let err = http_write(
             &client,
             &allow_http_write(),
+            &AllowedHosts::NotConfigured,
             "PUT",
             "http://127.0.0.1:1/",
             &[],
@@ -409,6 +499,85 @@ mod tests {
                 assert!(msg.contains("PUT"), "msg should name method: {msg}");
             }
             other => panic!("expected Network(unsupported method), got {other:?}"),
+        }
+    }
+
+    // ---------- check_url_allowed(allow-list 纯函数)----------
+
+    fn hosts(list: &[&str]) -> AllowedHosts {
+        AllowedHosts::Configured(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn url_check_not_configured_allows_any_host() {
+        // 向后兼容:未配置 [network] -> 任意 host 放行(loopback 也放 —— 项目核心
+        // 用例就是 127.0.0.1 kubectl proxy)。
+        assert!(check_url_allowed("http://10.1.2.3:9090/api", &AllowedHosts::NotConfigured).is_ok());
+        assert!(check_url_allowed("http://example.com/x", &AllowedHosts::NotConfigured).is_ok());
+    }
+
+    #[test]
+    fn url_check_configured_list_matches_host_and_port() {
+        let allowed = hosts(&["127.0.0.1:8001", "127.0.0.1", "prometheus.internal"]);
+        // 纯 host 条目匹配任意端口
+        assert!(check_url_allowed("http://prometheus.internal:9090/api", &allowed).is_ok());
+        assert!(check_url_allowed("http://127.0.0.1:9090/x", &allowed).is_ok());
+        // host:port 条目精确匹配
+        assert!(check_url_allowed("http://127.0.0.1:8001/api/v1/pods", &allowed).is_ok());
+        // 不在表内 -> 拒
+        let err = check_url_allowed("http://evil.example.com:8001/x", &allowed)
+            .expect_err("host not in list should be denied");
+        assert!(matches!(&err, HostHttpError::Unauthorized(m) if m.contains("evil.example.com")));
+        // host 对了端口不对(host:port 条目),且无纯 host 条目兜底时 -> 拒
+        let only_port = hosts(&["127.0.0.1:8001"]);
+        assert!(check_url_allowed("http://127.0.0.1:9999/x", &only_port).is_err());
+    }
+
+    #[test]
+    fn url_check_empty_configured_list_denies_all() {
+        // Some([]) = 显式全拒(区别于未配置的 allow-all)
+        let err = check_url_allowed("http://127.0.0.1:8001/", &hosts(&[]))
+            .expect_err("empty list should deny");
+        assert!(matches!(&err, HostHttpError::Unauthorized(m) if m.contains("allowed_hosts")));
+    }
+
+    #[test]
+    fn url_check_link_local_denied_even_when_not_configured() {
+        // 云 metadata 面(169.254.169.254 / fe80::)硬拒,与 allow-list 配置无关
+        assert!(check_url_allowed("http://169.254.169.254/latest/meta-data/", &AllowedHosts::NotConfigured).is_err());
+        assert!(check_url_allowed("http://fe80::1:8080/", &AllowedHosts::NotConfigured).is_err());
+        // 即便显式加进 allowed_hosts 也拒(硬拒优先于配置)
+        assert!(
+            check_url_allowed(
+                "http://169.254.169.254/latest/meta-data/",
+                &hosts(&["169.254.169.254"])
+            )
+            .is_err()
+        );
+        // loopback 不是 link-local,kubectl proxy 用例不受影响
+        assert!(check_url_allowed("http://127.0.0.1:8001/", &AllowedHosts::NotConfigured).is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_get_denies_host_not_in_configured_list() {
+        // e2e 形态:capability 有,但 [network] 列表不含目标 host -> Unauthorized,
+        // 且请求根本不发出(打到不存在的端口也不会有连接尝试的副作用 —— 这里
+        // 用保留端口 9 discard 验证拒绝发生在网络层之前)。
+        let client = test_client();
+        let err = http_get(
+            &client,
+            &allow_http(),
+            &hosts(&["10.0.0.1"]),
+            "http://127.0.0.1:9/",
+            &[],
+        )
+        .await
+        .expect_err("host not allowed");
+        match err {
+            HostHttpError::Unauthorized(msg) => {
+                assert!(msg.contains("allowed_hosts"), "msg should name the list: {msg}");
+            }
+            other => panic!("expected Unauthorized(host), got {other:?}"),
         }
     }
 }

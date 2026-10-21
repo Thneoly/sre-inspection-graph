@@ -135,8 +135,9 @@ pub fn list_connectors(state: State<'_, AppState>) -> Vec<ConnectorInfo> {
 
 /// 立即触发一次 sync_all,返聚合 Fact + per-connector 状态。
 ///
-/// `config_json` 给所有 connector 同样的 config —— 本期前端默认传 `"{}"`,
-/// 每 connector 各自的 config 注入留 Phase 3(manifest 加 `[modules.config]`)。
+/// `config_json` 是**全局 fallback config**:manifest 里配了 `config` 的 connector
+/// 走自己的 per-connector config(Phase 2.7 起 `engine_wasm::select_config` 分发),
+/// 没配的才回退到这里。前端默认传 `"{}"` 即"全用 manifest config"。
 #[tauri::command]
 pub async fn sync_all_now(
     state: State<'_, AppState>,

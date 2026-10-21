@@ -7,7 +7,8 @@
 //! - node-impact:KubernetesNode 起点,Reverse,depth 4
 //! - config-impact:Secret/ConfigMap 起点,Reverse,depth 4
 //! - access-link:Application 起点,Both,depth 5
-//! - image-risk:ContainerImage 起点,Reverse,depth 4(真集群当前无 image 节点 -> 空图)
+//! - image-risk:ContainerImage 起点,Reverse,depth 4(k8s connector Phase 5.2 起
+//!   产 image 节点 + USES_IMAGE 边,真集群有数据)
 //!
 //! `alert-aggregation` 结构不同(AlertRegistry join + FIRED_ON 边),延后。
 
@@ -97,7 +98,8 @@ pub async fn access_link(
 
 /// 读 materialized topology,跑 image-risk(镜像风险)子图。
 ///
-/// 真集群当前 k8s connector 不产 ContainerImage 节点 -> 真集群上返空图(预期)。
+/// 依赖 k8s connector 产的 ContainerImage 节点(`image:{c}:{ns}:{ref}`)+ USES_IMAGE
+/// 边(Phase 5.2 起);老注释"真集群空图"写于 image 富化落地前,已过期删除。
 #[tauri::command]
 pub async fn image_risk(
     state: State<'_, AppState>,

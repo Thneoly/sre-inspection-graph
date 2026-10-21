@@ -84,6 +84,10 @@ pub struct State {
     http_client: reqwest::Client,
     /// 该 connector 申明的 capability 集合(`manifest.capabilities`)。
     allowed_capabilities: HashSet<String>,
+    /// http 目标 host allow-list(manifest 顶层 `[network]` 段,Phase 3)。
+    /// `http_get`/`http_write` 在 capability 查表后做第二道 host 校验;
+    /// [`crate::http_host::AllowedHosts::NotConfigured`] = allow-all(向后兼容)。
+    allowed_hosts: crate::http_host::AllowedHosts,
     /// `fs-read` capability 允许访问的根目录(canonicalize 后)。
     /// 由 [`WasmConnector::load_with_fs_roots`] 注入(Phase 8.1);
     /// 非 fs-read connector 传空 Vec。`fs_host::read_file` 每次 read 校验
@@ -152,6 +156,7 @@ impl HttpClientHost for State {
         let resp = crate::http_host::http_get(
             &self.http_client,
             &self.allowed_capabilities,
+            &self.allowed_hosts,
             &url,
             &headers,
         )
@@ -172,6 +177,7 @@ impl HttpClientHost for State {
         let resp = crate::http_host::http_write(
             &self.http_client,
             &self.allowed_capabilities,
+            &self.allowed_hosts,
             &req.method,
             &req.url,
             &req.headers,
@@ -271,6 +277,7 @@ impl handler_bindings::sre::inspection::http_client::Host for State {
         let resp = crate::http_host::http_get(
             &self.http_client,
             &self.allowed_capabilities,
+            &self.allowed_hosts,
             &url,
             &headers,
         )
@@ -292,6 +299,7 @@ impl handler_bindings::sre::inspection::http_client::Host for State {
         let resp = crate::http_host::http_write(
             &self.http_client,
             &self.allowed_capabilities,
+            &self.allowed_hosts,
             &req.method,
             &req.url,
             &req.headers,
@@ -367,20 +375,36 @@ impl WasmConnector {
         capabilities: HashSet<String>,
         client: reqwest::Client,
     ) -> Result<Self> {
-        Self::load_with_fs_roots(wasm_path, capabilities, client, Vec::new()).await
+        Self::load_with_fs_roots(
+            wasm_path,
+            capabilities,
+            client,
+            crate::http_host::AllowedHosts::NotConfigured,
+            Vec::new(),
+        )
+        .await
     }
 
-    /// 与 [`load`] 同,但用默认 reqwest Client + 注入 `fs_roots`(fs-read grant)。
+    /// 与 [`load`] 同,但用默认 reqwest Client + 注入 `fs_roots`(fs-read grant)
+    /// + `allowed_hosts`(http host allow-list)。
     ///
     /// 供 [`crate::multi::WasmRuntime::from_manifest`] 给申明 `fs-read` 的 connector
-    /// 传根目录。`fs_roots` 为空时即便 capabilities 含 `fs-read` 也无访问
-    /// (有 cap 无根 = 无访问,见 [`crate::fs_host`])。
+    /// 传根目录、给全部模块传 `[network]` host 表。`fs_roots` 为空时即便 capabilities
+    /// 含 `fs-read` 也无访问(有 cap 无根 = 无访问,见 [`crate::fs_host`])。
     pub async fn load_with_roots(
         wasm_path: &Path,
         capabilities: HashSet<String>,
         fs_roots: Vec<PathBuf>,
+        allowed_hosts: crate::http_host::AllowedHosts,
     ) -> Result<Self> {
-        Self::load_with_fs_roots(wasm_path, capabilities, default_http_client(), fs_roots).await
+        Self::load_with_fs_roots(
+            wasm_path,
+            capabilities,
+            default_http_client(),
+            allowed_hosts,
+            fs_roots,
+        )
+        .await
     }
 
     /// 真实加载实装:Config / Engine / Linker(WASI p2 + connector-world)/ Store
@@ -392,6 +416,7 @@ impl WasmConnector {
         wasm_path: &Path,
         capabilities: HashSet<String>,
         client: reqwest::Client,
+        allowed_hosts: crate::http_host::AllowedHosts,
         fs_roots: Vec<PathBuf>,
     ) -> Result<Self> {
         let mut config = Config::new();
@@ -416,9 +441,20 @@ impl WasmConnector {
             &engine,
             State {
                 table: ResourceTable::new(),
-                wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+                wasi: WasiCtxBuilder::new()
+                    .inherit_stdio()
+                    // WASI sockets 全关:guest 网络出口唯一化 —— 只能走 host 注入的
+                    // http-client capability(call-time capability 查表 + [network]
+                    // host allow-list),杜绝经 wasi:sockets 旁路 deny-by-default。
+                    // 本项目全部 connector/handler 都经 capability 走 host reqwest,
+                    // 无一需要 guest 原生 socket。
+                    .allow_tcp(false)
+                    .allow_udp(false)
+                    .allow_ip_name_lookup(false)
+                    .build(),
                 http_client: client,
                 allowed_capabilities: capabilities,
+                allowed_hosts,
                 fs_roots,
             },
         );
@@ -492,10 +528,13 @@ impl WasmHandler {
     ///
     /// 与 [`WasmConnector::load_with_http`] 同,但 `HandlerWorld::add_to_linker`
     /// (handler-world import logging/clock/http-client,与 connector-world 共用 State impl)。
+    /// `allowed_hosts`:http host allow-list —— handler 走 `http-write` 真改集群,
+    /// 与 connector 走同一道门(manifest `[network]` 段)。
     pub async fn load_with_http(
         wasm_path: &Path,
         capabilities: HashSet<String>,
         client: reqwest::Client,
+        allowed_hosts: crate::http_host::AllowedHosts,
     ) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
@@ -513,9 +552,17 @@ impl WasmHandler {
             &engine,
             State {
                 table: ResourceTable::new(),
-                wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+                wasi: WasiCtxBuilder::new()
+                    .inherit_stdio()
+                    // 同 WasmConnector:WASI sockets 全关,网络出口唯一化到
+                    // http-client capability(handler 的 write 走 http-write cap)。
+                    .allow_tcp(false)
+                    .allow_udp(false)
+                    .allow_ip_name_lookup(false)
+                    .build(),
                 http_client: client,
                 allowed_capabilities: capabilities,
+                allowed_hosts,
                 fs_roots: Vec::new(),
             },
         );
@@ -530,9 +577,26 @@ impl WasmHandler {
         Ok(Self { store, bindings })
     }
 
-    /// 便捷加载(默认 reqwest Client)。
+    /// 便捷加载(默认 reqwest Client,未配置 host allow-list —— 测试/向后兼容用;
+    /// 生产路径走 [`crate::multi::WasmRuntime::from_manifest`],带 manifest `[network]`)。
     pub async fn load(wasm_path: &Path, capabilities: HashSet<String>) -> Result<Self> {
-        Self::load_with_http(wasm_path, capabilities, default_http_client()).await
+        Self::load_with_http(
+            wasm_path,
+            capabilities,
+            default_http_client(),
+            crate::http_host::AllowedHosts::NotConfigured,
+        )
+        .await
+    }
+
+    /// 便捷加载(默认 reqwest Client + host allow-list)。
+    /// [`crate::multi::WasmRuntime::from_manifest`] 的 handler 分支用。
+    pub async fn load_with_hosts(
+        wasm_path: &Path,
+        capabilities: HashSet<String>,
+        allowed_hosts: crate::http_host::AllowedHosts,
+    ) -> Result<Self> {
+        Self::load_with_http(wasm_path, capabilities, default_http_client(), allowed_hosts).await
     }
 
     /// 调 guest handler `execute(ctx)` -> 返回 [`ExecResult`] 或 [`ExecError`]。

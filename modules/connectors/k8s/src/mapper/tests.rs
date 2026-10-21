@@ -443,7 +443,8 @@ fn empty_or_null_lists_yield_only_cluster_namespace_application() {
 
 #[test]
 fn deployment_extracts_rollout_signal_fields() {
-    // Phase 4.3 后续:Deployment attrs 补 current_revision/images/replicas_*(变更检测信号)
+    // Deployment attrs 产 current_revision/images/replicas_* 变更检测信号字段
+    // (watch::detect_changes 的 poll-diff 依赖这些字段判变更,Phase 4.3 已落地)。
     let input = ClusterInput {
         cluster: "vm".into(),
         namespace: "otel-demo".into(),

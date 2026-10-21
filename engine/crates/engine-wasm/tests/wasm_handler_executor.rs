@@ -37,8 +37,25 @@ fn handler_caps() -> HashSet<String> {
     caps
 }
 
-fn proxy_ready() -> bool {
-    std::net::TcpStream::connect("127.0.0.1:8001").is_ok()
+/// kubectl proxy 就绪探测:**不能只测端口可连** —— 本机若有无关服务占 8001
+/// (曾发生:某 agent 常驻 8001),real 测试会误跑并把 PATCH 打到错误服务上。
+/// 探测 K8s API 形状:GET /api 应返回含 `"versions"` 的 JSON(API discovery,
+/// kubectl proxy 特有;一般 HTTP 服务不长这样)。
+async fn proxy_ready() -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match client.get("http://127.0.0.1:8001/api").send().await {
+        Ok(resp) if resp.status().is_success() => matches!(
+            resp.json::<serde_json::Value>().await,
+            Ok(v) if v.get("versions").is_some()
+        ),
+        _ => false,
+    }
 }
 
 fn node(resource_id: &str, rtype: &str, attrs: &str) -> ResolvedNode {
@@ -152,7 +169,7 @@ async fn executor_real_scale_pipeline_reversible() {
     // scale +1 (1->2) -> executor 读 old_replicas=target.replicas_desired=1 -> new=2;
     // 然后 rollback -1,target attrs 更成 2 -> new=1 复原。
     let wasm = k8s_handler_wasm_path();
-    if !wasm.exists() || !proxy_ready() {
+    if !wasm.exists() || !proxy_ready().await {
         eprintln!("skip: k8s_handler.wasm or kubectl proxy 8001 not available");
         return;
     }

@@ -132,6 +132,76 @@ pub fn default_sync_interval_seconds() -> u64 {
     30
 }
 
+/// manifest 顶层 `[defaults]` 段 —— 跨 connector 共享的缺省 config 键。
+///
+/// 换集群 / namespace 过去要手改 5 处内联 config(cluster/namespace/api_base
+/// 在每个 module 里重复),现在 `[defaults]` 一处声明、各 module config 未写的
+/// 键从这里补(module config 显式键仍优先)。注意 jaeger/flagd 的完整 URL 里
+/// 内嵌的 namespace 路径无法经此注入,换 namespace 仍须手改那两个 URL。
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct ManifestDefaults {
+    /// 缺省 cluster 标识(展示/命名用)。
+    #[serde(default)]
+    pub cluster: Option<String>,
+    /// 缺省 namespace。
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// 缺省 K8s API base(kubectl proxy)。
+    #[serde(default)]
+    pub api_base: Option<String>,
+}
+
+impl ManifestDefaults {
+    /// 展开成 JSON object(None 字段省略)。
+    pub fn to_json_object(&self) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        if let Some(v) = &self.cluster {
+            m.insert("cluster".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &self.namespace {
+            m.insert("namespace".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = &self.api_base {
+            m.insert("api_base".into(), serde_json::Value::String(v.clone()));
+        }
+        serde_json::Value::Object(m)
+    }
+}
+
+/// 把 `[defaults]` 键 overlay 到 module config 下(module config 显式键优先)。
+/// 返回合成后的 config object;两者皆空则返空 object(调用方自行回退 global)。
+pub fn merge_defaults(
+    manifest_config: Option<&serde_json::Value>,
+    defaults: &ManifestDefaults,
+) -> serde_json::Value {
+    let mut base = defaults.to_json_object();
+    if let (Some(b), Some(over)) = (base.as_object_mut(), manifest_config.and_then(|c| c.as_object()))
+    {
+        for (k, v) in over {
+            b.insert(k.clone(), v.clone());
+        }
+    }
+    base
+}
+
+/// manifest 顶层 `[network]` 段 —— http capability 的 host allow-list(Phase 3)。
+///
+/// 与 per-module `capabilities` 互补:capability 决定「能不能发 HTTP」,
+/// `[network].allowed_hosts` 决定「能发到哪」。所有持 `http-client`/`http-write`
+/// 的模块共享同一张表(全局并集语义);比 per-module 表粗,但把「任意 URL」
+/// 收敛到「声明过的 host」,且 manifest 只需维护一处。
+///
+/// 缺省(不写 `[network]` 段)= [`crate::http_host::AllowedHosts::NotConfigured`]:
+/// allow-all + 启动 warn —— 不 break 现有 manifest,生产/分发前应 pin。
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct NetworkConfig {
+    /// 允许访问的 host 列表。条目 `host` 或 `host:port`(大小写不敏感);
+    /// 纯 host 条目匹配任意端口。`Some([])` = 显式全拒。
+    /// 无论怎么配,link-local 目标(169.254.0.0/16、fe80::/10)始终硬拒。
+    #[serde(default)]
+    pub allowed_hosts: Option<Vec<String>>,
+}
+
 /// 整张 modules/manifest.toml 反序列化结果。
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ManifestFile {
@@ -140,6 +210,12 @@ pub struct ManifestFile {
     /// 全部模块列表。
     #[serde(default, rename = "modules")]
     pub modules: Vec<ModuleManifest>,
+    /// 顶层 `[defaults]` 段(跨 connector 缺省 config 键)。
+    #[serde(default)]
+    pub defaults: ManifestDefaults,
+    /// 顶层 `[network]` 段(http host allow-list)。缺省 NotConfigured(allow-all + warn)。
+    #[serde(default)]
+    pub network: NetworkConfig,
 }
 
 impl ManifestFile {
@@ -226,15 +302,77 @@ config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace
     }
 
     #[test]
-    fn select_config_prefers_manifest_over_global() {
-        // manifest config -> 序列化成 JSON 字符串
-        let cfg = serde_json::json!({ "api_base": "http://127.0.0.1:8001" });
+    fn parses_network_section_and_defaults_to_not_configured() {
+        // 配了 [network] -> Some(列表)
+        let toml = r#"
+schema_version = "1"
+
+[network]
+allowed_hosts = ["127.0.0.1", "prometheus.internal:9090"]
+
+[[modules]]
+name = "k8s"
+type = "connector"
+wasm_path = "x.wasm"
+version = "0.1.0"
+capabilities = ["http-client"]
+"#;
+        let parsed = ManifestFile::from_toml_str(toml).expect("should parse");
         assert_eq!(
-            select_config(Some(&cfg), "{}"),
+            parsed.network.allowed_hosts.as_deref(),
+            Some(["127.0.0.1".to_string(), "prometheus.internal:9090".to_string()].as_slice())
+        );
+
+        // 没配 -> None(= AllowedHosts::NotConfigured,allow-all + multi.rs warn)
+        let bare = r#"
+schema_version = "1"
+
+[[modules]]
+name = "hello"
+type = "connector"
+wasm_path = "x.wasm"
+version = "0.1.0"
+"#;
+        let parsed = ManifestFile::from_toml_str(bare).expect("should parse");
+        assert!(parsed.network.allowed_hosts.is_none());
+    }
+
+    #[test]
+    fn select_config_prefers_manifest_over_defaults_and_global() {
+        let no_defaults = ManifestDefaults::default();
+        let cfg = serde_json::json!({ "api_base": "http://127.0.0.1:8001" });
+        // manifest config -> 序列化成 JSON 字符串(defaults 空时行为不变)
+        assert_eq!(
+            select_config(Some(&cfg), "{}", &no_defaults),
             r#"{"api_base":"http://127.0.0.1:8001"}"#
         );
-        // 无 manifest config -> 回退全局 broadcast
-        assert_eq!(select_config(None, r#"{"cluster":"demo"}"#), r#"{"cluster":"demo"}"#);
+        // 无 manifest config 无 defaults -> 回退全局 broadcast(向后兼容)
+        assert_eq!(
+            select_config(None, r#"{"cluster":"demo"}"#, &no_defaults),
+            r#"{"cluster":"demo"}"#
+        );
+    }
+
+    #[test]
+    fn select_config_overlays_defaults_under_manifest_keys() {
+        // defaults 打底 + module config 显式键覆盖:namespace 冲突以 module 为准,
+        // cluster 从 defaults 补
+        let defaults = ManifestDefaults {
+            cluster: Some("vm-cluster".into()),
+            namespace: Some("otel-demo".into()),
+            api_base: Some("http://127.0.0.1:8001".into()),
+        };
+        let cfg = serde_json::json!({ "namespace": "monitoring", "release_prefix": "otel" });
+        let out = select_config(Some(&cfg), "{}", &defaults);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["namespace"], "monitoring", "module key wins");
+        assert_eq!(v["cluster"], "vm-cluster", "defaults fill missing key");
+        assert_eq!(v["api_base"], "http://127.0.0.1:8001");
+        assert_eq!(v["release_prefix"], "otel");
+        // 无 module config 时 defaults 即整体 config(global 被取代)
+        let out2 = select_config(None, "{}", &defaults);
+        let v2: serde_json::Value = serde_json::from_str(&out2).expect("valid json");
+        assert_eq!(v2["namespace"], "otel-demo");
     }
 
     #[test]

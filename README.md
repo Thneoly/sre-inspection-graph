@@ -74,18 +74,18 @@ flowchart TB
 
 ## 核心能力
 
-**巡检图谱(6 个图遍历视图)** —— 从起点 BFS、depth 限深、edge-type 白名单过滤的通用 `subgraph` 原语支撑:
-应用拓扑 · 访问链路 · 节点影响(Node 故障爆炸半径)· 配置影响(Secret/ConfigMap 传播)· 镜像风险 · 告警聚合。
+**巡检图谱(6 个视图)** —— 其中 4 个由「起点 BFS、depth 限深、edge-type 白名单过滤」的通用 `subgraph` 原语支撑:
+访问链路 · 节点影响(Node 故障爆炸半径)· 配置影响(Secret/ConfigMap 传播)· 镜像风险;另两个结构不同:应用拓扑是全图读取,告警聚合基于 AlertRegistry join 合成 FIRED_ON 边(起点不是拓扑节点)。
 
-**恢复动作引擎(PRD-001)** —— 8 个动作(scale / restart_pod / rollback_deployment / refresh_secret / drain_node / kill_query / restart_service / clear_cache)。生命周期:`pending → dry_run_ok → awaiting_approval → executing → succeeded/failed → rolled_back`。一键回滚跳过二次审批;执行后自动验证,verify_failed 触发自动反向回滚;支持多步动作链 + 3 种失败策略。桌面单机确认门审批语义。
+**恢复动作引擎(PRD-001)** —— 8 个动作(scale / restart_pod / rollback_deployment / refresh_secret / drain_node / kill_query / restart_service / clear_cache)。生命周期:`pending → dry_run_ok → awaiting_approval → executing → succeeded/failed → rolled_back`。一键回滚跳过二次审批;执行后自动验证,verify_failed 触发自动反向回滚;支持多步动作链 + 3 种失败策略。桌面单机确认门审批语义。**诚实边界**:real handler 覆盖 6/8(kill_query / clear_cache 走 mock);其中 rollback_deployment / refresh_secret / drain_node 的 real 实现是注解级简化(滚动重启注解 / rotatedAt 标记 / cordon-only,非完整 rollout-undo / data 更新 / evict,见 `modules/handlers/k8s-handler`);verify 读的是 handler 返回的 twin attrs(v0 不回读集群,集群回读验证在 roadmap);告警暂无 live 源(仅手动 `record_alert` 录入)。real 模式(`SRE_GRAPH_HANDLER_MODE=real`,真改集群)下**所有动作(含低风险)一律走审批确认门**,且 UI 顶栏显示红色 REAL 徽标。
 
-**变更追踪(PRD-002)** —— 4 类变更(configmap/secret/deployment/image),反向 BFS 算传播影响面,YAML diff(剔 10 个 K8s 噪声字段),过频变更自动升 severity,ChangeEvent ↔ AlertEvent 时间窗关联,k8s poll-diff 自动录入。
+**变更追踪(PRD-002)** —— 4 类变更(configmap/secret/deployment/image),反向 BFS 算传播影响面,YAML diff(剔 10 个 K8s 噪声字段),过频变更自动升 severity,ChangeEvent ↔ AlertEvent 时间窗关联,k8s poll-diff 自动录入。**边界**:image_pushed 仅手动录入(桌面架构无 webhook);poll-diff 对 ConfigMap/Secret 的自动检测基于 data 键集与信号字段,值改键不变的变更不捕获。
 
-**Identity Resolver** —— 多源拓扑合并:同一资源被 K8s API 和代码仓用不同 ID 描述时(如 `image:{c}:{ns}:{ref}` vs `image-ref:<ref>`),经共享 correlation key 合并成单一节点,边端点自动 remap。`resolve()` 委托 `facts_to_graph` 前做 pre-rewrite 合并,零 schema 改(correlation_keys 走 attributes_json)。
+**Identity Resolver** —— 多源拓扑合并:同一资源被 K8s API 和代码仓用不同 ID 描述时(如 `image:{c}:{ns}:{ref}` vs `image-ref:<ref>`),经共享 correlation key 合并成单一节点,边端点自动 remap。`resolve()` 委托 `facts_to_graph` 前做 pre-rewrite 合并,零 schema 改(correlation_keys 走 attributes_json)。**注意**:code-repo connector 默认 `enabled=false` 且 `fs_roots=[]` —— 多源合并要在真拓扑上发生,需先把本地克隆的 service 仓库路径配进 manifest `fs_roots` 并启用,开箱即跑时不会出现(合并引擎本身有 e2e 覆盖)。
 
 **自检报告(PRD-003)** —— 3 个模板(application_health / cluster_overview / incident_report),Tera 渲染 Markdown,cron 订阅调度 + SMTP 发送 + .md 附件,SQLite 持久化跨重启。
 
-**WASM connector 沙箱(PRD-004 + PRD-006)** —— 6 个数据源 connector,经 deny-by-default capability 访问数据源;首个非网络 capability `fs-read`(path-root allow-list,canonicalize 防目录穿越/符号链接逃逸)。
+**WASM connector 沙箱(PRD-004 + PRD-006)** —— 6 个数据源 connector,经 deny-by-default capability 访问数据源;首个非网络 capability `fs-read`(path-root allow-list,canonicalize 防目录穿越/符号链接逃逸);http-client / http-write 受 manifest `[network].allowed_hosts` host allow-list 约束(link-local / 云 metadata 地址无条件硬拒),WASI sockets 对 guest 全关(网络出口唯一化到 host 注入的 capability);manifest 支持可选 sha256 pin(`make modules-pin-hashes` 回填,不匹配拒载)。
 
 ## 为什么这么设计(4 个架构决策)
 
@@ -103,13 +103,13 @@ flowchart TB
 
 | 层 | 技术 | 规模 |
 |---|---|---|
-| Engine 内核 | Rust,8 业务 crate(core / wasm / identity / recovery / changes / reports / storage / cli) | ~20k LOC |
+| Engine 内核 | Rust,8 业务 crate(core / wasm / identity / recovery / changes / reports / storage / cli) | ~20.7k LOC |
 | WASM connector | Rust guests,`wasm32-wasip2` + module-sdk | ~5.4k LOC,6 connector |
-| Tauri 后端 | Rust,薄命令层 + AppState + 托管 kubectl proxy + 调度/SMTP | ~3.4k LOC |
-| 前端 | React 18 + TypeScript + AntD 6 + Cytoscape + @tanstack/react-query | ~3.3k LOC |
-| 测试 | Rust 单测 + e2e + 前端 vitest | **405 Rust** + 21 vitest |
+| Tauri 后端 | Rust,薄命令层 + AppState + 托管 kubectl proxy + 调度/SMTP | ~3.8k LOC |
+| 前端 | React 18 + TypeScript + AntD 6 + Cytoscape + @tanstack/react-query | ~3.4k LOC |
+| 测试 | Rust 单测 + e2e + 前端 vitest | **417 Rust** + 21 vitest |
 
-**手写代码合计 ~32k LOC**(Rust ~29k + TS ~3.3k)。另有 `engine-bindings`(wasmtime bindgen 生成的 host 胶水,不计入手写)。
+**手写代码合计 ~33k LOC**(Rust ~30k + TS ~3.4k)。另有 `engine-bindings`(wasmtime bindgen 生成的 host 胶水,不计入手写)。
 
 关键 Rust crate:`engine-core`(canonical Fact + Arrow Schema,所有下游只认它)· `engine-identity`(resolve/diff/topology_to_graph + correlation-key 合并 + health_merge)· `engine-recovery`(action_defs/cascade/execution/verifiers/chains)· `engine-changes`(ChangeEvent/propagation/yaml_diff/frequency/alert 关联)· `engine-reports`(3 模板 + 订阅调度)· `engine-wasm`(wasmtime host + capability 注入 + 多 connector 编排)· `engine-storage`(Storage trait + SQLite + Parquet)。
 
@@ -124,19 +124,26 @@ cd ../engine && cargo build --workspace
 
 # 3. 桌面端(在 desktop/ 下)
 cd ../desktop && npm install
-npm run tauri dev        # dev(GPU 合成层问题时:GDK_BACKEND=x11)
-npm run tauri build      # 产物 → .AppImage / .deb / .rpm
+npm run tauri dev        # dev(Linux GPU 合成层问题时:GDK_BACKEND=x11)
+npm run tauri build      # 产物 → Windows .msi/.exe;Linux .AppImage / .deb / .rpm
 
 # 验证 gate(仓库根 Makefile 聚合三个 workspace)
 make test-all            # engine 测试 + 前端 vitest
 make check-all           # engine + desktop + modules 的 clippy -D warnings
+make modules-pin-hashes  # 打印各 wasm sha256(分发前回填 manifest,不匹配拒载)
 ```
 
-> 连真集群:本地 `kubectl proxy --port=8001`,manifest 里 connector 的 `api_base` 指向它。TLS/认证留在 proxy,WASM 只走明文 HTTP,不碰凭据、不加 capability。
+> **连真集群的前置**:本机 `kubectl` + 指向目标集群的 kubeconfig(集群身份完全由本机 kubeconfig 决定,仓库不携带)。然后本地 `kubectl proxy --port=8001`(或直接用应用 Topology 页的 Connect,由 desktop 托管 proxy 进程)。TLS/认证留在 proxy,WASM 只走明文 HTTP,不碰凭据、不加 capability。
+>
+> **manifest 集中配置**:换集群 / namespace 只改 `modules/manifest.toml` 顶部 `[defaults]` 一处(cluster / namespace / api_base,各 module config 未写的键从这里补);`[network].allowed_hosts` 是 http capability 的 host allow-list(link-local 无条件硬拒)。注意 jaeger / flagd 的完整 URL 内嵌了 namespace 路径,换 namespace 时须手改那两条。
+>
+> **恢复动作的 real 模式**(默认 mock,只在内存 twin 上演练):设 `SRE_GRAPH_HANDLER_MODE=real` 后恢复动作真改集群 —— 此时所有动作(含低风险)一律停审批确认门,UI 顶栏显示红色 REAL 徽标。
+>
+> **分发**:安装包自带 modules(manifest + wasm 随 bundle resources 分发,装机即用);dev 源码机上优先读 repo 的 `modules/`,`MODULES_ROOT` env 可强制覆盖。双开应用会被单实例插件拦下(聚焦已有窗口)。
 
 ## 真实数据验证(诚实说明)
 
-在本地 VirtualBox + kubeadm 集群(3 节点)上部署 **OpenTelemetry Demo v1.11.0(Astronomy Shop,~20 个 polyglot 微服务)** 作为数据源验证:connector 真拉 K8s API / Jaeger / Prometheus,产出真实拓扑(**169 节点 / 350 边**)、真实调用链(CALLS 边)、真实变更事件(rollout 触发 poll-diff 自动录入)。
+在本地 VirtualBox + kubeadm 集群(3 节点)上部署 **OpenTelemetry Demo v1.11.0(Astronomy Shop,~20 个 polyglot 微服务)** 作为数据源验证:connector 真拉 K8s API / Jaeger,产出真实拓扑(**169 节点 / 350 边**)、真实调用链(CALLS 边)、真实变更事件(rollout 触发 poll-diff 自动录入)。**两处缩水如实说明**:验证集群上的 Prometheus 因内存不足 OOMKilled,metric fact 未入图(health 合并在无 metric 时 no-op,见 manifest 注释);flagd 未在该集群部署,其 change-scenario 富化仅 e2e/contract 验证。
 
 **这不是生产流量规模的故事** —— 项目刻意桌面单机、数据不出本机,规模不是卖点。otel-demo 是「真实 polyglot 微服务拓扑」的验证手段,用于证明 connector、identity resolution、recovery、巡检视图在真实形状的数据上跑得通,而不是合成 fixture 上的自欺。
 

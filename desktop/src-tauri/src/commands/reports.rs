@@ -1,4 +1,5 @@
-//! PRD-003 报告命令(Phase 4.1)。生成 application_health Markdown 报告。
+//! PRD-003 报告命令。3 个模板(application_health / cluster_overview / incident_report)
+//! 均已实现 —— generator 按 template 分发 gatherer + Tera 渲染(Phase 4.2 已落)。
 
 use tauri::State;
 
@@ -15,7 +16,8 @@ pub(crate) fn parse_template(s: &str) -> Result<ReportTemplate, String> {
     }
 }
 
-/// 生成报告(采集 + Tera 渲染)。当前只 application_health 实现;cluster_overview/incident_report 留 Phase 4.2。
+/// 生成报告(采集 + Tera 渲染)。template_id 决定模板与 gatherer 集合;incident_report
+/// 需 change_event_id 锚点(resolve_anchor,Phase 4.2 落地)。
 #[tauri::command]
 pub async fn generate_report_cmd(
     state: State<'_, AppState>,

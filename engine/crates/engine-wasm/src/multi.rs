@@ -33,16 +33,24 @@ use tokio::sync::Mutex;
 use crate::runtime::{SyncOutcome, WasmConnector, WasmHandler};
 use crate::{ManifestFile, ModuleManifest};
 
-/// 选某 connector 的 sync config:manifest `config` 优先,缺则回退全局 broadcast。
+/// 选某 connector 的 sync config:`[defaults]` 键打底,manifest `config` 显式键覆盖,
+/// 两者皆空才回退全局 broadcast。
 ///
-/// Phase 2.7 起每个 connector 可在 manifest 自带 per-connector config
-/// (k8s 拿 `{api_base,...}`、prometheus 拿 `{prometheus_url,...}`),[`WasmRuntime::sync_all`]
-/// 据此逐 connector 分发而非一刀切广播。无 manifest config 的 connector 回退调用方传入的
-/// `global`,向后兼容(老调用方传 `"{}"` 仍工作)。
-pub fn select_config(manifest_config: Option<&serde_json::Value>, global: &str) -> String {
-    manifest_config
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| global.to_string())
+/// Phase 2.7 起 per-connector config;`[defaults]` 段(换集群/namespace 一处改)
+/// 打底 —— module config 没写的 cluster/namespace/api_base 从 `defaults` 补,
+/// 写了的仍以 module 为准。全空(无 defaults 无 config)时保持旧语义:回退
+/// 调用方传入的 `global`(老调用方传 `"{}"` 仍工作)。
+pub fn select_config(
+    manifest_config: Option<&serde_json::Value>,
+    global: &str,
+    defaults: &crate::ManifestDefaults,
+) -> String {
+    let merged = crate::merge_defaults(manifest_config, defaults);
+    if merged.as_object().is_some_and(|m| !m.is_empty()) {
+        merged.to_string()
+    } else {
+        global.to_string()
+    }
 }
 
 /// 单个已加载 connector 的运行时条目。
@@ -100,6 +108,8 @@ pub struct WasmRuntime {
     pub handlers: Vec<HandlerEntry>,
     /// 加载过程中失败的模块及错误(module_name -> error message)。
     pub load_errors: Vec<(String, String)>,
+    /// manifest `[defaults]` 段(`sync_all` 逐 connector 打底用)。
+    pub defaults: crate::ManifestDefaults,
 }
 
 /// 单个已加载 handler 的运行时条目(Phase 3.9a-3b2b)。
@@ -131,6 +141,26 @@ impl WasmRuntime {
         let mut entries = Vec::new();
         let mut load_errors = Vec::new();
 
+        // Phase 3:http host allow-list(manifest 顶层 [network] 段)。
+        // 未配置 -> NotConfigured(allow-all)+ warn:不 break 现有 manifest,
+        // 但拿到 http-client 能力的 guest 此时可访问任意 host,分发/生产前应 pin
+        // (`make modules-pin-hashes` 同理,发布流程应同时 pin sha256 + allowed_hosts)。
+        let allowed_hosts = match &manifest.network.allowed_hosts {
+            Some(hosts) => crate::http_host::AllowedHosts::Configured(hosts.clone()),
+            None => {
+                if manifest.modules.iter().any(|m| {
+                    m.enabled
+                        && (m.capabilities.iter().any(|c| c == "http-client" || c == "http-write"))
+                }) {
+                    tracing::warn!(
+                        "manifest [network].allowed_hosts not configured — http-capable \
+                         guests may reach ANY host; pin the list before distribution"
+                    );
+                }
+                crate::http_host::AllowedHosts::NotConfigured
+            }
+        };
+
         for module in &manifest.modules {
             if module.kind != "connector" {
                 // Phase 2 只跑 connector,rule/handler 各自有独立 world 待补
@@ -148,6 +178,13 @@ impl WasmRuntime {
                     module.name.clone(),
                     format!("wasm file not found: {}", wasm_path.display()),
                 ));
+                continue;
+            }
+            // Phase 2 承诺的 sha256 完整性校验:pinned 不匹配 -> 拒载进 load_errors;
+            // 空 -> warn 放行(dev 迭代 wasm 重编译 hash 会变,不强制;分发前 pin,
+            // `make modules-pin-hashes` 打印回填)。
+            if let Err(e) = verify_sha256(&wasm_path, &module.sha256) {
+                load_errors.push((module.name.clone(), format!("sha256: {e}")));
                 continue;
             }
             // Phase 1 G:把 manifest 申明的 capabilities 传入 WasmConnector,
@@ -177,7 +214,7 @@ impl WasmRuntime {
                     }
                 })
                 .collect();
-            match WasmConnector::load_with_roots(&wasm_path, capabilities, fs_roots).await {
+            match WasmConnector::load_with_roots(&wasm_path, capabilities, fs_roots, allowed_hosts.clone()).await {
                 Ok(c) => entries.push(ConnectorEntry {
                     name: module.name.clone(),
                     manifest: module.clone(),
@@ -207,9 +244,15 @@ impl WasmRuntime {
                 ));
                 continue;
             }
+            if let Err(e) = verify_sha256(&wasm_path, &module.sha256) {
+                load_errors.push((module.name.clone(), format!("sha256: {e}")));
+                continue;
+            }
             let capabilities: std::collections::HashSet<String> =
                 module.capabilities.iter().cloned().collect();
-            match WasmHandler::load(&wasm_path, capabilities).await {
+            match WasmHandler::load_with_hosts(&wasm_path, capabilities, allowed_hosts.clone())
+                .await
+            {
                 Ok(h) => handlers.push(HandlerEntry {
                     name: module.name.clone(),
                     manifest: module.clone(),
@@ -226,6 +269,7 @@ impl WasmRuntime {
             entries,
             handlers,
             load_errors,
+            defaults: manifest.defaults.clone(),
         })
     }
 
@@ -239,6 +283,7 @@ impl WasmRuntime {
             entries: Vec::new(),
             handlers: Vec::new(),
             load_errors: Vec::new(),
+            defaults: crate::ManifestDefaults::default(),
         }
     }
 
@@ -268,7 +313,7 @@ impl WasmRuntime {
         let mut total_duration_ms: u64 = 0;
 
         for entry in &self.entries {
-            let cfg = select_config(entry.manifest.config.as_ref(), config_json);
+            let cfg = select_config(entry.manifest.config.as_ref(), config_json, &self.defaults);
             let outcome = entry.run_sync(&cfg).await;
             let duration_ms = outcome.duration_ms;
             total_duration_ms = total_duration_ms.saturating_add(duration_ms);
@@ -331,6 +376,70 @@ pub struct ConnectorSyncStatus {
     /// 本次 guest 自报耗时(毫秒)。Phase 6 connectors-ui:per-connector 计时,
     /// 之前只有 `SyncSummary.total_duration_ms` 聚合值,单 connector 计时被丢。
     pub duration_ms: u64,
+}
+
+/// wasm 文件 sha256 完整性校验(Phase 2 承诺,本处落地)。
+///
+/// - `pinned` 非空:文件实际 sha256 必须匹配(大小写不敏感),否则 Err ->
+///   调用方拒载进 `load_errors`(被替换的二进制不获得 manifest 申明的 capabilities)
+/// - `pinned` 空:warn + 放行 —— dev 迭代 wasm 重编译 hash 会变,不强制;
+///   分发前用 `make modules-pin-hashes` 打印回填(与 `[network].allowed_hosts` 同属
+///   发布前必 pin 项)
+fn verify_sha256(wasm_path: &Path, pinned: &str) -> Result<(), String> {
+    if pinned.is_empty() {
+        tracing::warn!(
+            path = %wasm_path.display(),
+            "sha256 not pinned — module loads without integrity check (pin before distribution)"
+        );
+        return Ok(());
+    }
+    let bytes =
+        std::fs::read(wasm_path).map_err(|e| format!("read {}: {e}", wasm_path.display()))?;
+    use sha2::{Digest, Sha256};
+    let actual_hex: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if actual_hex.eq_ignore_ascii_case(pinned) {
+        Ok(())
+    } else {
+        Err(format!(
+            "manifest {} != actual {} ({})",
+            pinned,
+            actual_hex,
+            wasm_path.display()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_sha256_empty_pin_passes_with_warn() {
+        // 空 pin = 未 pin,放行(dev 兼容);真实文件不需要存在(短路在读文件前)
+        assert!(verify_sha256(Path::new("/nonexistent/x.wasm"), "").is_ok());
+    }
+
+    #[test]
+    fn verify_sha256_matches_hex_digest() {
+        let dir = std::env::temp_dir().join(format!("sre-sha-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let f = dir.join("m.wasm");
+        std::fs::write(&f, b"hello wasm").expect("write");
+        use sha2::{Digest, Sha256};
+        let expect: String = Sha256::digest(b"hello wasm")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(verify_sha256(&f, &expect).is_ok(), "matching pin should pass");
+        // 大写也匹配(大小写不敏感)
+        let upper = expect.to_ascii_uppercase();
+        assert!(verify_sha256(&f, &upper).is_ok(), "uppercase pin should pass");
+        // 错值拒
+        let bad = format!("{}00", &expect[..expect.len() - 2]);
+        let err = verify_sha256(&f, &bad).expect_err("mismatched pin should fail");
+        assert!(err.contains("!="), "err should show both hashes: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 /// `sync_all` 的聚合返回。

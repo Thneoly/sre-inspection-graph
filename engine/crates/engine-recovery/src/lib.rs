@@ -39,12 +39,13 @@ pub use action_defs::{
 };
 pub use cascade::{dry_run, AffectedResource, DryRunResult};
 pub use chains::{
-    abort_chain, cancel_chain, confirm_chain, execute_chain, get_chain_template,
-    list_chain_template_ids, ChainRegistry, ChainStep, ChainTemplate,
+    abort_chain, cancel_chain, confirm_chain, execute_chain, execute_chain_with_policy,
+    get_chain_template, list_chain_template_ids, ChainRegistry, ChainStep, ChainTemplate,
 };
 pub use executor::{HandlerExecutor, HandlerOutcome, MockHandlerExecutor};
 pub use execution::{
-    cancel_execution, confirm_execution, execute, reverify, rollback, ExecutionRegistry,
+    cancel_execution, confirm_execution, execute, execute_with_policy, reverify, rollback,
+    ApprovalPolicy, ExecutionRegistry,
 };
 pub use handlers::{get_handler, is_executable, HandlerFn, HANDLERS};
 pub use models::{

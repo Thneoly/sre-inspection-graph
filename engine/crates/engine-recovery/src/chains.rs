@@ -136,12 +136,8 @@ impl ChainRegistry {
     }
 }
 
-/// 发起 chain。
-///
-/// - 全 low -> 直接跑(run_chain_steps),返 final status。
-/// - 任一步 medium/high -> `awaiting_approval`(单机确认门),confirm_chain 后跑完。
-///
-/// 抛 [`ExecutionError`] = 前置校验失败(模板不存在 404 / 空 steps 400 / target 类型不匹配 400)。
+/// 发起 chain(默认策略 —— 全 low 直达,行为与历史版本一致)。
+/// real 改集群场景用 [`execute_chain_with_policy`] 传 [`crate::ApprovalPolicy::All`]。
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_chain(
     chain_reg: &mut ChainRegistry,
@@ -153,6 +149,41 @@ pub async fn execute_chain(
     on_failure_override: Option<OnFailureStrategy>,
     request_reason: &str,
     executor: &dyn HandlerExecutor,
+) -> Result<RecoveryChain, ExecutionError> {
+    execute_chain_with_policy(
+        chain_reg,
+        exec_reg,
+        topology,
+        template_id,
+        target_resource_id,
+        initiated_by,
+        on_failure_override,
+        request_reason,
+        executor,
+        crate::ApprovalPolicy::LowRiskAutoRun,
+    )
+    .await
+}
+
+/// 发起 chain(策略注入版)。
+///
+/// - 全 low(且策略允许)-> 直接跑(run_chain_steps),返 final status。
+/// - 任一步 medium/high、requires_approval 或策略 All -> `awaiting_approval`
+///   (单机确认门),confirm_chain 后跑完。
+///
+/// 抛 [`ExecutionError`] = 前置校验失败(模板不存在 404 / 空 steps 400 / target 类型不匹配 400)。
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_chain_with_policy(
+    chain_reg: &mut ChainRegistry,
+    exec_reg: &mut ExecutionRegistry,
+    topology: &mut Topology,
+    template_id: &str,
+    target_resource_id: &str,
+    initiated_by: &str,
+    on_failure_override: Option<OnFailureStrategy>,
+    request_reason: &str,
+    executor: &dyn HandlerExecutor,
+    policy: crate::ApprovalPolicy,
 ) -> Result<RecoveryChain, ExecutionError> {
     let template = get_chain_template(template_id)
         .ok_or_else(|| ExecutionError::with_code(format!("unknown chain template: {template_id}"), 404))?;
@@ -192,11 +223,13 @@ pub async fn execute_chain(
     let chain_id = chain.chain_id.clone();
     chain_reg.insert(chain);
 
-    // 链级审批:任一步 risk != low 或 requires_approval -> 整链审批
-    let needs_approval = template.steps.iter().any(|s| {
-        let a = get_action(s.action_id);
-        a.is_none_or(|a| a.risk_level != crate::action_defs::RiskLevel::Low || a.requires_approval)
-    });
+    // 链级审批:任一步 risk != low 或 requires_approval -> 整链审批;策略 All 时
+    // 全链无条件走确认门(与单动作 execute_with_policy 对齐)。
+    let needs_approval = policy == crate::ApprovalPolicy::All
+        || template.steps.iter().any(|s| {
+            let a = get_action(s.action_id);
+            a.is_none_or(|a| a.risk_level != crate::action_defs::RiskLevel::Low || a.requires_approval)
+        });
 
     if needs_approval {
         let c = chain_reg.get_mut(&chain_id).unwrap();

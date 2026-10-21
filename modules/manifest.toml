@@ -14,6 +14,24 @@
 
 schema_version = "1"
 
+# 跨 connector 缺省 config 键(Phase 3 集中配置):各 module 的 `config` 未写的
+# cluster / namespace / api_base 从这里补(module config 显式键优先)。
+# 换集群 / namespace 只改这一处 —— 之前要手改 5 处内联 config。
+# 注意:jaeger_url / flagd_url 完整 URL 里内嵌的 namespace 路径无法经此注入,
+# 换 namespace 时那两个 URL 仍须手改。
+[defaults]
+cluster = "vm-cluster"
+namespace = "otel-demo"
+api_base = "http://127.0.0.1:8001"
+
+# Phase 3:http host allow-list —— 持 http-client/http-write capability 的 guest
+# 只能访问列出的 host(条目 `host` 或 `host:port`;纯 host 匹配任意端口)。
+# 未配置此段 = allow-all + 启动 warn(向后兼容);本项目全部 connector 都只打
+# 本地 kubectl proxy(8001)与本地 Prometheus(9090),如实收窄。
+# link-local(169.254.0.0/16、fe80::/10,云 metadata 面)无论配置如何都硬拒。
+[network]
+allowed_hosts = ["127.0.0.1", "localhost"]
+
 # Phase 1 - hello-world 占位 connector,验证 WIT 接口端到端。
 # Phase 2.7 起真集群阶段禁用,只跑 k8s / prometheus。留条目不删 -- 多 connector
 # 编排复测时改回 enabled = true 即可。
@@ -62,7 +80,7 @@ sync_interval_seconds = 30
 enabled = true
 wasi_version = "p2"
 sha256 = ""
-config = { prometheus_url = "http://127.0.0.1:9090", cluster = "vm-cluster", namespace = "otel-demo" }
+config = { prometheus_url = "http://127.0.0.1:9090" }
 
 # Phase 2.6b - k8s,真实 Kubernetes connector。走本地 kubectl proxy(明文 HTTP,
 # TLS+认证留 proxy)-> GET /api/v1/... 列资源 -> topology Fact。
@@ -78,7 +96,7 @@ sync_interval_seconds = 30
 enabled = true
 wasi_version = "p2"
 sha256 = ""
-config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo", release_prefix = "otel-demo" }
+config = { release_prefix = "otel-demo" }
 
 # Phase 3.9a-3b2b - scale-deploy handler(handler-world,real_mode 经 http-write PATCH scale)
 [[modules]]
@@ -121,7 +139,7 @@ sync_interval_seconds = 30
 enabled = true
 wasi_version = "p2"
 sha256 = ""
-config = { jaeger_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-jaeger-query:16686/proxy/jaeger/ui", cluster = "vm-cluster", namespace = "otel-demo", release_prefix = "otel-demo", lookback_seconds = 300, call_count_threshold = 2, limit_per_service = 100 }
+config = { jaeger_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-jaeger-query:16686/proxy/jaeger/ui", release_prefix = "otel-demo", lookback_seconds = 300, call_count_threshold = 2, limit_per_service = 100 }
 
 # K8s Events connector —— 第一个 ChangeEvent 生产者(对照 reference k8s_event_connector)。
 # poll GET {api_base}/api/v1/namespaces/{ns}/events,挑 ScalingReplicaSet/SuccessfulRescale
@@ -139,7 +157,7 @@ sync_interval_seconds = 30
 enabled = true
 wasi_version = "p2"
 sha256 = ""
-config = { api_base = "http://127.0.0.1:8001", cluster = "vm-cluster", namespace = "otel-demo" }
+# 无 per-connector config —— cluster/namespace/api_base 全走 [defaults]
 
 # flagd connector —— 第二个 ChangeEvent 生产者(对照 reference flagd_connector)。
 # POST {flagd_url}/flagd.evaluation.v1.Service/ResolveAll(Connect-RPC transcoded,经
@@ -157,7 +175,7 @@ sync_interval_seconds = 30
 enabled = true
 wasi_version = "p2"
 sha256 = ""
-config = { flagd_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-flagd:8013/proxy", cluster = "vm-cluster", namespace = "otel-demo", flagd_configmap_name = "otel-demo-flagd-config" }
+config = { flagd_url = "http://127.0.0.1:8001/api/v1/namespaces/otel-demo/services/otel-demo-flagd:8013/proxy", flagd_configmap_name = "otel-demo-flagd-config" }
 
 # code-repo connector —— 代码仓数据源(对照 doc/12 PRD-006 Sprint 1,本地 fs 扫描)。
 # 经 `fs-read` capability(deny-by-default + host path-root allow-list)读本地克隆的仓库,
@@ -177,6 +195,6 @@ enabled = false
 wasi_version = "p2"
 sha256 = ""
 fs_roots = []
-config = { roots = [], host = "local", group = "local", cluster = "vm-cluster", namespace = "otel-demo", depth = 2 }
+config = { roots = [], host = "local", group = "local", depth = 2 }
 
 # 后续:8 个 PRD-001 handler。

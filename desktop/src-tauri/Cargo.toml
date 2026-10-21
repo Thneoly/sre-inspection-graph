@@ -1,6 +1,6 @@
 [package]
 name = "sre-graph-desktop"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 description = "SRE Inspection Graph — Tauri 2.x desktop app"
 license = "MIT OR Apache-2.0"
@@ -8,6 +8,14 @@ license = "MIT OR Apache-2.0"
 # 与 engine/ workspace 隔离 — desktop 编译链(tauri、webview2-com)较重,
 # 不污染 engine 增量 build。
 [workspace]
+
+# release 体积/性能:wasmtime+webview2 默认 release 不 strip 不 LTO,exe 白背
+# 几十 MB 符号(实测 48MB)。对齐 engine workspace 的 profile 写法。
+# 注意:engine/modules 各自 workspace 的 profile 不随 path dep 传到这里,须单独声明。
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
 
 [lib]
 name = "sre_graph_desktop_lib"
@@ -24,6 +32,13 @@ tauri-build = { version = "2.6", features = [] }
 # Tauri 核心(2026-06 最新)
 tauri        = { version = "2.11", features = [] }
 tauri-plugin-shell = "2.3"
+# 单实例防护:双开 exe 会双写同一 SQLite 与 materialized 拓扑(两个 sync loop
+# 各自 upsert,last-writer-wins)+ 双起 kubectl proxy(端口冲突)。官方插件,
+# 二次启动回调里聚焦已有窗口。
+tauri-plugin-single-instance = "2"
+# 首启致命错误弹窗(setup 失败时展示原因,替代静默闪退 —— 最需要日志的时刻
+# 恰好还没有窗口可以显示任何东西)。
+tauri-plugin-dialog = "2"
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 

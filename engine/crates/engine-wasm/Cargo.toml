@@ -21,6 +21,10 @@ wasmtime-wasi     = { workspace = true }
 tokio             = { workspace = true }
 # Phase 1 G:host 实装 http-client capability(reqwest GET + capability allow-list)
 reqwest           = { workspace = true }
+# Phase 3:[network].allowed_hosts 的 URL host 解析(reqwest 传递依赖,显式声明)
+url               = "2"
+# Phase 2 承诺的 wasm sha256 完整性校验(from_manifest 加载前比对)
+sha2              = "0.10"
 
 # Phase 3.9a-3b2:WasmHandlerExecutor impl engine_recovery::HandlerExecutor(调 WasmHandler 真改集群)
 async-trait     = "0.1"

@@ -28,8 +28,24 @@ fn k8s_handler_wasm_path() -> std::path::PathBuf {
         .join("../../../modules/target/wasm32-wasip2/release/k8s_handler.wasm")
 }
 
-fn proxy_ready() -> bool {
-    std::net::TcpStream::connect("127.0.0.1:8001").is_ok()
+/// kubectl proxy 就绪探测:端口可连 ≠ proxy 就绪(本机可能有无关键服务占 8001,
+/// real 测试会把 PATCH 打到错误服务上)。GET /api 须返回含 `"versions"` 的 JSON
+/// (K8s API discovery 形状,kubectl proxy 特有)。与 wasm_handler_executor.rs 同款。
+async fn proxy_ready() -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match client.get("http://127.0.0.1:8001/api").send().await {
+        Ok(resp) if resp.status().is_success() => matches!(
+            resp.json::<serde_json::Value>().await,
+            Ok(v) if v.get("versions").is_some()
+        ),
+        _ => false,
+    }
 }
 
 #[tokio::test]
@@ -96,8 +112,8 @@ async fn handler_execute_real_patches_scale_and_rolls_back() {
         eprintln!("skip: scale_deploy.wasm not found");
         return;
     }
-    // 检查 kubectl proxy 8001
-    if std::net::TcpStream::connect("127.0.0.1:8001").is_err() {
+    // 检查 kubectl proxy 8001(按 K8s API 形状探测,端口可连不算 —— 详见 proxy_ready 注释)
+    if !proxy_ready().await {
         eprintln!("skip: kubectl proxy 8001 not running (run `kubectl proxy --port=8001`)");
         return;
     }
@@ -171,7 +187,7 @@ async fn k8s_handler_mock_all_6_actions() {
 #[tokio::test]
 async fn k8s_handler_real_drain_node_and_uncordon() {
     let wasm = k8s_handler_wasm_path();
-    if !wasm.exists() || !proxy_ready() {
+    if !wasm.exists() || !proxy_ready().await {
         eprintln!("skip: k8s_handler.wasm or proxy not available");
         return;
     }
@@ -201,7 +217,7 @@ async fn k8s_handler_real_drain_node_and_uncordon() {
 #[tokio::test]
 async fn k8s_handler_real_restart_service() {
     let wasm = k8s_handler_wasm_path();
-    if !wasm.exists() || !proxy_ready() {
+    if !wasm.exists() || !proxy_ready().await {
         eprintln!("skip: k8s_handler.wasm or proxy not available");
         return;
     }

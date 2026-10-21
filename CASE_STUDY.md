@@ -92,13 +92,13 @@ SQLite(latest 拓扑)+ Parquet(归档)+ Arrow(批契约)
 
 | 维度 | 数 |
 |---|---|
-| 手写代码 | ~32k 行(Rust 29k + TS 3.3k) |
-| Rust 测试 | 405(+ 前端 21) |
+| 手写代码 | ~33k 行(Rust 30k + TS 3.4k) |
+| Rust 测试 | 417(+ 前端 21) |
 | engine crate | 8 业务 + 2 基建 |
 | WASM connector | 6 数据源 + 2 handler |
-| 巡检视图 | 6 个图遍历(BFS + edge 白名单 + induced subgraph) |
-| recovery action | 8(dry-run/审批/回滚/自动验证/链) |
-| 真集群验证 | 169 节点 / 350 边(otel-demo on kubeadm) |
+| 巡检视图 | 6 个(4 个 BFS 子图遍历 + 全图拓扑 + 告警 registry join) |
+| recovery action | 8(dry-run/审批/回滚/自动验证/链;real handler 6/8,其中 3 个为注解级简化,见「诚实的边界」) |
+| 真集群验证 | 169 节点 / 350 边(otel-demo on kubeadm;Prom/flagd 未生效,见下) |
 
 ---
 
@@ -106,7 +106,7 @@ SQLite(latest 拓扑)+ Parquet(归档)+ Arrow(批契约)
 
 - **不是规模故事**:刻意桌面单机、数据不出本机(对照 k9s/Lens)。规模不是卖点,**架构深度与工程判断**才是。otel-demo 是「真实 polyglot 微服务拓扑」的验证手段,不是生产流量。
 - **单作者**:没有团队 / 用户 / 线上事故故事。靠**深度 + 决策质量 + 纪律**打,不假装有规模。
-- **延后项**(诚实):Unknown Dependency Queue 需指向有真实外部依赖的集群;real handler 仅 K8s(MySQL/Redis 留 mock);多人协作留后续。
+- **延后项**(诚实):Unknown Dependency Queue 需指向有真实外部依赖的集群;real handler 仅 K8s(MySQL/Redis 留 mock),且 rollback_deployment / refresh_secret / drain_node 的 real 实现是注解级简化(滚动重启注解 / rotatedAt 标记 / cordon-only);执行后 verify 读 handler 自报的 twin attrs,不回读集群;验证集群上的 Prometheus OOMKilled(metric 未入图)、flagd 未部署(scenario 富化仅 e2e);多人协作留后续。
 
 ---
 

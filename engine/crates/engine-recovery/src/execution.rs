@@ -90,13 +90,25 @@ impl ExecutionRegistry {
     }
 }
 
-/// 执行恢复动作。
+/// 审批策略(执行入口注入,desktop 依 handler 模式选择)。
 ///
-/// - low 风险 + 不需审批 -> 同步跑 handler(+verify),返 `succeeded`/`failed`。
-/// - medium/high 或 requires_approval -> 返 `awaiting_approval`。
+/// - [`ApprovalPolicy::LowRiskAutoRun`](默认):low 风险且不需审批的动作直达执行 ——
+///   mock/演练模式下的既有语义。
+/// - [`ApprovalPolicy::All`]:一切动作都停 `awaiting_approval` —— real 改集群时
+///   的保守门(UI 无 real 指示的年代,low-risk 静默直达真集群是真实风险;
+///   见 desktop recovery command 的 policy 选择)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalPolicy {
+    /// low + 无审批要求的动作自动执行(默认)。
+    #[default]
+    LowRiskAutoRun,
+    /// 全部动作走确认门(real 模式)。
+    All,
+}
+
+/// 执行恢复动作(默认策略 —— low 风险直达,行为与历史版本一致)。
 ///
-/// `topology` 是 mutable twin:mock handler 把生效写回其节点 `attributes_json`。调用方应传
-/// clone(若需保留原拓扑)。抛 [`ExecutionError`] = 前置校验失败(404/501/400)。
+/// real 改集群场景用 [`execute_with_policy`] 传 [`ApprovalPolicy::All`]。
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
     registry: &mut ExecutionRegistry,
@@ -107,6 +119,39 @@ pub async fn execute(
     initiated_by: &str,
     request_reason: &str,
     executor: &dyn HandlerExecutor,
+) -> Result<RecoveryExecution, ExecutionError> {
+    execute_with_policy(
+        registry,
+        action_id,
+        target_resource_id,
+        input_params,
+        topology,
+        initiated_by,
+        request_reason,
+        executor,
+        ApprovalPolicy::LowRiskAutoRun,
+    )
+    .await
+}
+
+/// 执行恢复动作(策略注入版,见 [`ApprovalPolicy`])。
+///
+/// - low 风险 + 不需审批(且策略允许)-> 同步跑 handler(+verify),返 `succeeded`/`failed`。
+/// - medium/high、requires_approval 或策略 All -> 返 `awaiting_approval`。
+///
+/// `topology` 是 mutable twin:mock handler 把生效写回其节点 `attributes_json`。调用方应传
+/// clone(若需保留原拓扑)。抛 [`ExecutionError`] = 前置校验失败(404/501/400)。
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_with_policy(
+    registry: &mut ExecutionRegistry,
+    action_id: &str,
+    target_resource_id: &str,
+    input_params: &Value,
+    topology: &mut Topology,
+    initiated_by: &str,
+    request_reason: &str,
+    executor: &dyn HandlerExecutor,
+    policy: ApprovalPolicy,
 ) -> Result<RecoveryExecution, ExecutionError> {
     let action = get_action(action_id)
         .ok_or_else(|| ExecutionError::with_code(format!("unknown action_id: {action_id}"), 404))?;
@@ -133,7 +178,9 @@ pub async fn execute(
         .nodes
         .iter()
         .find(|n| n.resource_id == target_resource_id);
-    let needs_approval = action.risk_level != RiskLevel::Low || action.requires_approval;
+    let needs_approval = policy == ApprovalPolicy::All
+        || action.risk_level != RiskLevel::Low
+        || action.requires_approval;
     let now = now_iso();
     let target_type = target_node
         .map(|n| n.resource_type.clone())
@@ -613,6 +660,23 @@ mod tests {
         .expect("execute medium risk");
         assert_eq!(e.status, RecoveryStatus::AwaitingApproval);
         assert_eq!(e.verify_status, VerifyStatus::NotRun); // 未跑 handler/verifier
+    }
+
+    #[tokio::test]
+    async fn approval_policy_all_gates_even_low_risk() {
+        // real 改集群的保守门:策略 All 时 low-risk(scale)也停 awaiting_approval,
+        // 不碰 handler;默认策略下同一动作直达 succeeded(对照上面的 low 风险测试)。
+        let mut reg = ExecutionRegistry::new();
+        let mut t = topo();
+        let e = execute_with_policy(
+            &mut reg, "scale_deployment", "deploy:order-api",
+            &json!({ "replicas_delta": 2 }), &mut t, "tester", "", &MockHandlerExecutor,
+            ApprovalPolicy::All,
+        )
+        .await
+        .expect("execute with policy All");
+        assert_eq!(e.status, RecoveryStatus::AwaitingApproval);
+        assert_eq!(e.verify_status, VerifyStatus::NotRun, "handler must not run before confirm");
     }
 
     #[tokio::test]

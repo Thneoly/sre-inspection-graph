@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0",
   "productName": "SRE Inspection Graph",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "identifier": "io.sregraph.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,6 +29,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../../modules/manifest.toml": "modules/manifest.toml",
+      "../../modules/target/wasm32-wasip2/release/*.wasm": "modules/target/wasm32-wasip2/release"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
