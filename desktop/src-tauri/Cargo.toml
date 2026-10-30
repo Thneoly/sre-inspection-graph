@@ -9,13 +9,14 @@ license = "MIT OR Apache-2.0"
 # 不污染 engine 增量 build。
 [workspace]
 
-# release 体积/性能:wasmtime+webview2 默认 release 不 strip 不 LTO,exe 白背
-# 几十 MB 符号(实测 48MB)。对齐 engine workspace 的 profile 写法。
-# 注意:engine/modules 各自 workspace 的 profile 不随 path dep 传到这里,须单独声明。
+# release 体积:wasmtime+webview2 默认 release 不 strip,exe 白背几十 MB 符号
+# (实测 48MB)。strip 是体积大头且内存开销为零。
+# 注意:①engine/modules 各自 workspace 的 profile 不随 path dep 传到这里,须单独
+# 声明;②**lto 与 codegen-units=1 在本机都不可用** —— 单 rustc 进程内存峰值过大
+# (wasmtime/tauri 编译期直接打崩编译器,STATUS_STACK_BUFFER_OVERRUN,-j 3 也救不回),
+# 教训记录在案;有更大内存的构建机(CI)可再开 lto="thin"。
 [profile.release]
-lto = "thin"
 strip = true
-codegen-units = 1
 
 [lib]
 name = "sre_graph_desktop_lib"
