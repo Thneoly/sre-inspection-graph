@@ -27,7 +27,9 @@ use crate::cascade::dry_run;
 use crate::executor::{HandlerExecutor, HandlerOutcome};
 use crate::handlers::is_executable;
 use crate::models::{ExecutionContext, ExecutionError, RecoveryExecution, RecoveryStatus, VerifyStatus};
-use crate::verifiers::{run_verifier, VerifierFn, VerifierVerdict, VERIFIERS};
+use crate::verifiers::{run_verifier_dual_source, VerifierFn, VerifierVerdict, VERIFIERS};
+
+use crate::cluster_reader::ClusterReader;
 
 /// in-memory execution 注册表(对齐 reference DSS `store.executions`,但显式非全局)。
 #[derive(Debug, Clone, Default)]
@@ -106,9 +108,9 @@ pub enum ApprovalPolicy {
     All,
 }
 
-/// 执行恢复动作(默认策略 —— low 风险直达,行为与历史版本一致)。
+/// 执行恢复动作(默认策略 + twin 自报 verify,行为与历史版本一致;测试便捷版)。
 ///
-/// real 改集群场景用 [`execute_with_policy`] 传 [`ApprovalPolicy::All`]。
+/// real 改集群场景用 [`execute_with_policy`] 传 [`ApprovalPolicy::All`] + `Some(reader)`。
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
     registry: &mut ExecutionRegistry,
@@ -130,6 +132,7 @@ pub async fn execute(
         request_reason,
         executor,
         ApprovalPolicy::LowRiskAutoRun,
+        None,
     )
     .await
 }
@@ -140,7 +143,8 @@ pub async fn execute(
 /// - medium/high、requires_approval 或策略 All -> 返 `awaiting_approval`。
 ///
 /// `topology` 是 mutable twin:mock handler 把生效写回其节点 `attributes_json`。调用方应传
-/// clone(若需保留原拓扑)。抛 [`ExecutionError`] = 前置校验失败(404/501/400)。
+/// clone(若需保留原拓扑)。`cluster` = verifier 集群回读通道(real 模式传,见
+/// [`crate::cluster_reader`]);None = twin 自报。抛 [`ExecutionError`] = 前置校验失败(404/501/400)。
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_with_policy(
     registry: &mut ExecutionRegistry,
@@ -152,6 +156,7 @@ pub async fn execute_with_policy(
     request_reason: &str,
     executor: &dyn HandlerExecutor,
     policy: ApprovalPolicy,
+    cluster: Option<&dyn ClusterReader>,
 ) -> Result<RecoveryExecution, ExecutionError> {
     let action = get_action(action_id)
         .ok_or_else(|| ExecutionError::with_code(format!("unknown action_id: {action_id}"), 404))?;
@@ -215,19 +220,21 @@ pub async fn execute_with_policy(
     }
 
     // low 风险 -> 同步跑 handler(+ verify + 可能 auto-rollback)
-    run_handler(registry, &execution_id, topology, true, true, executor).await;
+    run_handler(registry, &execution_id, topology, true, true, executor, cluster).await;
     Ok(registry.get(&execution_id).cloned().expect("just inserted"))
 }
 
 /// 确认执行(单机确认门 = 操作者点确认)。
 ///
 /// `awaiting_approval` -> 跑 handler(+ verify) -> `succeeded`/`failed`。非 awaiting -> 409。
+/// `cluster`:verifier 集群回读通道(real 模式传);None = twin 自报。
 pub async fn confirm_execution(
     registry: &mut ExecutionRegistry,
     execution_id: &str,
     topology: &mut Topology,
     approval_comment: &str,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn ClusterReader>,
 ) -> Result<RecoveryExecution, ExecutionError> {
     {
         let exec = registry
@@ -245,7 +252,7 @@ pub async fn confirm_execution(
         exec.approved_at = now_iso();
         exec.approval_comment = approval_comment.to_string();
     }
-    run_handler(registry, execution_id, topology, true, true, executor).await;
+    run_handler(registry, execution_id, topology, true, true, executor, cluster).await;
     Ok(registry.get(execution_id).cloned().expect("checked above"))
 }
 
@@ -273,6 +280,8 @@ pub fn cancel_execution(
 /// 创建反向 execution(`reverses_execution_id` 指向原),直接同步执行(skip re-approval)。
 /// 反向 handler 读 twin 的 **post-action** 状态(原 execution 已 mutate),故正确反转。
 /// 仅 `succeeded` 可回滚;`rolled_back` 后不可再回滚;无 `rollback_action_id` -> 400。
+/// `cluster`:反向 exec 的 verifier 集群回读通道;None = twin 自报。
+#[allow(clippy::too_many_arguments)]
 pub async fn rollback(
     registry: &mut ExecutionRegistry,
     execution_id: &str,
@@ -280,6 +289,7 @@ pub async fn rollback(
     initiated_by: &str,
     reason: &str,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn ClusterReader>,
 ) -> Result<RecoveryExecution, ExecutionError> {
     let (status, rollback_execution_id, action_id) = {
         let o = registry
@@ -313,15 +323,18 @@ pub async fn rollback(
         reason,
         false, // 手动 rollback:auto_rollback_marker=false -> 反向 exec 仍 verify
         executor,
+        cluster,
     ).await
 }
 
 /// 主动重新验证(不触发 auto-rollback)。仅 `succeeded`/`rolled_back` 可 reverify;其他 409。
+/// `cluster`:集群回读通道(real 模式下 reverify 是「现在集群里到底什么状态」的正路);None = twin。
 pub async fn reverify(
     registry: &mut ExecutionRegistry,
     execution_id: &str,
     topology: &mut Topology,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn ClusterReader>,
 ) -> Result<RecoveryExecution, ExecutionError> {
     let status = registry
         .get(execution_id)
@@ -333,7 +346,7 @@ pub async fn reverify(
             409,
         ));
     }
-    verify_and_maybe_rollback(registry, execution_id, topology, false, VERIFIERS, executor).await;
+    verify_and_maybe_rollback(registry, execution_id, topology, false, VERIFIERS, executor, cluster).await;
     Ok(registry.get(execution_id).cloned().expect("checked above"))
 }
 
@@ -351,6 +364,7 @@ pub(crate) async fn do_rollback(
     reason: &str,
     auto_rollback_marker: bool,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn ClusterReader>,
 ) -> Result<RecoveryExecution, ExecutionError> {
     let (target_resource_id, target_resource_type, finding_id, input_params, cluster_id) = {
         let o = registry
@@ -396,7 +410,7 @@ pub(crate) async fn do_rollback(
 
     // 反向 handler:auto_rollback=false(rollback 自身不再 auto-rollback);
     // verify = !auto_rollback_marker(自动回滚的反向 exec skip verify,防递归)
-    run_handler(registry, &rb_id, topology, false, !auto_rollback_marker, executor).await;
+    run_handler(registry, &rb_id, topology, false, !auto_rollback_marker, executor, cluster).await;
 
     let rb_succeeded = registry
         .get(&rb_id)
@@ -421,7 +435,9 @@ pub(crate) async fn do_rollback(
 ///
 /// `auto_rollback=true`:succeeded 后若 verify_status=failed -> 自动 do_rollback(marker=true)。
 /// `verify=false`:跳过 verifier(rollback 的反向 exec / 测试场景)。
+/// `cluster`:verifier 的集群回读通道(见 [`crate::cluster_reader`]);None = 纯 twin 自报。
 #[async_recursion::async_recursion]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_handler(
     registry: &mut ExecutionRegistry,
     execution_id: &str,
@@ -429,6 +445,7 @@ pub(crate) async fn run_handler(
     auto_rollback: bool,
     verify: bool,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn ClusterReader>,
 ) {
     let (action_id, target_id, input_params, initiated_by) = match registry.get(execution_id) {
         Some(e) => (
@@ -476,13 +493,15 @@ pub(crate) async fn run_handler(
     }
 
     if succeeded && verify {
-        verify_and_maybe_rollback(registry, execution_id, topology, auto_rollback, VERIFIERS, executor).await;
+        verify_and_maybe_rollback(registry, execution_id, topology, auto_rollback, VERIFIERS, executor, cluster).await;
     }
 }
 
 /// 跑 verifier + 设置 verify_status;verify_failed + auto_rollback + 有 rollback_action_id -> 自动回滚。
 ///
 /// `verifiers` 可注入(测试用 fake failing verifier 触发 auto-rollback)。
+/// `cluster`:集群回读通道(双源验证,见 [`run_verifier_dual_source`]);None = 纯 twin。
+#[allow(clippy::too_many_arguments)]
 async fn verify_and_maybe_rollback(
     registry: &mut ExecutionRegistry,
     execution_id: &str,
@@ -490,6 +509,7 @@ async fn verify_and_maybe_rollback(
     auto_rollback: bool,
     verifiers: &[(&str, VerifierFn)],
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn ClusterReader>,
 ) {
     let (action_id, target_id, input_params, result_clone) = match registry.get(execution_id) {
         Some(e) => (
@@ -507,7 +527,9 @@ async fn verify_and_maybe_rollback(
         auto_rollback,
     };
     let verdict = match target {
-        Some(t) => run_verifier(&action_id, t, &input_params, &result_clone, &ctx, verifiers),
+        Some(t) => {
+            run_verifier_dual_source(&action_id, t, &input_params, &result_clone, &ctx, verifiers, cluster).await
+        }
         None => VerifierVerdict::make(false, "error", json!(null), json!(null), "target not found"),
     };
     let verify_status = map_verdict(&verdict);
@@ -527,7 +549,7 @@ async fn verify_and_maybe_rollback(
                     "auto rollback: verify_failed ({})",
                     if verdict.message.is_empty() { "no message" } else { verdict.message.as_str() }
                 );
-                let rb = do_rollback(registry, execution_id, rb_aid, topology, "auto-verifier", &reason, true, executor).await;
+                let rb = do_rollback(registry, execution_id, rb_aid, topology, "auto-verifier", &reason, true, executor, cluster).await;
                 if let Ok(rb) = rb {
                     if let Some(exec) = registry.get_mut(execution_id) {
                         push_to_result(
@@ -672,6 +694,7 @@ mod tests {
             &mut reg, "scale_deployment", "deploy:order-api",
             &json!({ "replicas_delta": 2 }), &mut t, "tester", "", &MockHandlerExecutor,
             ApprovalPolicy::All,
+            None,
         )
         .await
         .expect("execute with policy All");
@@ -712,7 +735,7 @@ mod tests {
         let mut reg = ExecutionRegistry::new();
         let mut t = topo();
         let e = execute(&mut reg, "restart_pod", "pod:order-api-1", &json!({}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
-        let confirmed = confirm_execution(&mut reg, &e.execution_id, &mut t, "ok", &MockHandlerExecutor).await.expect("confirm");
+        let confirmed = confirm_execution(&mut reg, &e.execution_id, &mut t, "ok", &MockHandlerExecutor, None).await.expect("confirm");
         assert_eq!(confirmed.status, RecoveryStatus::Succeeded);
         assert_eq!(confirmed.result["new_restart_count"], 1);
         assert_eq!(confirmed.verify_status, VerifyStatus::Passed);
@@ -723,7 +746,7 @@ mod tests {
         let mut reg = ExecutionRegistry::new();
         let mut t = topo();
         let e = execute(&mut reg, "scale_deployment", "deploy:order-api", &json!({"replicas_delta":1}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
-        let err = confirm_execution(&mut reg, &e.execution_id, &mut t, "", &MockHandlerExecutor).await.unwrap_err();
+        let err = confirm_execution(&mut reg, &e.execution_id, &mut t, "", &MockHandlerExecutor, None).await.unwrap_err();
         assert_eq!(err.code, 409);
     }
 
@@ -743,7 +766,7 @@ mod tests {
         let mut t = topo();
         let e = execute(&mut reg, "scale_deployment", "deploy:order-api", &json!({"replicas_delta":2}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
         assert_eq!(e.result["new_replicas"], 5);
-        let rb = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor).await.expect("rollback");
+        let rb = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor, None).await.expect("rollback");
         assert_eq!(rb.status, RecoveryStatus::Succeeded);
         assert_eq!(rb.input_params["replicas_delta"], -2);
         assert_eq!(rb.result["new_replicas"], 3); // 读 mutated 5 -> 5-2=3(正确反转,非重应用到原 3)
@@ -756,7 +779,7 @@ mod tests {
         let mut reg = ExecutionRegistry::new();
         let mut t = topo();
         let e = execute(&mut reg, "restart_pod", "pod:order-api-1", &json!({}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
-        let err = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor).await.unwrap_err();
+        let err = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor, None).await.unwrap_err();
         assert_eq!(err.code, 409);
     }
 
@@ -765,8 +788,8 @@ mod tests {
         let mut reg = ExecutionRegistry::new();
         let mut t = topo();
         let e = execute(&mut reg, "scale_deployment", "deploy:order-api", &json!({"replicas_delta":1}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
-        let _rb1 = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor).await.expect("rollback 1");
-        let err = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor).await.unwrap_err();
+        let _rb1 = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor, None).await.expect("rollback 1");
+        let err = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor, None).await.unwrap_err();
         assert_eq!(err.code, 409);
         assert!(err.message.contains("only succeeded"));
     }
@@ -776,8 +799,8 @@ mod tests {
         let mut reg = ExecutionRegistry::new();
         let mut t = topo();
         let e = execute(&mut reg, "restart_pod", "pod:order-api-1", &json!({}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
-        confirm_execution(&mut reg, &e.execution_id, &mut t, "", &MockHandlerExecutor).await.expect("confirm");
-        let err = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor).await.unwrap_err();
+        confirm_execution(&mut reg, &e.execution_id, &mut t, "", &MockHandlerExecutor, None).await.expect("confirm");
+        let err = rollback(&mut reg, &e.execution_id, &mut t, "tester", "", &MockHandlerExecutor, None).await.unwrap_err();
         assert_eq!(err.code, 400);
         assert!(err.message.contains("no rollback_action_id"));
     }
@@ -800,7 +823,7 @@ mod tests {
             let ex = reg.get_mut(&e.execution_id).unwrap();
             ex.verify_status = VerifyStatus::NotRun;
         }
-        verify_and_maybe_rollback(&mut reg, &e.execution_id, &mut t, true, failing, &MockHandlerExecutor).await;
+        verify_and_maybe_rollback(&mut reg, &e.execution_id, &mut t, true, failing, &MockHandlerExecutor, None).await;
         let ex = reg.get(&e.execution_id).unwrap();
         assert_eq!(ex.verify_status, VerifyStatus::Failed);
         // auto_rollback 触发:原 execution 翻 rolled_back
@@ -819,12 +842,12 @@ mod tests {
         let mut reg = ExecutionRegistry::new();
         let mut t = topo();
         let e = execute(&mut reg, "restart_pod", "pod:order-api-1", &json!({}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
-        confirm_execution(&mut reg, &e.execution_id, &mut t, "", &MockHandlerExecutor).await.expect("confirm"); // succeeded
+        confirm_execution(&mut reg, &e.execution_id, &mut t, "", &MockHandlerExecutor, None).await.expect("confirm"); // succeeded
         fn fail(_t: &ResolvedNode, _p: &Value, _r: &Value, _c: &ExecutionContext) -> VerifierVerdict {
             VerifierVerdict::make(false, "fake", json!(null), json!(null), "injected")
         }
         let failing: &[(&str, VerifierFn)] = &[("restart_pod", fail)];
-        verify_and_maybe_rollback(&mut reg, &e.execution_id, &mut t, true, failing, &MockHandlerExecutor).await;
+        verify_and_maybe_rollback(&mut reg, &e.execution_id, &mut t, true, failing, &MockHandlerExecutor, None).await;
         let ex = reg.get(&e.execution_id).unwrap();
         assert_eq!(ex.verify_status, VerifyStatus::Failed);
         assert_eq!(ex.status, RecoveryStatus::Succeeded); // 未回滚
@@ -837,7 +860,7 @@ mod tests {
         let mut t = topo();
         let e = execute(&mut reg, "scale_deployment", "deploy:order-api", &json!({"replicas_delta":1}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
         // reverify 用默认 verifier(passed)-> 不触发 auto-rollback
-        let r = reverify(&mut reg, &e.execution_id, &mut t, &MockHandlerExecutor).await.expect("reverify");
+        let r = reverify(&mut reg, &e.execution_id, &mut t, &MockHandlerExecutor, None).await.expect("reverify");
         assert_eq!(r.verify_status, VerifyStatus::Passed);
         assert_eq!(r.status, RecoveryStatus::Succeeded); // 未回滚
     }
@@ -848,7 +871,7 @@ mod tests {
         let mut t = topo();
         let e = execute(&mut reg, "restart_pod", "pod:order-api-1", &json!({}), &mut t, "tester", "", &MockHandlerExecutor).await.expect("execute");
         // awaiting -> 409
-        let err = reverify(&mut reg, &e.execution_id, &mut t, &MockHandlerExecutor).await.unwrap_err();
+        let err = reverify(&mut reg, &e.execution_id, &mut t, &MockHandlerExecutor, None).await.unwrap_err();
         assert_eq!(err.code, 409);
     }
 

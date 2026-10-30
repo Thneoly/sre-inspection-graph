@@ -29,6 +29,15 @@ use tauri::State;
 
 use crate::AppState;
 
+/// AppState 的集群回读通道 → engine trait 引用(real 模式 Some;mock None =
+/// verifier 纯 twin 自报)。见 commands/cluster_reader.rs。
+fn cluster_reader_opt(state: &AppState) -> Option<&dyn engine_recovery::ClusterReader> {
+    state
+        .cluster_reader
+        .as_deref()
+        .map(|r| r as &dyn engine_recovery::ClusterReader)
+}
+
 // ===== DTO =====
 
 /// `ChainTemplate` 的 serde 镜像(`ChainTemplate` 未 Serialize)。
@@ -213,6 +222,7 @@ pub async fn execute_recovery(
             &request_reason.unwrap_or_default(),
             &*state.handler_executor,
             policy,
+            cluster_reader_opt(&state),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -271,7 +281,7 @@ pub async fn confirm_recovery_execution(
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let exec = {
         let mut reg = state.recovery_executions.lock().await;
-        engine_recovery::confirm_execution(&mut reg, &execution_id, &mut topo, &approval_comment.unwrap_or_default(), &*state.handler_executor).await
+        engine_recovery::confirm_execution(&mut reg, &execution_id, &mut topo, &approval_comment.unwrap_or_default(), &*state.handler_executor, cluster_reader_opt(&state)).await
             .map_err(|e| e.to_string())?
     };
     persist_exec(&state, &exec).await?;
@@ -310,6 +320,7 @@ pub async fn rollback_recovery_execution(
             &initiated_by.unwrap_or_default(),
             &reason.unwrap_or_default(),
             &*state.handler_executor,
+            cluster_reader_opt(&state),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -333,7 +344,7 @@ pub async fn reverify_recovery_execution(
     let mut topo = state.storage.materialized_topology().await.map_err(|e| e.to_string())?;
     let exec = {
         let mut reg = state.recovery_executions.lock().await;
-        engine_recovery::reverify(&mut reg, &execution_id, &mut topo, &*state.handler_executor).await.map_err(|e| e.to_string())?
+        engine_recovery::reverify(&mut reg, &execution_id, &mut topo, &*state.handler_executor, cluster_reader_opt(&state)).await.map_err(|e| e.to_string())?
     };
     state.storage.upsert_recovery_execution(&exec).await.map_err(|e| e.to_string())?;
     Ok(exec)
@@ -391,6 +402,7 @@ pub async fn execute_chain(
             &request_reason.unwrap_or_default(),
             &*state.handler_executor,
             policy,
+            cluster_reader_opt(&state),
         )
         .await
         .map_err(|e| e.to_string())?
@@ -410,7 +422,7 @@ pub async fn confirm_chain(
     let chain = {
         let mut chain_reg = state.recovery_chains.lock().await;
         let mut exec_reg = state.recovery_executions.lock().await;
-        engine_recovery::confirm_chain(&mut chain_reg, &mut exec_reg, &mut topo, &chain_id, &approval_comment.unwrap_or_default(), &*state.handler_executor).await
+        engine_recovery::confirm_chain(&mut chain_reg, &mut exec_reg, &mut topo, &chain_id, &approval_comment.unwrap_or_default(), &*state.handler_executor, cluster_reader_opt(&state)).await
             .map_err(|e| e.to_string())?
     };
     persist_chain(&state, &chain).await?;

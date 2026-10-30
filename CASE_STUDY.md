@@ -106,7 +106,7 @@ SQLite(latest 拓扑)+ Parquet(归档)+ Arrow(批契约)
 
 - **不是规模故事**:刻意桌面单机、数据不出本机(对照 k9s/Lens)。规模不是卖点,**架构深度与工程判断**才是。otel-demo 是「真实 polyglot 微服务拓扑」的验证手段,不是生产流量。
 - **单作者**:没有团队 / 用户 / 线上事故故事。靠**深度 + 决策质量 + 纪律**打,不假装有规模。
-- **延后项**(诚实):Unknown Dependency Queue 需指向有真实外部依赖的集群;real handler 仅 K8s(MySQL/Redis 留 mock),且 rollback_deployment / refresh_secret / drain_node 的 real 实现是注解级简化(滚动重启注解 / rotatedAt 标记 / cordon-only);执行后 verify 读 handler 自报的 twin attrs,不回读集群;验证集群上的 Prometheus OOMKilled(metric 未入图)、flagd 未部署(scenario 富化仅 e2e);多人协作留后续。
+- **延后项**(诚实):Unknown Dependency Queue 需指向有真实外部依赖的集群;real handler 仅 K8s(MySQL/Redis 留 mock),且 rollback_deployment / refresh_secret / drain_node 的 real 实现是注解级简化(滚动重启注解 / rotatedAt 标记 / cordon-only)—— 集群回读 verifier(`engine-recovery/src/cluster_reader.rs`,real 模式经 kubectl proxy 双源判定,集群优先 / twin 回落)验证的正是这些简化语义的真实生效;验证集群上的 Prometheus OOMKilled(metric 未入图)、flagd 未部署(scenario 富化仅 e2e);多人协作留后续。
 
 ---
 

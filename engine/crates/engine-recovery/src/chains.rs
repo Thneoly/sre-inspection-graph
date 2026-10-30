@@ -161,6 +161,7 @@ pub async fn execute_chain(
         request_reason,
         executor,
         crate::ApprovalPolicy::LowRiskAutoRun,
+        None,
     )
     .await
 }
@@ -184,6 +185,7 @@ pub async fn execute_chain_with_policy(
     request_reason: &str,
     executor: &dyn HandlerExecutor,
     policy: crate::ApprovalPolicy,
+    cluster: Option<&dyn crate::cluster_reader::ClusterReader>,
 ) -> Result<RecoveryChain, ExecutionError> {
     let template = get_chain_template(template_id)
         .ok_or_else(|| ExecutionError::with_code(format!("unknown chain template: {template_id}"), 404))?;
@@ -243,11 +245,12 @@ pub async fn execute_chain_with_policy(
         let c = chain_reg.get_mut(&chain_id).unwrap();
         c.status = ChainStatus::Executing;
     }
-    run_chain_steps(chain_reg, exec_reg, topology, &chain_id, executor).await;
+    run_chain_steps(chain_reg, exec_reg, topology, &chain_id, executor, cluster).await;
     Ok(chain_reg.get(&chain_id).cloned().unwrap())
 }
 
 /// 链级审批通过后跑完整链(单机确认门 = confirm)。
+/// `cluster`:verifier 集群回读通道(real 模式);None = twin 自报。
 pub async fn confirm_chain(
     chain_reg: &mut ChainRegistry,
     exec_reg: &mut ExecutionRegistry,
@@ -255,6 +258,7 @@ pub async fn confirm_chain(
     chain_id: &str,
     approval_comment: &str,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn crate::cluster_reader::ClusterReader>,
 ) -> Result<RecoveryChain, ExecutionError> {
     {
         let c = chain_reg
@@ -274,7 +278,7 @@ pub async fn confirm_chain(
         c.approved_at = now_iso();
         c.approval_comment = approval_comment.to_string();
     }
-    run_chain_steps(chain_reg, exec_reg, topology, chain_id, executor).await;
+    run_chain_steps(chain_reg, exec_reg, topology, chain_id, executor, cluster).await;
     Ok(chain_reg.get(chain_id).cloned().unwrap())
 }
 
@@ -325,6 +329,7 @@ async fn run_chain_steps(
     topology: &mut Topology,
     chain_id: &str,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn crate::cluster_reader::ClusterReader>,
 ) {
     let template_id = chain_reg.get(chain_id).unwrap().template_id.clone();
     let template = match get_chain_template(&template_id) {
@@ -349,7 +354,7 @@ async fn run_chain_steps(
             break;
         }
         let step = &steps[current_idx];
-        let ex = run_single_step(&chain_id_owned, &initiated_by, &target, current_idx, step, exec_reg, topology, executor).await;
+        let ex = run_single_step(&chain_id_owned, &initiated_by, &target, current_idx, step, exec_reg, topology, executor, cluster).await;
         let ex_id = ex.execution_id.clone();
         let step_ok = ex.status == RecoveryStatus::Succeeded
             && (!step.verify_required
@@ -376,7 +381,7 @@ async fn run_chain_steps(
                 continue;
             }
             // stop / rollback_all
-            handle_step_failure(chain_reg, exec_reg, topology, chain_id, current_idx, &ex, executor).await;
+            handle_step_failure(chain_reg, exec_reg, topology, chain_id, current_idx, &ex, executor, cluster).await;
             return;
         }
     }
@@ -387,6 +392,7 @@ async fn run_chain_steps(
 }
 
 /// 处理 stop / rollback_all(continue 已在 run_chain_steps 内部处理)。
+#[allow(clippy::too_many_arguments)]
 async fn handle_step_failure(
     chain_reg: &mut ChainRegistry,
     exec_reg: &mut ExecutionRegistry,
@@ -395,6 +401,7 @@ async fn handle_step_failure(
     failed_idx: usize,
     failed_ex: &RecoveryExecution,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn crate::cluster_reader::ClusterReader>,
 ) {
     let reason = failed_ex
         .result
@@ -433,6 +440,7 @@ async fn handle_step_failure(
                 &format!("chain {chain_id} rollback_all triggered by step {failed_idx}"),
                 true,
                 executor,
+                cluster,
             ).await;
             rolled += 1;
         }
@@ -460,6 +468,7 @@ async fn run_single_step(
     exec_reg: &mut ExecutionRegistry,
     topology: &mut Topology,
     executor: &dyn HandlerExecutor,
+    cluster: Option<&dyn crate::cluster_reader::ClusterReader>,
 ) -> RecoveryExecution {
     let action_id = step.action_id;
     let action = get_action(action_id);
@@ -492,7 +501,7 @@ async fn run_single_step(
     let ex_id = ex.execution_id.clone();
     exec_reg.insert(ex);
     // step:auto_rollback=false(失败由 chain on_failure 接管);verify=step.verify_required
-    run_handler(exec_reg, &ex_id, topology, false, step.verify_required, executor).await;
+    run_handler(exec_reg, &ex_id, topology, false, step.verify_required, executor, cluster).await;
     exec_reg.get(&ex_id).cloned().expect("just inserted")
 }
 
@@ -553,7 +562,7 @@ mod tests {
         )
         .await
         .expect("execute_chain");
-        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "ok", &MockHandlerExecutor).await.expect("confirm");
+        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "ok", &MockHandlerExecutor, None).await.expect("confirm");
         assert_eq!(c2.status, ChainStatus::Succeeded);
         assert_eq!(c2.step_executions.len(), 3);
         // step executions 都标了 chain_id
@@ -638,7 +647,7 @@ mod tests {
         let mut er = ExecutionRegistry::new();
         let mut t = topo();
         let c = execute_chain(&mut cr, &mut er, &mut t, "drain_node_safely", "node:worker-1", "tester", None, "", &MockHandlerExecutor).await.expect("execute_chain");
-        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "", &MockHandlerExecutor).await.expect("confirm");
+        let c2 = confirm_chain(&mut cr, &mut er, &mut t, &c.chain_id, "", &MockHandlerExecutor, None).await.expect("confirm");
         assert_eq!(c2.status, ChainStatus::Succeeded);
         let ex = er.get(&c2.step_executions[0]).unwrap();
         assert_eq!(ex.action_id, "drain_node");

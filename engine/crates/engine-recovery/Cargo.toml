@@ -17,6 +17,8 @@ chrono          = { workspace = true }
 uuid            = { workspace = true }
 async-trait     = "0.1"
 async-recursion = "1"
+# 集群回读 verifier 的 poll 间隔(verify_against_cluster 循环 sleep)
+tokio           = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }

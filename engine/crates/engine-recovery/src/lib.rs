@@ -26,6 +26,7 @@
 pub mod action_defs;
 pub mod cascade;
 pub mod chains;
+pub mod cluster_reader;
 pub mod execution;
 pub mod executor;
 pub mod handlers;
@@ -47,6 +48,8 @@ pub use execution::{
     cancel_execution, confirm_execution, execute, execute_with_policy, reverify, rollback,
     ApprovalPolicy, ExecutionRegistry,
 };
+pub use cluster_reader::{verify_against_cluster, ClusterReader};
+pub use verifiers::run_verifier_dual_source;
 pub use handlers::{get_handler, is_executable, HandlerFn, HANDLERS};
 pub use models::{
     ChainStatus, ExecutionContext, ExecutionError, OnFailureStrategy, RecoveryChain,

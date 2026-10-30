@@ -11,7 +11,9 @@
 //! - **verifier set 可注入**:`run_verifier` 接 `verifiers: &[(&str, VerifierFn)]` 参数,
 //!   默认 [`VERIFIERS`];测试可注入 fake failing verifier 触发 auto-rollback(对齐 reference
 //!   测试 monkeypatch VERIFIERS)。Rust 无异常,verifier 不 panic,故无 try-catch。
-//! - real 模式(查真实 K8s/MySQL/Redis 状态)留 write-capability WIT,延后。
+//! - **双源验证(集群回读)**:`run_verifier_dual_source` 在 twin 自报之外接
+//!   `Option<&dyn ClusterReader>`(见 [`crate::cluster_reader`]):real 模式下集群
+//!   回读 verdict 优先(twin 是 handler 自报,集群是真相);mock / None 保持纯 twin。
 
 #![allow(missing_docs)]
 
@@ -84,6 +86,34 @@ pub fn run_verifier(
     match verifiers.iter().find(|(id, _)| *id == action_id) {
         Some((_, f)) => f(target, params, exec_result, ctx),
         None => VerifierVerdict::make(true, "skipped", json!(null), json!(null), format!("no verifier registered for {action_id}")),
+    }
+}
+
+/// 双源入口:twin 自报 + 集群回读(见模块头「双源验证」)。
+///
+/// - `cluster = None` → 纯 twin(既有语义,mock / 演练)
+/// - `cluster = Some` → [`crate::cluster_reader::verify_against_cluster`] 优先;
+///   动作不适用集群判定(kill_query 等 / 非 K8s target)时回落 twin verdict。
+///   集群 verdict 的 predicate 带 `/cluster` 后缀,UI 可区分判定来源。
+pub async fn run_verifier_dual_source(
+    action_id: &str,
+    target: &ResolvedNode,
+    params: &Value,
+    exec_result: &Value,
+    ctx: &ExecutionContext,
+    verifiers: &[(&str, VerifierFn)],
+    cluster: Option<&dyn crate::cluster_reader::ClusterReader>,
+) -> VerifierVerdict {
+    let twin = run_verifier(action_id, target, params, exec_result, ctx, verifiers);
+    let Some(reader) = cluster else { return twin };
+    let cluster_verdict =
+        crate::cluster_reader::verify_against_cluster(action_id, reader, target, exec_result, ctx)
+            .await;
+    if cluster_verdict.predicate == "not_supported" {
+        // 动作无集群判定 —— 回落 twin(kill_query / clear_cache 等)
+        twin
+    } else {
+        cluster_verdict
     }
 }
 

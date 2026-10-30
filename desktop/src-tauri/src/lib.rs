@@ -202,6 +202,10 @@ pub struct AppState {
     pub handler_real_mode: bool,
     /// handler 的 K8s API base(kubectl proxy),UI 诊断显示用。
     pub handler_api_base: String,
+    /// verifier 集群回读通道(real 模式 + k8s-handler 加载时 Some;mock 为 None =
+    /// verifier 纯 twin 自报)。见 commands/cluster_reader.rs 与 engine-recovery
+    /// 的 cluster_reader 模块(双源验证)。
+    pub cluster_reader: Option<std::sync::Arc<commands::cluster_reader::K8sClusterReader>>,
     /// Phase 6 connectors-ui - connector/handler 可观测状态注册表。启动从 manifest 播种
     /// (禁用/失败模块也入表),每次 sync(手动 + 后台 loop)在 run_sync 内刷新
     /// last_synced_at/fact_count/errors/duration。前端 ConnectorsPage 读此表。
@@ -395,6 +399,15 @@ pub fn run() {
                 .map(|h| h.handler.clone());
             // AppState 的模式镜像在 api_base move 进 executor 之前留一份。
             let api_base_for_state = api_base.clone();
+            // verifier 集群回读通道:real 模式 + k8s-handler 加载时挂(与 handler
+            // 同一 api_base —— kubectl proxy);mock 模式 None(twin 演练语义)。
+            let cluster_reader = if real_mode && scale_handler.is_some() {
+                Some(std::sync::Arc::new(commands::cluster_reader::K8sClusterReader::new(
+                    &api_base,
+                )))
+            } else {
+                None
+            };
             let handler_executor: std::sync::Arc<dyn engine_recovery::HandlerExecutor> =
                 if let Some(h) = scale_handler {
                     tracing::info!(
@@ -428,6 +441,7 @@ pub fn run() {
                 handler_executor,
                 handler_real_mode: real_mode,
                 handler_api_base: api_base_for_state,
+                cluster_reader,
                 connector_statuses: tokio::sync::Mutex::new(connector_statuses),
             });
             // Phase 4.3 - 起调度循环(60s tick);存 handle 供 RunEvent::Exit abort

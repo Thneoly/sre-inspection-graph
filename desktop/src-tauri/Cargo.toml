@@ -68,6 +68,9 @@ async-trait = "0.1"
 chrono = "0.4"
 # Phase 4.3 - SMTP 发送(SmtpEmailSender;InMemory 回退在 engine-reports)
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1-native-tls", "hostname"] }
+# verifier 集群回读通道(K8sClusterReader 经 kubectl proxy GET;reqwest 已是 lettre
+# 传递依赖,显式声明直接 use)
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
 default = ["custom-protocol"]

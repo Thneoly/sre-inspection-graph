@@ -14,6 +14,7 @@ pub mod topology;
 pub mod wasm;
 pub mod proxy;
 pub mod recovery;
+pub mod cluster_reader;
 pub mod change_events;
 pub mod alerts;
 pub mod reports;
