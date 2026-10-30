@@ -201,7 +201,7 @@ pub static ROLLBACK_DEPLOYMENT: ActionDef = ActionDef {
     requires_approval: true,
     rollback_action_id: Some("rollback_deployment"),
     estimated_duration_seconds: 180,
-    description: "回退 Deployment 版本。real handler(v0)打 restartedAt 注解触发滚动重启,非完整 rollout-undo 的 revision 回退 —— 完整实现见 roadmap",
+    description: "回退 Deployment 到上一版本(对齐 kubectl rollout undo:取 revision-1 的 ReplicaSet 模板写回,集群回读 verifier 判定 revision 已离开执行前值)",
     input_schema: &[
         ParamSpec { name: "revision", kind: ParamKind::Integer, required: false },
     ],
@@ -227,9 +227,11 @@ pub static REFRESH_SECRET: ActionDef = ActionDef {
     requires_approval: true,
     rollback_action_id: None,
     estimated_duration_seconds: 300,
-    description: "轮换 Secret。real handler(v0)仅打 rotatedAt 注解做标记,不更新 Secret data、不重启引用 Pod —— 完整实现见 roadmap",
+    description: "轮换 Secret:可选更新 data(参数 key/new_value_b64)+ rotatedAt 标记 + 删除引用该 Secret 的全部 Pod(volume/env/envFrom/initContainers),控制器重建后挂载新值",
     input_schema: &[
         ParamSpec { name: "trigger_pod_restart", kind: ParamKind::Boolean, required: false },
+        ParamSpec { name: "key", kind: ParamKind::String, required: false },
+        ParamSpec { name: "new_value_b64", kind: ParamKind::String, required: false },
     ],
     propagation: &[
         PropagationRule { edge: edge_type::USES, direction: Direction::Reverse, max_depth: 2, target_type: Some(resource_type::POD), impact: Impact::Medium, note: "所有引用此 Secret 的 Pod 滚动重启" },
@@ -252,7 +254,7 @@ pub static DRAIN_NODE: ActionDef = ActionDef {
     requires_approval: true,
     rollback_action_id: None,
     estimated_duration_seconds: 600,
-    description: "腾空 Node(cordon + drain,迁移其上 Pod 到其他节点)。real handler(v0)仅 cordon(设 unschedulable),不做 Pod evict —— 完整实现见 roadmap",
+    description: "腾空 Node:cordon(unschedulable)+ evict 循环(排除 DaemonSet 与静态 mirror pod,对齐 kubectl drain;PDB 冲突会上抛)",
     input_schema: &[
         ParamSpec { name: "ignore_daemonsets", kind: ParamKind::Boolean, required: false },
         ParamSpec { name: "delete_local_data", kind: ParamKind::Boolean, required: false },

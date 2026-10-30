@@ -107,7 +107,7 @@ pub async fn run_verifier_dual_source(
     let twin = run_verifier(action_id, target, params, exec_result, ctx, verifiers);
     let Some(reader) = cluster else { return twin };
     let cluster_verdict =
-        crate::cluster_reader::verify_against_cluster(action_id, reader, target, exec_result, ctx)
+        crate::cluster_reader::verify_against_cluster(action_id, reader, target, params, exec_result, ctx)
             .await;
     if cluster_verdict.predicate == "not_supported" {
         // 动作无集群判定 —— 回落 twin(kill_query / clear_cache 等)
