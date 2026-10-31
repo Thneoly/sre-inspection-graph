@@ -45,6 +45,7 @@ use crate::verifiers::VerifierVerdict;
 /// (如 drain 的「node 上 pods 列表」走 fieldSelector 查询),resource_id 表达不了;
 /// 路径知识由本模块的 [`resource_id_to_api_path`] 等统一提供,desktop 只做 HTTP。
 #[async_trait::async_trait]
+#[allow(clippy::double_must_use)] // async_trait 展开的 Box<Future> 已是 must_use,新版 clippy 叠加判定
 pub trait ClusterReader: Send + Sync {
     /// GET `{api_base}{path}`(path 形如 `/api/v1/...` / `/apis/apps/v1/...`,
     /// 可带 ?labelSelector= / ?fieldSelector= query)。

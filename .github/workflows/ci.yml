@@ -221,12 +221,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32-wasip2
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: desktop/src-tauri
+          workspaces: |
+            desktop/src-tauri
+            modules
           key: desktop
+
+      # bundle.resources 引用 modules 的 wasm 产物(tauri.conf.json glob)——
+      # desktop 构建前必须先 build modules(与 README 构建顺序一致),否则
+      # build script 因 glob 无匹配失败。
+      - name: Build modules wasm (bundle.resources dependency)
+        run: cargo build --release --target wasm32-wasip2 --locked
+        working-directory: modules
 
       - name: cargo check --all-targets
         run: cargo check --all-targets --locked
@@ -249,11 +259,17 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: windows
+
+      - name: Build modules wasm (bundle.resources dependency)
+        run: cargo build --release --target wasm32-wasip2 --locked
+        working-directory: modules
 
       - name: engine cargo test --workspace (-j 2, linking memory)
         run: cargo test --workspace --locked -j 2
