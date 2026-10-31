@@ -135,7 +135,7 @@ make modules-pin-hashes  # 打印各 wasm sha256(分发前回填 manifest,不匹
 
 > **连真集群的前置**:本机 `kubectl` + 指向目标集群的 kubeconfig(集群身份完全由本机 kubeconfig 决定,仓库不携带)。然后本地 `kubectl proxy --port=8001`(或直接用应用 Topology 页的 Connect,由 desktop 托管 proxy 进程)。TLS/认证留在 proxy,WASM 只走明文 HTTP,不碰凭据、不加 capability。
 >
-> **manifest 集中配置**:换集群 / namespace 只改 `modules/manifest.toml` 顶部 `[defaults]` 一处(cluster / namespace / api_base,各 module config 未写的键从这里补);`[network].allowed_hosts` 是 http capability 的 host allow-list(link-local 无条件硬拒)。注意 jaeger / flagd 的完整 URL 内嵌了 namespace 路径,换 namespace 时须手改那两条。
+> **manifest 集中配置**:换集群 / namespace 只改 `modules/manifest.toml` 顶部 `[defaults]` 一处(cluster / namespace / api_base,各 module config 未写的键从这里补);`[network].allowed_hosts` 是 http capability 的 host allow-list(link-local 无条件硬拒)。注意 jaeger / flagd 的完整 URL 内嵌了 namespace 路径,换 namespace 时须手改那两条。各模块的 `sync_interval_seconds` 在**后台循环**按各自频率调度(未到期的跳过;手动「立即同步」始终强制全量)。
 >
 > **恢复动作的 real 模式**(默认 mock,只在内存 twin 上演练):设 `SRE_GRAPH_HANDLER_MODE=real` 后恢复动作真改集群 —— 此时所有动作(含低风险)一律停审批确认门,UI 顶栏显示红色 REAL 徽标。
 >

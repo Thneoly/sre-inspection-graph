@@ -65,6 +65,10 @@ pub struct ConnectorEntry {
     /// 加载好的 wasm connector —— 用 Mutex 因为 wasmtime Store !Sync,
     /// 但允许在 async 上下文里逐个 lock 调 sync。
     connector: Mutex<WasmConnector>,
+    /// 上次 sync **尝试**时刻(per-connector interval 钟的锚点;成败都计时 ——
+    /// 持续失败的 connector 也要等自己的 interval,重试节奏由调用方退避管)。
+    /// `std::sync::Mutex`:短暂持锁不跨 await。None = 从未 sync(scheduled 首轮必跑)。
+    last_attempt: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl ConnectorEntry {
@@ -94,6 +98,18 @@ impl ConnectorEntry {
                 false
             }
         }
+    }
+
+    /// scheduled 调度判定:距上次**尝试** ≥ `sync_interval_seconds`(`None` = 首轮必跑;
+    /// interval 0 = 每轮都跑)。锁短暂持有点,不跨 await。
+    fn interval_due(&self, now: std::time::Instant) -> bool {
+        let last = *self.last_attempt.lock().unwrap();
+        interval_due_at(last, self.manifest.sync_interval_seconds, now)
+    }
+
+    /// 记录本次 sync 尝试时刻(interval 钟锚点,成败都记)。
+    fn mark_attempted(&self, now: std::time::Instant) {
+        *self.last_attempt.lock().unwrap() = Some(now);
     }
 }
 
@@ -219,6 +235,7 @@ impl WasmRuntime {
                     name: module.name.clone(),
                     manifest: module.clone(),
                     connector: Mutex::new(c),
+                    last_attempt: std::sync::Mutex::new(None),
                 }),
                 Err(e) => {
                     load_errors.push((module.name.clone(), format!("load failed: {e}")));
@@ -297,7 +314,7 @@ impl WasmRuntime {
         self.entries.iter().map(|e| e.name.as_str()).collect()
     }
 
-    /// 顺序跑所有 connector 的 sync,聚合 Fact 进单一 [`FactBatch`]。
+    /// 顺序跑所有 connector 的 sync,**强制全量**(手动「立即同步」/ 测试语义)。
     ///
     /// `config_json` 是**全局兜底** sync 入参:每 connector 优先用 manifest 自带
     /// per-connector `config`(见 [`select_config`]),无则回退到 `config_json`。返回:
@@ -307,12 +324,38 @@ impl WasmRuntime {
     /// - `summary` —— 每个 connector 的 sync 摘要(facts 数 / errors / 耗时)
     #[tracing::instrument(skip(self, config_json))]
     pub async fn sync_all(&self, config_json: &str) -> SyncSummary {
+        self.sync_inner(config_json, false).await
+    }
+
+    /// 后台循环用的 **scheduled 版**:按各 connector manifest 的
+    /// `sync_interval_seconds` 跳过未到期的(interval 钟 = 距上次**尝试**,成败都计时)。
+    ///
+    /// 跳过的 connector **不出现在** `per_connector`(调用方的状态注册表对不在
+    /// 列表的模块保持旧值 —— 没跑就不刷新,UI 语义天然正确)。`interval = 0`
+    /// 视为「每轮都跑」(对齐缺省 30s 之外的显式配置)。手动全量走 [`sync_all`]。
+    #[tracing::instrument(skip(self, config_json))]
+    pub async fn sync_all_scheduled(&self, config_json: &str) -> SyncSummary {
+        self.sync_inner(config_json, true).await
+    }
+
+    /// sync 实装。`scheduled = true` 时按 per-connector interval 门跳过。
+    async fn sync_inner(&self, config_json: &str, scheduled: bool) -> SyncSummary {
         let mut batch = FactBatch::new();
         let mut per_connector = Vec::with_capacity(self.entries.len());
         let mut total_errors: u64 = 0;
         let mut total_duration_ms: u64 = 0;
+        let now = std::time::Instant::now();
 
         for entry in &self.entries {
+            if scheduled && !entry.interval_due(now) {
+                tracing::debug!(
+                    connector = %entry.name,
+                    interval_secs = entry.manifest.sync_interval_seconds,
+                    "scheduled sync: interval not due, skipping"
+                );
+                continue;
+            }
+            entry.mark_attempted(now);
             let cfg = select_config(entry.manifest.config.as_ref(), config_json, &self.defaults);
             let outcome = entry.run_sync(&cfg).await;
             let duration_ms = outcome.duration_ms;
@@ -340,27 +383,39 @@ impl WasmRuntime {
         }
     }
 
-    /// **骨架**周期 sync —— 当前简化为「每 `interval_seconds` 跑一次全量 sync_all」。
-    ///
-    /// Phase 3 起改成 per-connector 调度(每个 connector 按自己的
-    /// `sync_interval_seconds` 走独立 `tokio::time::interval`),并支持
-    /// 取消 / 优雅退出。本期只暴露入口形状,engine-cli 暂不开启长时间循环
-    /// (`tick --once` 仅调 `sync_all` 一次)。
+    /// 周期 sync(engine-cli `tick --loop` 用):每 `interval_seconds` 一轮,
+    /// 轮内按各 connector 自己的 `sync_interval_seconds` 门跳过
+    /// ([`sync_all_scheduled`])—— 全局 tick 是调度频率上限,per-connector
+    /// interval 是各自频率,两者正交。原 Phase 3 注释的「per-connector 独立
+    /// interval」以此形态落地;取消/优雅退出留调用方(abort task)。
     pub async fn tick_loop(&self, interval_seconds: u64) -> Result<()> {
         if self.entries.is_empty() {
             return Err(anyhow!("no connectors loaded — refusing to start tick loop"));
         }
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            let summary = self.sync_all("{}").await;
+            let summary = self.sync_all_scheduled("{}").await;
             tracing::info!(
                 connectors = self.entries.len(),
+                synced = summary.per_connector.len(),
                 facts = summary.batch.len(),
                 errors = summary.total_errors,
-                "tick: sync_all"
+                "tick: sync_all_scheduled"
             );
         }
+    }
+}
+
+/// per-connector interval 判定(自由纯函数,`ConnectorEntry::interval_due` 委托)。
+///
+/// `last = None`(从未 sync)或 `interval_secs = 0`(显式每轮)→ due;
+/// 否则距上次尝试 ≥ interval 才 due。
+fn interval_due_at(last: Option<std::time::Instant>, interval_secs: u64, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(t) => interval_secs == 0 || now.duration_since(t).as_secs() >= interval_secs,
     }
 }
 
@@ -439,6 +494,23 @@ mod tests {
         let err = verify_sha256(&f, &bad).expect_err("mismatched pin should fail");
         assert!(err.contains("!="), "err should show both hashes: {err}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn interval_due_semantics() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let ago = |s: u64| now - Duration::from_secs(s);
+        // 从未 sync -> 首轮必跑
+        assert!(interval_due_at(None, 3600, now));
+        // interval 0 = 显式每轮都跑
+        assert!(interval_due_at(Some(ago(0)), 0, now));
+        // 30s interval:35s 前跑过 -> due
+        assert!(interval_due_at(Some(ago(35)), 30, now));
+        // 5s 前跑过 -> 未到
+        assert!(!interval_due_at(Some(ago(5)), 30, now));
+        // 边界:恰好 30s 前 -> due(>= 语义)
+        assert!(interval_due_at(Some(ago(30)), 30, now));
     }
 }
 

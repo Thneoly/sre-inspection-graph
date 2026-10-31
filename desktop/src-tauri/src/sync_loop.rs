@@ -44,7 +44,10 @@ pub async fn sync_loop(app: AppHandle) {
     loop {
         tokio::time::sleep(base * mult).await;
         let state = app.state::<AppState>();
-        let healthy = match run_sync(&state, "{}").await {
+        // force = false:按各 connector manifest 的 sync_interval_seconds 门跳过
+        // 未到期的(跳过者不出现在 per_connector,状态表保持上次值);手动
+        // 「立即同步」(sync_all_now)才强制全量。
+        let healthy = match run_sync(&state, "{}", false).await {
             Ok(s) => {
                 tracing::debug!(
                     "background sync: {} facts, {} errors (backoff x{mult})",
