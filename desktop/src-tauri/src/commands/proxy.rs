@@ -407,8 +407,12 @@ mod tests {
     }
 
     // ---------- wait_for_proxy_or_exit ----------
+    // 以下进程语义测试依赖 unix 的 sleep/true//proc —— Windows 无这些工具,
+    // 标 cfg(unix)(resolve_kubectl_* 纯函数测试跨平台保留)。Windows 版进程
+    // 测试留待有真实需求时按 win32 语义重写。
 
     /// 起一个长期存活的子进程(模拟 running proxy),kill_on_drop 防测试 panic 留孤儿。
+    #[cfg(unix)]
     fn spawn_sleep() -> Child {
         Command::new("sleep")
             .arg("60")
@@ -421,6 +425,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn probe_succeeds_when_port_listening() {
         // 真 TCP listener + 活着(不退出)的 child -> 探测应立即通过
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -435,6 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn probe_times_out_when_port_closed_and_child_alive() {
         // port 1 关闭 + child 活着(sleep) -> 走超时(短超时快速返回)
         let mut child = spawn_sleep();
@@ -447,6 +453,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn probe_detects_child_exit() {
         // child 立即退出(true) + port 1 关闭 -> ChildExited(不等超时)
         let mut child = Command::new("true")
@@ -470,9 +477,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(p, fs::Permissions::from_mode(0o755)).expect("chmod");
     }
-    #[cfg(not(unix))]
-    fn set_executable(_p: &Path) {}
 
+    // start/stop/status 命令体测试:spawn 假 kubectl 脚本(shell 脚本)或断言
+    // /proc —— 均为 unix 语义,Windows 跳过(见上方说明)。helpers 同步 cfg。
+    #[cfg(unix)]
     fn tmp_dir(label: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("sre-proxy-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d); // 清上一轮残留,防 ETXTBSY
@@ -483,6 +491,7 @@ mod tests {
     /// 写一个假 kubectl 脚本(写 stderr 后 exit 1),返回其路径(可执行)。
     /// 显式 File + sync_all + drop 再 chmod -- 避免刚写的文件立即 exec 触发
     /// Linux ETXTBSY(写租约未释放)。
+    #[cfg(unix)]
     fn write_fake_kubectl(dir: &Path, body: &str) -> PathBuf {
         let p = dir.join("fake-kubectl");
         {
@@ -496,6 +505,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn start_proxy_returns_already_running_when_child_present() {
         let proxy: Mutex<Option<Child>> = Mutex::new(Some(spawn_sleep()));
         let dir = tmp_dir("alr");
@@ -512,6 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn start_proxy_failure_includes_stderr() {
         // 假 kubectl:写 stderr 后 exit 1 -> start_proxy 应快速失败且 error 含 stderr。
         let dir = tmp_dir("stderr");
@@ -534,6 +545,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn stop_proxy_kills_running_child() {
         let proxy: Mutex<Option<Child>> = Mutex::new(Some(spawn_sleep()));
         let pid = proxy
@@ -554,6 +566,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn status_proxy_reports_running_for_live_child() {
         let proxy: Mutex<Option<Child>> = Mutex::new(Some(spawn_sleep()));
         let status = status_proxy(&proxy).expect("status");
@@ -563,6 +576,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn status_proxy_reaps_exited_child() {
         // true 立即退出 -> status_proxy 应判 not running 并收尸
         let child = Command::new("true")
