@@ -22,3 +22,6 @@ module-sdk  = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 wit-bindgen = { workspace = true }
+# ConfigMap/Secret data 值的确定性 hash(变更检测信号字段;完整 256-bit,防字典
+# 恢复原值 —— attrs 会落 SQLite/报告,截断 hash 对短密码可暴力)
+sha2        = "0.10"

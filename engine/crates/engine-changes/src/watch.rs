@@ -10,8 +10,9 @@
 //! **信号字段触发**(非整 attrs diff):只看 rollout/config 语义字段,避免 health_status/
 //! risk_level 变化误报 deployment_rolled。用 `compute_yaml_diff(keys=Some(signal))` 聚焦。
 //!
-//! **偏差**:ConfigMap/Secret value-only 变更漏检(不存 data 值,data_keys 不变 -> diff 空);
-//! image_pushed 跳过(reference 来自 Harbor webhook,非 watch);首次 sync 抑制在 orchestration 层。
+//! **偏差**:image_pushed 跳过(reference 来自 Harbor webhook,非 watch);首次 sync 抑制在
+//! orchestration 层。ConfigMap/Secret 的 value-only 变更经 `data_hash` 信号字段捕获
+//! (k8s connector 对 data 内容做完整 sha256 进 attrs —— 值改键不变 hash 亦变)。
 
 #![allow(missing_docs)]
 
@@ -22,9 +23,11 @@ use crate::models::ChangeRequest;
 use crate::yaml_diff::{compute_yaml_diff, summarize_diff};
 
 /// ConfigMap/Secret/Deployment 的变更检测信号字段(只这些字段变化才触发 ChangeEvent)。
+/// `data_hash` = k8s connector 对 data 内容的完整 sha256 —— 捕获 value-only 变更
+/// (值改键不变时 data_keys 不动、hash 变)。
 fn signal_keys(resource_type: &str) -> Option<&'static [&'static str]> {
     match resource_type {
-        "ConfigMap" | "Secret" => Some(&["data_keys"]),
+        "ConfigMap" | "Secret" => Some(&["data_keys", "data_hash"]),
         "Deployment" => Some(&["current_revision", "images", "replicas_desired", "replicas_ready"]),
         _ => None,
     }
@@ -162,6 +165,59 @@ mod tests {
         let reqs = detect_changes(&current, &next);
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].change_type, "secret_rotated");
+    }
+
+    #[test]
+    fn configmap_value_only_change_detected_via_data_hash() {
+        // 值改键不变:data_keys 不动、data_hash 变 -> 仍产 configmap_updated
+        // (修复前漏检 —— watch 只看 data_keys)
+        let current = topo(vec![node(
+            "cm:c:ns:cfg",
+            "ConfigMap",
+            r#"{"cluster":"c","data_keys":"a,b","data_hash":"1111"}"#,
+        )]);
+        let next = topo(vec![node(
+            "cm:c:ns:cfg",
+            "ConfigMap",
+            r#"{"cluster":"c","data_keys":"a,b","data_hash":"2222"}"#,
+        )]);
+        let reqs = detect_changes(&current, &next);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].change_type, "configmap_updated");
+    }
+
+    #[test]
+    fn secret_value_only_change_detected_via_data_hash() {
+        let current = topo(vec![node(
+            "secret:c:ns:db",
+            "Secret",
+            r#"{"cluster":"c","data_keys":"password","data_hash":"aaa"}"#,
+        )]);
+        let next = topo(vec![node(
+            "secret:c:ns:db",
+            "Secret",
+            r#"{"cluster":"c","data_keys":"password","data_hash":"bbb"}"#,
+        )]);
+        let reqs = detect_changes(&current, &next);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].change_type, "secret_rotated");
+    }
+
+    #[test]
+    fn configmap_unchanged_hash_and_keys_no_event() {
+        // 键集与 hash 都未变(值真没变)-> 不发(防误报)
+        let current = topo(vec![node(
+            "cm:c:ns:cfg",
+            "ConfigMap",
+            r#"{"cluster":"c","data_keys":"a,b","data_hash":"same","health_status":"normal"}"#,
+        )]);
+        let next = topo(vec![node(
+            "cm:c:ns:cfg",
+            "ConfigMap",
+            r#"{"cluster":"c","data_keys":"a,b","data_hash":"same","health_status":"warning"}"#,
+        )]);
+        let reqs = detect_changes(&current, &next);
+        assert!(reqs.is_empty());
     }
 
     #[test]

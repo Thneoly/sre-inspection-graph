@@ -1,0 +1,96 @@
+# Release —— tag(v*)触发,三平台打包出 draft GitHub Release(人工确认后发布)。
+#
+# 与 ci.yml 的关系:ci 管每个 push 的 gate;本流程只在显式打 tag 时跑(外向动作,
+# 草稿模式兜底 —— 产物先落 draft,不直接面向用户)。
+#
+# - 前置构建顺序与 ci.yml 的 desktop job 相同:npm ci → modules wasm → tauri
+#   (bundle.resources 依赖,见 ci.yml 注释)。
+# - CI runner 内存大,兑现 desktop Cargo.toml 里「留给 CI 开 LTO」的注释:
+#   CARGO_PROFILE_RELEASE_LTO / _CODEGEN_UNITS env 覆盖 profile(本机 32GB 并行
+#   也会把 rustc 打崩,runner 可承受)。
+# - macOS 顺带补齐(ci.yml 只有 ubuntu/windows;本 job 验证 macOS 编译链)。
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (+ wasip2 / mac targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'wasm32-wasip2,aarch64-apple-darwin,x86_64-apple-darwin' || 'wasm32-wasip2' }}
+
+      - name: Install Linux WebKit / GTK deps for Tauri
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            javascriptcoregtk-4.1 \
+            patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop/src-tauri
+            modules
+          key: release-${{ matrix.platform }}
+
+      - name: npm ci
+        working-directory: desktop
+        run: npm ci
+
+      # bundle.resources 依赖(见 ci.yml):tauri 构建前必须产 modules wasm
+      - name: Build modules wasm
+        working-directory: modules
+        run: cargo build --release --target wasm32-wasip2 --locked
+
+      # CI 上开 LTO(本机开不了,见 desktop/src-tauri/Cargo.toml 注释)
+      - name: Build & bundle (tauri-action → draft release)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "SRE Inspection Graph ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

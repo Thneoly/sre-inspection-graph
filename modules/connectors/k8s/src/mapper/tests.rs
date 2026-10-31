@@ -149,11 +149,37 @@ fn configmap_and_secret_store_data_keys_only() {
     // ConfigMap data_keys 排序后逗号分隔
     let cm = find(&facts, "cm:vm:otel-demo:order-config").unwrap();
     assert_eq!(attr(cm, "data_keys"), "k1,k2");
-    // Secret 只存 data_keys,不存 data 值
+    // Secret 只存 data_keys/data_hash,不存 data 值
     let sec = find(&facts, "secret:vm:otel-demo:order-db").unwrap();
     assert_eq!(attr(sec, "data_keys"), "password");
     let sec_attrs: serde_json::Value = serde_json::from_str(&sec.attributes_json).unwrap();
     assert!(sec_attrs.get("data").is_none(), "Secret 不得存 data 值");
+}
+
+#[test]
+fn data_hash_deterministic_and_sensitive_to_value() {
+    use serde_json::json;
+    // 相同内容(键序无关)→ 同 hash;值变 → hash 变;非字符串值与字符串形态可分辨
+    let a = json!({ "data": { "k1": "v1", "k2": "v2" } });
+    let b = json!({ "data": { "k2": "v2", "k1": "v1" } }); // 键序不同
+    let c = json!({ "data": { "k1": "CHANGED", "k2": "v2" } });
+    let ha = super::data_hash_of(&a);
+    assert_eq!(ha.len(), 64, "完整 sha256 hex(防字典恢复短密码)");
+    assert_eq!(ha, super::data_hash_of(&b), "键序无关,确定性");
+    assert_ne!(ha, super::data_hash_of(&c), "值变 hash 变(value-only 信号)");
+    // 注:非字符串值统一取字符串形态(K8s data 本就全字符串,无区分必要)。
+    // 无 data 与空 data 等价(sha256 of empty input)
+    let none = json!({});
+    let empty = json!({ "data": {} });
+    assert_eq!(super::data_hash_of(&none), super::data_hash_of(&empty));
+    // CM/Secret 节点 attrs 里带了 data_hash
+    let facts = map_cluster(&base_input());
+    let cm = find(&facts, "cm:vm:otel-demo:order-config").unwrap();
+    assert_eq!(
+        attr(cm, "data_hash").as_str().map(str::len),
+        Some(64),
+        "data_hash is full 64-hex sha256"
+    );
 }
 
 #[test]

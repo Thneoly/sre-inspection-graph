@@ -197,4 +197,22 @@ sha256 = ""
 fs_roots = []
 config = { roots = [], host = "local", group = "local", depth = 2 }
 
+# alertmanager connector —— live 告警源之二(完整告警规则引擎;与 k8s-events 的
+# 「集群自报 Warning 事件」互补)。poll GET {alertmanager_url}/api/v2/alerts,
+# status=active 的新 fingerprint → kind="alert" Fact(fingerprint baseline 去重,
+# 同 k8s-events;resolved 转好 v1 不跟踪)。labels(namespace/pod/deployment/
+# service/node)映射 canonical resource_ref。走 kubectl proxy 子路径(同 jaeger)。
+# 本机集群(kube-prometheus-stack)的 alertmanager 挂在 monitoring ns。
+[[modules]]
+name = "alertmanager"
+type = "connector"
+wasm_path = "target/wasm32-wasip2/release/alertmanager.wasm"
+version = "0.1.0"
+capabilities = ["logging", "clock", "http-client"]
+sync_interval_seconds = 30
+enabled = true
+wasi_version = "p2"
+sha256 = ""
+config = { alertmanager_url = "http://127.0.0.1:8001/api/v1/namespaces/monitoring/services/prom-kube-prometheus-stack-alertmanager:9093/proxy" }
+
 # 后续:8 个 PRD-001 handler。

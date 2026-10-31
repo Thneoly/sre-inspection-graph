@@ -55,7 +55,8 @@
 //! - `critical`: phase ∈ {Failed, Unknown},或任一容器 waiting=CrashLoopBackOff
 //!
 //! 其余资源默认 `normal`。`risk_level` 由 health 映射(critical->high / warning->medium / normal->low)。
-//! ConfigMap/Secret 不存 data 值,只存 `data_keys`(逗号分隔的 key 名)。
+//! ConfigMap/Secret 不存 data 值,存 `data_keys`(逗号分隔 key 名)+ `data_hash`
+//! (data 内容的完整 sha256 —— poll-diff 的 value-only 变更信号字段,见 watch.rs)。
 
 use serde_json::{json, Map, Value};
 
@@ -300,6 +301,7 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 "name": name,
                 "parent_resource_id": format!("ns:{c}:{ns}"),
                 "data_keys": data_keys_of(cm),
+                "data_hash": data_hash_of(cm),
                 "health_status": "normal",
                 "risk_level": "low",
             }),
@@ -319,6 +321,7 @@ pub fn map_cluster(input: &ClusterInput) -> Vec<Fact> {
                 "name": name,
                 "parent_resource_id": format!("ns:{c}:{ns}"),
                 "data_keys": data_keys_of(s),
+                "data_hash": data_hash_of(s),
                 "health_status": "normal",
                 "risk_level": "low",
             }),
@@ -662,6 +665,36 @@ fn data_keys_of(obj: &Value) -> String {
         .unwrap_or_default();
     keys.sort();
     keys.join(",")
+}
+
+/// ConfigMap/Secret data 内容的确定性 sha256(完整 64 hex)。
+///
+/// **为什么 hash**:值改键不变时 `data_keys` 不动,poll-diff(watch.rs 信号字段)
+/// 漏检 value-only 变更 —— hash 进 attrs 作信号字段,变更即捕获。**为什么完整
+/// 256-bit**:attrs 落 SQLite / 报告 / 截图,截断 hash 对短密码(Secret data 是
+/// base64 凭据)可被字典攻击恢复原值;完整 sha256 不可行。
+/// 输入按 key 排序拼 `k=v`(键序无关,BTreeMap 序),值取字符串形态。
+fn data_hash_of(obj: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let Some(map) = obj.get("data").and_then(Value::as_object) else {
+        // 无 data(空 CM/Secret):hash 空串 —— 与 Some({}) 等价,统一可比较
+        return format!("{:x}", Sha256::digest(b""));
+    };
+    let mut input = String::new();
+    for k in map.keys() {
+        // BTreeMap 迭代已按 key 排序;值统一 JSON 字符串形态(字符串带引号,
+        // 类型差异可分辨),非字符串值 serde 序列化
+        let v = &map[k];
+        let vs = match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        input.push_str(k);
+        input.push('\u{1}'); // 分隔符用控制字符,key/value 内容不可能含
+        input.push_str(&vs);
+        input.push('\u{1}');
+    }
+    format!("{:x}", Sha256::digest(input.as_bytes()))
 }
 
 /// 去重保序地把 name 推进 refs(空名跳过)。

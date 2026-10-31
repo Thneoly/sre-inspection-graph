@@ -217,7 +217,8 @@ pub struct AppState {
 /// 在 Tauri builder 之前初始化(早于 setup,拿不到 AppHandle),故手工推导各平台 app data 路径:
 /// - Windows:`%APPDATA%\io.sregraph.desktop`(对齐 tauri app_data_dir 的 Roaming 路径;
 ///   刻意不看 HOME —— Git Bash 环境常设 HOME,会把日志引去 `~/.local/share` 与 DB 分裂)
-/// - Unix:`$HOME/.local/share/io.sregraph.desktop`(XDG 风格,保持既有行为)
+/// - macOS:`$HOME/Library/Application Support/io.sregraph.desktop`(tauri app_data_dir 语义)
+/// - Linux:`$HOME/.local/share/io.sregraph.desktop`(XDG 风格,保持既有行为)
 fn resolve_log_dir() -> PathBuf {
     if let Ok(v) = std::env::var("SRE_GRAPH_LOG_DIR") {
         return PathBuf::from(v);
@@ -225,6 +226,13 @@ fn resolve_log_dir() -> PathBuf {
     let base = if cfg!(windows) {
         std::env::var("APPDATA")
             .map(|d| PathBuf::from(d).join("io.sregraph.desktop"))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    } else if cfg!(target_os = "macos") {
+        std::env::var("HOME")
+            .map(|h| {
+                PathBuf::from(h)
+                    .join("Library/Application Support/io.sregraph.desktop")
+            })
             .unwrap_or_else(|_| PathBuf::from("."))
     } else {
         std::env::var("HOME")
