@@ -22,6 +22,9 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+// 新版 clippy 对 #[async_trait]/#[async_recursion] 展开的 Box<Future> 判
+// double_must_use(本 crate 的注入模式大量使用这两个宏,系统性误报)。
+#![allow(clippy::double_must_use)]
 
 pub mod action_defs;
 pub mod cascade;

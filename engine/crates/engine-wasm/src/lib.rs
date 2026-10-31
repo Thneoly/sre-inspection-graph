@@ -4,6 +4,8 @@
 //! / handler 加载。Phase 2 起接入真实 wasmtime Component Model 加载。
 
 #![deny(unsafe_code)]
+// 新版 clippy 对 #[async_trait] 展开的 Box<Future> 判 double_must_use(注入模式系统性误报)。
+#![allow(clippy::double_must_use)]
 #![warn(missing_docs)]
 
 /// Phase 2 runtime —— 真实 wasmtime Component 加载 + capability 注入。

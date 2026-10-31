@@ -6,6 +6,8 @@
 //! 模板引擎选 Tera(Rust 原生)替换 Jinja2,语法兼容度 ~90%。
 
 #![deny(unsafe_code)]
+// 新版 clippy 对 #[async_trait] 展开的 Box<Future> 判 double_must_use(注入模式系统性误报)。
+#![allow(clippy::double_must_use)]
 #![warn(missing_docs)]
 
 pub mod models;
