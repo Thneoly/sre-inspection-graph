@@ -277,6 +277,34 @@ pub async fn run_sync(
         }
     }
 
+    // kind="alert" facts(k8s-events 的 live 告警源:Warning 事件)-> 解码 AlertEvent
+    // -> AlertRegistry + storage。此前告警唯一入口是手动 record_alert(感知→定位
+    // 第一环靠手敲);同 change 段,guest 自管 baseline/UID dedup,不经 first_sync gate。
+    let alert_facts: Vec<&engine_core::Fact> = summary
+        .batch
+        .as_slice()
+        .iter()
+        .filter(|f| f.kind == "alert")
+        .collect();
+    if !alert_facts.is_empty() {
+        let alerts: Vec<engine_changes::AlertEvent> = {
+            let mut reg = state.alerts.lock().await;
+            alert_facts
+                .iter()
+                .map(|f| {
+                    let a = decode_alert_fact(f);
+                    reg.add(a.clone());
+                    a
+                })
+                .collect()
+        };
+        for alert in alerts {
+            if let Err(e) = state.storage.upsert_alert_event(&alert).await {
+                tracing::warn!("upsert_alert_event {}: {e}", alert.alert_event_id);
+            }
+        }
+    }
+
     tracing::Instrument::instrument(
         state.storage.apply_change_set(&change_set),
         tracing::info_span!("stage: apply_changes"),
@@ -331,9 +359,90 @@ fn decode_change_fact(f: &engine_core::Fact) -> engine_changes::ChangeRequest {
     }
 }
 
+/// 把 `kind="alert"` Fact 的 attributes_json 解码成 [`engine_changes::AlertEvent`]
+/// (k8s-events connector 的 live 告警源载荷)。`alert_event_id` 用 fact id
+/// (含 event UID,稳定可追溯);severity/status 解析失败回退 warning/firing。
+fn decode_alert_fact(f: &engine_core::Fact) -> engine_changes::AlertEvent {
+    let v: serde_json::Value = serde_json::from_str(&f.attributes_json).unwrap_or_default();
+    let obj = v.as_object();
+    let s = |k: &str| {
+        obj.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let parse_enum = |k: &str| {
+        serde_json::from_str::<engine_changes::AlertSeverity>(&format!("\"{}\"", s(k))).ok()
+    };
+    let mut a = engine_changes::AlertEvent::new(f.id.clone(), s("alert_name"));
+    a.resource_ref = s("resource_ref");
+    a.severity = parse_enum("severity")
+        .unwrap_or(engine_changes::AlertSeverity::Warning);
+    a.status = serde_json::from_str(&format!("\"{}\"", s("status")))
+        .unwrap_or(engine_changes::AlertStatus::Firing);
+    a.fired_at = {
+        let t = s("fired_at");
+        if t.is_empty() { engine_changes::iso::now_iso() } else { t }
+    };
+    a.rule_id = s("rule_id");
+    a.summary = s("summary");
+    a.cluster_id = s("cluster_id");
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_alert_fact_maps_attributes_to_alert_event() {
+        let f = engine_core::Fact {
+            id: "k8s-events:alert:uid-1:1700000000".into(),
+            kind: "alert".into(),
+            source: "k8s-events".into(),
+            resource_id: "k8s-event:uid-1".into(),
+            resource_type: "AlertEvent".into(),
+            timestamp: 1_700_000_000,
+            attributes_json: serde_json::json!({
+                "alert_name": "BackOff",
+                "resource_ref": "pod:vm:ns:cart-1",
+                "severity": "warning",
+                "status": "firing",
+                "fired_at": "2026-10-31T01:02:03Z",
+                "rule_id": "k8s-event",
+                "summary": "Back-off restarting failed container",
+                "cluster_id": "vm"
+            })
+            .to_string(),
+        };
+        let a = decode_alert_fact(&f);
+        assert_eq!(a.alert_event_id, "k8s-events:alert:uid-1:1700000000");
+        assert_eq!(a.alert_name, "BackOff");
+        assert_eq!(a.resource_ref, "pod:vm:ns:cart-1");
+        assert_eq!(a.severity, engine_changes::AlertSeverity::Warning);
+        assert_eq!(a.status, engine_changes::AlertStatus::Firing);
+        assert_eq!(a.fired_at, "2026-10-31T01:02:03Z");
+        assert_eq!(a.rule_id, "k8s-event");
+        assert_eq!(a.cluster_id, "vm");
+    }
+
+    #[test]
+    fn decode_alert_fact_tolerates_missing_fields() {
+        // 空 attributes:字段回退(alert_name 空、severity 回 warning、fired_at 回 now)
+        let f = engine_core::Fact {
+            id: "a1".into(),
+            kind: "alert".into(),
+            source: "s".into(),
+            resource_id: "r".into(),
+            resource_type: "AlertEvent".into(),
+            timestamp: 1,
+            attributes_json: "{}".into(),
+        };
+        let a = decode_alert_fact(&f);
+        assert_eq!(a.alert_name, "");
+        assert_eq!(a.severity, engine_changes::AlertSeverity::Warning);
+        assert!(!a.fired_at.is_empty(), "fired_at falls back to now_iso");
+    }
 
     #[test]
     fn fact_dto_mirrors_engine_core_fact() {

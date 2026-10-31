@@ -4,8 +4,10 @@
 //! `list_alerts` = `GET /alerts`;`resolve_alert` = `POST /{id}/resolve`;
 //! `correlate_changes_for_alert` = 反向关联(给定 alert 找窗口内 change events)。
 //!
-//! **无 live 源**:k8s-watch / webhook 延后(Phase 3 延后);alerts 仅经
-//! `record_alert` 手动录入。仍持久化到 `alert_events` 表(重启恢复)。
+//! **live 源**:k8s-events connector 把 `type=Warning` 的 K8s 事件产成
+//! `kind="alert"` Fact(run_sync 路由进 AlertRegistry,见 `wasm.rs`);本文件的
+//! `record_alert` 是**手动补录**入口(无集群 / 测试用)。均持久化到 `alert_events`
+//! 表(重启恢复)。
 
 use serde::Deserialize;
 use tauri::State;

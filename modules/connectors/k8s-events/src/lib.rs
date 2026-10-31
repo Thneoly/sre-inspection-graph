@@ -113,7 +113,13 @@ mod imp {
                     let mut seen = seen.borrow_mut();
                     for ev in &events {
                         if seen.insert(ev_uid(ev)) {
+                            // 双产线:Normal 的 rollout reason → change fact;
+                            // Warning → alert fact(live 告警源)。同一 event
+                            // 只会命中其一(reason 白名单与 type=Warning 互斥面)。
                             if let Some(f) = mapper::event_to_change_fact(ev, &mcfg) {
+                                out.push(f);
+                            }
+                            if let Some(f) = mapper::event_to_alert_fact(ev, &mcfg) {
                                 out.push(f);
                             }
                         }

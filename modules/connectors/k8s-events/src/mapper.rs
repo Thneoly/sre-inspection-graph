@@ -1,11 +1,18 @@
-//! K8s Event → `kind="change"` Fact 的纯映射(host target 可单测)。
+//! K8s Event → `kind="change"` / `kind="alert"` Fact 的纯映射(host target 可单测)。
 //!
 //! 对照 reference `k8s_event_connector.py`:poll `GET /api/v1/namespaces/{ns}/events`,
-//! 只挑 `INTERESTING_REASONS`(`ScalingReplicaSet`/`SuccessfulRescale` → `deployment_rolled`),
-//! 把 `involvedObject`(Deployment / ReplicaSet[strip hash] / Pod)映成 target resource_id,
-//! 产 ChangeEvent 载荷(写入 `kind="change"` Fact 的 attributes_json;desktop run_sync 路由
-//! 到 `record_change`)。**不产节点/边/metric/alert**(reference 行为)。UID dedup + 首次 baseline
-//! 是有状态逻辑,在 `lib.rs`(guest static);本文件只做无状态映射。
+//! 两条产线:
+//! - **change**:`INTERESTING_REASONS`(`ScalingReplicaSet`/`SuccessfulRescale` →
+//!   `deployment_rolled`)→ ChangeEvent 载荷(desktop run_sync 路由到 `record_change`);
+//! - **alert**(live 告警源):`type=Warning` 的事件 → AlertEvent 载荷(路由到
+//!   `record_alert` 语义的 registry 录入)。K8s Warning event 本身就是集群自报的
+//!   异常信号(BackOff/Unhealthy/FailedScheduling/FailedMount...),全量收、按
+//!   UID dedup —— 不做 reason 白名单(任意裁剪反而漏告警);同 UID 的 count
+//!   增长视为同一告警(v1 语义,不升计数)。
+//!
+//! 两种 Fact 都不产节点/边/metric(facts_to_graph 只认 topology-node/edge)。
+//! UID dedup + 首次 baseline 是有状态逻辑,在 `lib.rs`(guest static);本文件只做
+//! 无状态映射。
 
 use module_sdk::Fact;
 use serde::Deserialize;
@@ -15,6 +22,7 @@ pub const SOURCE: &str = "k8s-events";
 /// ChangeRequest.source(record_change 校验 -> Source enum;对照 reference `k8s_api`)。
 pub const CHANGE_SOURCE: &str = "k8s_api";
 const KIND: &str = "change";
+const ALERT_KIND: &str = "alert";
 
 /// K8s Event list 响应。
 #[derive(Deserialize, Default)]
@@ -28,8 +36,14 @@ pub struct EventList {
 #[serde(default, rename_all = "camelCase")]
 pub struct Event {
     metadata: Meta,
+    /// Normal / Warning(alert 产线的开关)。
+    #[serde(rename = "type")]
+    event_type: String,
     reason: String,
     message: String,
+    /// 事件最近发生时间(RFC3339,alert 的 fired_at)。
+    last_timestamp: String,
+    count: i64,
     involved_object: InvolvedObject,
 }
 
@@ -114,6 +128,72 @@ pub fn event_to_change_fact(ev: &Event, cfg: &Cfg) -> Option<Fact> {
         "name": ev.involved_object.name,
     });
     Some(change_fact(cfg.now, &ev.metadata.uid, &target, change_type, description, diff_summary))
+}
+
+/// 单条 K8s Event → alert Fact(live 告警源)。`type=Warning` 才产,其余 None。
+///
+/// attributes_json 载 AlertEvent 字段子集(desktop 解码进 AlertRegistry):
+/// `alert_name` = reason、`resource_ref` = involvedObject 映射(target_resource_id
+/// 映不出的 kind 用 `k8s:{kind}:{ns}:{name}` 原样兜底 —— AlertEvent.resource_ref
+/// 是任意引用串,不像 change 那样要求 canonical rid)、`fired_at` = lastTimestamp。
+pub fn event_to_alert_fact(ev: &Event, cfg: &Cfg) -> Option<Fact> {
+    if ev.event_type != "Warning" {
+        return None;
+    }
+    let io = &ev.involved_object;
+    let resource_ref = target_resource_id(&io.kind, &io.name, cfg)
+        .unwrap_or_else(|| format!("k8s:{}:{}:{}", io.kind, cfg.namespace, io.name));
+    let summary: String = if ev.message.is_empty() {
+        ev.reason.clone()
+    } else {
+        ev.message.chars().take(200).collect()
+    };
+    Some(alert_fact(
+        cfg.now,
+        &ev.metadata.uid,
+        &resource_ref,
+        &ev.reason,
+        summary,
+        &ev.last_timestamp,
+        &cfg.cluster,
+        ev.count,
+    ))
+}
+
+/// 构造一条 `kind="alert"` Fact。resource_id 用 event uid 保证唯一且不进图
+/// (facts_to_graph 只认 topology-node/edge);id 含 uid + ts 防跨轮撞。
+#[allow(clippy::too_many_arguments)]
+fn alert_fact(
+    now: u64,
+    uid: &str,
+    resource_ref: &str,
+    alert_name: &str,
+    summary: String,
+    fired_at: &str,
+    cluster: &str,
+    count: i64,
+) -> Fact {
+    Fact {
+        id: format!("{SOURCE}:alert:{uid}:{now}"),
+        kind: ALERT_KIND.to_string(),
+        source: SOURCE.to_string(),
+        resource_id: format!("k8s-event:{uid}"),
+        resource_type: "AlertEvent".to_string(),
+        timestamp: now,
+        attributes_json: serde_json::json!({
+            "alert_name": alert_name,
+            "resource_ref": resource_ref,
+            "severity": "warning",
+            "status": "firing",
+            // lastTimestamp 缺失(极老 event)时 desktop 侧回退 now
+            "fired_at": fired_at,
+            "rule_id": "k8s-event",
+            "summary": summary,
+            "cluster_id": cluster,
+            "event_count": count,
+        })
+        .to_string(),
+    }
 }
 
 /// 构造一条 `kind="change"` Fact。attributes_json 载 ChangeRequest 子集(desktop 解码 ->
