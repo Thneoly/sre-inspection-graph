@@ -127,6 +127,10 @@ cd ../desktop && npm install
 npm run tauri dev        # dev(Linux GPU 合成层问题时:GDK_BACKEND=x11)
 npm run tauri build      # 产物 → Windows .msi/.exe;Linux .AppImage / .deb / .rpm
 
+# ⚠ 不要用裸 `cargo build --release` 出可分发的 exe:它不跑 beforeBuildCommand
+# (vite build),会把 dist/ 当时的内容(可能是 placeholder 占位页)嵌进二进制。
+# 直接跑 exe 调试后端时,先 `npm run build` 确保 dist 是真前端。
+
 # 验证 gate(仓库根 Makefile 聚合三个 workspace)
 make test-all            # engine 测试 + 前端 vitest
 make check-all           # engine + desktop + modules 的 clippy -D warnings
