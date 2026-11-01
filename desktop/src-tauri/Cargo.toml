@@ -1,6 +1,6 @@
 [package]
 name = "sre-graph-desktop"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "SRE Inspection Graph — Tauri 2.x desktop app"
 license = "MIT OR Apache-2.0"
