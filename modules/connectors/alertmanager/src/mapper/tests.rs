@@ -36,6 +36,8 @@ fn active_alert_maps_to_fact_with_labels_mapped() {
     let f = alert_to_fact(&a, 1_700_000_000, "vm", "monitoring").expect("fact");
     assert_eq!(f.kind, "alert");
     assert_eq!(f.source, "alertmanager");
+    // id 不含时间戳(fingerprint 稳定)—— desktop alert_event_id 幂等,重启不重复
+    assert_eq!(f.id, "alertmanager:alert:abc123");
     assert_eq!(f.resource_id, "alertmanager:abc123");
     assert_eq!(attr_str(&f, "alert_name"), "KubePodCrashLooping");
     assert_eq!(attr_str(&f, "resource_ref"), "pod:vm:otel-demo:cart-abc123");
@@ -114,10 +116,27 @@ fn summary_falls_back_to_description_then_alertname() {
 
 #[test]
 fn batch_filters_active_only() {
-    let mut list = AlertsList::default();
-    list.alerts.push(alert(serde_json::json!({ "alertname": "A" }), "active"));
-    list.alerts.push(alert(serde_json::json!({ "alertname": "B" }), "suppressed"));
-    list.alerts.push(alert(serde_json::json!({ "alertname": "C" }), "active"));
+    let list = AlertsList(vec![
+        alert(serde_json::json!({ "alertname": "A" }), "active"),
+        alert(serde_json::json!({ "alertname": "B" }), "suppressed"),
+        alert(serde_json::json!({ "alertname": "C" }), "active"),
+    ]);
     let facts = alerts_to_facts(&list, 1, "c", "ns");
     assert_eq!(facts.len(), 2);
+}
+
+#[test]
+fn parses_top_level_array_response() {
+    // Alertmanager v2 /api/v2/alerts 返回**顶层数组**(非 {"alerts":[...]} 包裹)
+    // —— 首版 AlertsList 用对象包裹反序列化静默失败(0 facts),真数据抓出。
+    let raw = serde_json::json!([
+        { "labels": { "alertname": "A", "severity": "warning" }, "annotations": {},
+          "status": { "state": "active" }, "startsAt": "2026-11-01T00:00:00Z",
+          "fingerprint": "f1" }
+    ]);
+    let list: AlertsList = serde_json::from_value(raw).expect("top-level array parses");
+    assert_eq!(list.0.len(), 1);
+    assert_eq!(list.0[0].labels.alertname, "A");
+    // 对象包裹形态应失败(防止再退回错误假设)
+    assert!(serde_json::from_value::<AlertsList>(serde_json::json!({ "alerts": [] })).is_err());
 }

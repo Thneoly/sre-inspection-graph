@@ -5,9 +5,11 @@
 //! Warning 事件产线同汇)。resource_ref 从 K8s 常见 labels(pod/deployment/service/
 //! namespace/node)映射 canonical rid,无则 labels 原样拼接兜底。
 //!
-//! **v1 语义**:只发 `status.state == "active"` 的新 fingerprint(baseline 防重启
-//! burst,与 k8s-events 同款);resolved 转好(fingerprint 从 active 变 resolved)
-//! 升级为 AlertEvent status=resolved 留后 —— 当前去重按 fingerprint 一生一次。
+//! **v1 语义**:只发 `status.state == "active"` 的 fingerprint。与 k8s-events 的
+//! Warning **事件流**不同,alerts 是**当前活动集**(打开应用就该看到现存告警),
+//! 故**首轮即全量导入**(无 baseline);fact id 不含时间戳(fingerprint 稳定),
+//! desktop 侧 `alert_event_id = fact.id` → SQLite upsert 幂等,重启不重复。
+//! resolved 转好(fingerprint 从 active 变 resolved)升级为 status=resolved 留后。
 
 use module_sdk::Fact;
 use serde::Deserialize;
@@ -16,12 +18,10 @@ use serde::Deserialize;
 pub const SOURCE: &str = "alertmanager";
 const KIND: &str = "alert";
 
-/// Alertmanager `/api/v2/alerts` 响应(list of alert;字段取映射所需子集)。
+/// Alertmanager `/api/v2/alerts` 响应 —— **顶层数组**(`[{...}, ...]`,非对象包裹),
+/// newtype 透传反序列化。
 #[derive(Deserialize, Default)]
-pub struct AlertsList {
-    #[serde(default)]
-    pub alerts: Vec<Alert>,
-}
+pub struct AlertsList(pub Vec<Alert>);
 
 /// 单条 alert(camelCase 字段:startsAt/endsAt;labels/annotations/fingerprint)。
 #[derive(Deserialize, Default)]
@@ -120,7 +120,8 @@ pub fn alert_to_fact(a: &Alert, now: u64, cluster: &str, default_ns: &str) -> Op
         a.labels.alertname.clone()
     };
     Some(Fact {
-        id: format!("{SOURCE}:alert:{}:{now}", alert_key(a)),
+        // id 不含时间戳(fingerprint 稳定)→ desktop alert_event_id 幂等,重启不重复
+        id: format!("{SOURCE}:alert:{}", alert_key(a)),
         kind: KIND.to_string(),
         source: SOURCE.to_string(),
         resource_id: format!("alertmanager:{}", alert_key(a)),
@@ -142,7 +143,7 @@ pub fn alert_to_fact(a: &Alert, now: u64, cluster: &str, default_ns: &str) -> Op
 
 /// 便捷:整批 alerts(仅 active)→ facts。
 pub fn alerts_to_facts(list: &AlertsList, now: u64, cluster: &str, default_ns: &str) -> Vec<Fact> {
-    list.alerts
+    list.0
         .iter()
         .filter_map(|a| alert_to_fact(a, now, cluster, default_ns))
         .collect()

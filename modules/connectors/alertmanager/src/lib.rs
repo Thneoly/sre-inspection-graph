@@ -5,9 +5,10 @@
 //! (经 kubectl proxy 子路径,同 jaeger 模式:TLS/凭据留 proxy),`status=active`
 //! 的新 fingerprint → `kind="alert"` Fact(desktop run_sync 路由进 AlertRegistry)。
 //!
-//! **有状态**(与 k8s-events 同款):首次 sync baseline 种 fingerprints 不发(防
-//! 重启录历史 burst);之后只发新 fingerprint。v1 不跟踪 active→resolved 转好
-//! (fingerprint 一生一次;升级见 mapper.rs 模块头)。
+//! **有状态(仅进程内去重)**:SEEN 记已发 fingerprint,同进程内不重复;**首轮
+//! 即全量**(alerts 是当前活动集,不是历史事件流 —— 详见 mapper.rs 模块头
+//! 「v1 语义」;重启幂等由稳定 fact id + desktop upsert 保证)。v1 不跟踪
+//! active→resolved 转好。
 //!
 //! ## config_json
 //!
@@ -63,7 +64,6 @@ mod imp {
 
     thread_local! {
         static SEEN: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-        static BASELINED: RefCell<bool> = const { RefCell::new(false) };
     }
 
     impl Guest for Alertmanager {
@@ -116,51 +116,30 @@ mod imp {
                 return Ok(SyncResult { facts: vec![], errors, duration_ms: 0 });
             };
 
-            // baseline / 增量(与 k8s-events 同款;去重键 = fingerprint)
-            let baselined = BASELINED.with(|b| *b.borrow());
-            let facts: Vec<Fact> = if baselined {
-                let mut out = Vec::new();
-                SEEN.with(|seen| {
-                    let mut seen = seen.borrow_mut();
-                    for a in &list.alerts {
-                        let key = mapper::alert_key(a);
-                        if seen.insert(key) {
-                            if let Some(f) =
-                                mapper::alert_to_fact(a, now, &cfg.cluster, &cfg.namespace)
-                            {
-                                out.push(Fact {
-                                    id: f.id,
-                                    kind: f.kind,
-                                    source: f.source,
-                                    resource_id: f.resource_id,
-                                    resource_type: f.resource_type,
-                                    timestamp: f.timestamp,
-                                    attributes_json: f.attributes_json,
-                                });
-                            }
+            // 增量导出(SEEN 进程内去重;首轮 SEEN 为空 → 全量导入当前活动集,
+            // 见 lib.rs 模块头「有状态」说明)
+            let mut out = Vec::new();
+            SEEN.with(|seen| {
+                let mut seen = seen.borrow_mut();
+                for a in &list.0 {
+                    let key = mapper::alert_key(a);
+                    if seen.insert(key) {
+                        if let Some(f) = mapper::alert_to_fact(a, now, &cfg.cluster, &cfg.namespace) {
+                            out.push(Fact {
+                                id: f.id,
+                                kind: f.kind,
+                                source: f.source,
+                                resource_id: f.resource_id,
+                                resource_type: f.resource_type,
+                                timestamp: f.timestamp,
+                                attributes_json: f.attributes_json,
+                            });
                         }
                     }
-                });
-                out
-            } else {
-                SEEN.with(|seen| {
-                    let mut seen = seen.borrow_mut();
-                    for a in &list.alerts {
-                        seen.insert(mapper::alert_key(a));
-                    }
-                });
-                BASELINED.with(|b| *b.borrow_mut() = true);
-                bindings::sre::inspection::logging::log(
-                    bindings::sre::inspection::logging::Level::Info,
-                    &format!(
-                        "alertmanager baseline: seeded {} fingerprints, no facts emitted",
-                        list.alerts.len()
-                    ),
-                );
-                vec![]
-            };
+                }
+            });
 
-            Ok(SyncResult { facts, errors, duration_ms: 0 })
+            Ok(SyncResult { facts: out, errors, duration_ms: 0 })
         }
 
         fn health_check() -> bool {
