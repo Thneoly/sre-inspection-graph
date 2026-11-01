@@ -92,13 +92,15 @@ SQLite(latest 拓扑)+ Parquet(归档)+ Arrow(批契约)
 
 | 维度 | 数 |
 |---|---|
-| 手写代码 | ~33k 行(Rust 30k + TS 3.4k) |
-| Rust 测试 | 417(+ 前端 21) |
+| 手写代码 | ~35k 行(Rust 32k + TS 3.4k) |
+| Rust 测试 | 453(+ 前端 21) |
 | engine crate | 8 业务 + 2 基建 |
-| WASM connector | 6 数据源 + 2 handler |
+| WASM connector | 7 数据源(k8s/prometheus/jaeger/k8s-events/flagd/code-repo/alertmanager)+ 2 handler |
+| 告警 live 源 | 2 条:K8s Warning 事件 + Alertmanager v2(active 集,fingerprint 去重) |
 | 巡检视图 | 6 个(4 个 BFS 子图遍历 + 全图拓扑 + 告警 registry join) |
-| recovery action | 8(dry-run/审批/回滚/自动验证/链;real handler 6/8,其中 3 个为注解级简化,见「诚实的边界」) |
-| 真集群验证 | 169 节点 / 350 边(otel-demo on kubeadm;Prom/flagd 未生效,见下) |
+| recovery action | 8(dry-run/审批/回滚/自动验证/链;real handler 6/8;verify 双源:集群回读优先 / twin 回落) |
+| CI | 7 job 矩阵(ubuntu × 5 + windows;发版另走 tag 触发的四平台矩阵) |
+| 真集群验证 | 169 节点 / 350 边(otel-demo on kubeadm;Prom/flagd 未生效,见下)+ 常驻挂机(argocd 拓扑 + 11 条真实 alertmanager 告警) |
 
 ---
 

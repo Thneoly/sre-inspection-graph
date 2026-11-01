@@ -103,13 +103,13 @@ flowchart TB
 
 | 层 | 技术 | 规模 |
 |---|---|---|
-| Engine 内核 | Rust,8 业务 crate(core / wasm / identity / recovery / changes / reports / storage / cli) | ~20.7k LOC |
-| WASM connector | Rust guests,`wasm32-wasip2` + module-sdk | ~5.4k LOC,6 connector |
-| Tauri 后端 | Rust,薄命令层 + AppState + 托管 kubectl proxy + 调度/SMTP | ~3.8k LOC |
+| Engine 内核 | Rust,8 业务 crate(core / wasm / identity / recovery / changes / reports / storage / cli) | ~21.5k LOC |
+| WASM connector | Rust guests,`wasm32-wasip2` + module-sdk | ~6.5k LOC,7 connector |
+| Tauri 后端 | Rust,薄命令层 + AppState + 托管 kubectl proxy + 调度/SMTP | ~4.1k LOC |
 | 前端 | React 18 + TypeScript + AntD 6 + Cytoscape + @tanstack/react-query | ~3.4k LOC |
-| 测试 | Rust 单测 + e2e + 前端 vitest | **417 Rust** + 21 vitest |
+| 测试 | Rust 单测 + e2e + 前端 vitest | **453 Rust** + 21 vitest;CI 7 job(含 windows) |
 
-**手写代码合计 ~33k LOC**(Rust ~30k + TS ~3.4k)。另有 `engine-bindings`(wasmtime bindgen 生成的 host 胶水,不计入手写)。
+**手写代码合计 ~35k LOC**(Rust ~32k + TS ~3.4k)。另有 `engine-bindings`(wasmtime bindgen 生成的 host 胶水,不计入手写)。
 
 关键 Rust crate:`engine-core`(canonical Fact + Arrow Schema,所有下游只认它)· `engine-identity`(resolve/diff/topology_to_graph + correlation-key 合并 + health_merge)· `engine-recovery`(action_defs/cascade/execution/verifiers/chains)· `engine-changes`(ChangeEvent/propagation/yaml_diff/frequency/alert 关联)· `engine-reports`(3 模板 + 订阅调度)· `engine-wasm`(wasmtime host + capability 注入 + 多 connector 编排)· `engine-storage`(Storage trait + SQLite + Parquet)。
 
@@ -159,7 +159,7 @@ make modules-pin-hashes  # 打印各 wasm sha256(分发前回填 manifest,不匹
 ## 文档导航
 
 - **[`CASE_STUDY.md`](CASE_STUDY.md)** —— 完整工程叙事:4 个架构决策的 STAR 权衡 + 量化 + 深入探讨 Q&A(深读用)。
-- `doc/blog/` —— 8 篇实践博客:全栈纵切 · WASM 沙箱 · 数据契约 · Identity Resolution · 恢复引擎 · 变更追踪 · 巡检视图 · 观测配比。
+- `doc/blog/` —— 9 篇实践博客:全栈纵切 · WASM 沙箱 · 数据契约 · Identity Resolution · 恢复引擎 · 变更追踪 · 巡检视图 · 观测配比 · 检视与验证闭环。
 - `doc/15` + `doc/17` —— 数据契约规范(WIT / Tauri IPC / Arrow)· Tauri 桌面架构。
 - `doc/11-13` —— Identity Resolver / Unknown Dep Queue 的 PRD + 端到端剧本。
 - `doc/01-10` —— 原始需求 / 4 层图模型 / 6 视图 / 故障类型 / 数据源服务。
