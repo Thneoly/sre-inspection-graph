@@ -411,6 +411,24 @@ impl SqliteStorage {
         Ok(facts.len())
     }
 
+    /// Delete raw facts ingested strictly before `cutoff` (unix seconds).
+    ///
+    /// 挂机(2026-11,常驻 1.5 天)抓到的资源问题:connector 每 30s 全量产
+    /// topology facts,append-only 真相源变成「每 30s 全量快照堆叠」—— 66k 行 /
+    /// 54MB,外推月增 1GB+。raw facts 的消费者(`latest_topology_facts` /
+    /// `latest_metric_facts`)只读**每个 resource_id 的最新一条**,历史行除了
+    /// 审计没有读者,按保留期清理。返回删除行数。
+    ///
+    /// 注意按 `inserted_at`(入库时刻)而不是 fact.timestamp(采集时刻)判:
+    /// connector 时钟可能与 host 有偏差,timestamp 不可作为保留期锚点。
+    pub async fn delete_facts_before(&self, cutoff: i64) -> Result<u64, StorageError> {
+        let result = sqlx::query("DELETE FROM facts WHERE inserted_at < ?1")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Return the newest `topology-node` fact for each `resource_id`.
     ///
     /// # Errors
@@ -1425,6 +1443,45 @@ mod tests {
             .await
             .expect("count facts");
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn delete_facts_before_cuts_history_keeps_recent() {
+        // 挂机抓到的资源问题:append-only facts 每 30s 全量堆叠,按保留期清理。
+        // 直接操纵 inserted_at 模拟新旧两批(upsert 绑定的是 now,无法注入)。
+        let store = migrated_store().await;
+        store
+            .upsert_facts(&[
+                fact("old1", "pod:a", "Pod", 1, "{}"),
+                fact("old2", "pod:b", "Pod", 1, "{}"),
+                fact("new1", "pod:c", "Pod", 2, "{}"),
+            ])
+            .await
+            .expect("seed");
+        let now = now_unix_seconds().expect("now");
+        // 把前两行回拨 10 天
+        sqlx::query("UPDATE facts SET inserted_at = ?1 WHERE id IN ('old1','old2')")
+            .bind(now - 10 * 86_400)
+            .execute(&store.pool)
+            .await
+            .expect("backdate");
+
+        let deleted = store
+            .delete_facts_before(now - 7 * 86_400)
+            .await
+            .expect("prune");
+        assert_eq!(deleted, 2, "rows older than cutoff are deleted");
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM facts ORDER BY id")
+                .fetch_all(&store.pool)
+                .await
+                .expect("remaining");
+        assert_eq!(remaining, vec!["new1".to_string()]);
+        // 幂等:再跑一次删 0
+        assert_eq!(
+            store.delete_facts_before(now - 7 * 86_400).await.unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

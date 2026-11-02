@@ -14,6 +14,13 @@
 //!   `BACKOFF_CAP_MULT`×base,默认 10min),全绿后复位;
 //! - 用 `sleep` 动态间隔而非 `interval`(tokio interval 的默认 Burst 行为会在
 //!   长 tick 后立即补发,正是要避免的)。
+//!
+//! ## facts 保留期(挂机第一滴血,2026-11)
+//!
+//! 常驻 1.5 天实测:connector 每 30s 全量产拓扑 facts,append-only 真相源变成
+//! 「全量快照堆叠」—— 66k 行 / 54MB,外推月增 1GB+。raw facts 的消费者只读
+//! 每 resource 最新一条,历史行无读者。故启动时 + 每 24h 清理超过
+//! `SRE_GRAPH_FACTS_RETENTION_DAYS`(默认 7,0=禁用)的行。
 
 #![allow(missing_docs)]
 
@@ -26,6 +33,8 @@ use crate::AppState;
 
 /// 退避倍数封顶(base 30s × 20 = 10min)。
 const BACKOFF_CAP_MULT: u32 = 20;
+/// facts 保留期清理的最小间隔(启动即清一次,之后每 24h 一次)。
+const FACTS_PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 86_400);
 
 /// 后台 sync 循环。spawn 后长期运行,RunEvent::Exit 时 abort。
 pub async fn sync_loop(app: AppHandle) {
@@ -37,10 +46,17 @@ pub async fn sync_loop(app: AppHandle) {
         tracing::info!("background sync loop disabled (SRE_GRAPH_SYNC_INTERVAL_SECS=0)");
         return;
     }
+    let retention_days: i64 = std::env::var("SRE_GRAPH_FACTS_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
     let base = Duration::from_secs(interval_secs);
-    tracing::info!("background sync loop started (interval={interval_secs}s, backoff cap {}s)",
+    tracing::info!("background sync loop started (interval={interval_secs}s, backoff cap {}s, facts retention {retention_days}d)",
         base.as_secs() * BACKOFF_CAP_MULT as u64);
     let mut mult: u32 = 1;
+    let mut last_prune = std::time::Instant::now();
+    // 启动即清一次(常驻进程可能数周不重启;重启场景下上一段挂机的堆叠立即回收)
+    prune_facts(&app, retention_days).await;
     loop {
         tokio::time::sleep(base * mult).await;
         let state = app.state::<AppState>();
@@ -66,5 +82,25 @@ pub async fn sync_loop(app: AppHandle) {
         } else {
             (mult.saturating_mul(2)).min(BACKOFF_CAP_MULT)
         };
+        if last_prune.elapsed() >= FACTS_PRUNE_INTERVAL {
+            last_prune = std::time::Instant::now();
+            prune_facts(&app, retention_days).await;
+        }
+    }
+}
+
+/// 清理超过保留期的 raw facts(retention ≤ 0 = 禁用,不清理)。
+async fn prune_facts(app: &AppHandle, retention_days: i64) {
+    if retention_days <= 0 {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let cutoff = chrono::Utc::now().timestamp() - retention_days * 86_400;
+    match state.storage.delete_facts_before(cutoff).await {
+        Ok(n) if n > 0 => {
+            tracing::info!("facts retention: deleted {n} row(s) older than {retention_days}d");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("facts retention prune failed: {e}"),
     }
 }
